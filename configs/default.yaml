@@ -1,0 +1,10 @@
+mongo:
+  uri_env: MONGO_URI
+  db_env: MONGO_DB
+  default_db: feak_tc
+  server_selection_timeout_ms: 5000
+
+ingestion:
+  default_input: data/raw
+  batch_size: 100
+  create_indexes: true
