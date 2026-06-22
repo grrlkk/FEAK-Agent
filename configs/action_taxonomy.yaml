@@ -1,0 +1,13 @@
+action_types:
+  ADD_DETAIL:
+    description: Add relevant evidence, explanation, or examples.
+  DELETE_OR_FOCUS:
+    description: Remove or reduce content that does not support the target issue.
+  COMPRESS:
+    description: Shorten redundant wording while preserving meaning.
+  RESTRUCTURE:
+    description: Reorder or reorganize sentences or paragraphs.
+  STYLE_REFINE:
+    description: Improve grammar, vocabulary, or sentence expression.
+  STOP:
+    description: Stop revision when further edits are unlikely to help.

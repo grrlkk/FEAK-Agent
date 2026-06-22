@@ -1,0 +1,25 @@
+rubrics:
+  topic_clarity:
+    group: content
+    description: Clarity and relevance of the main argument.
+  narrative:
+    group: content
+    description: Validity and variety of supporting evidence.
+  originality:
+    group: content
+    description: Novelty, perspective, and logical consistency.
+  intra_paragraph_structure:
+    group: organization
+    description: Coherence between topic sentence and supporting sentences.
+  inter_paragraph_structure:
+    group: organization
+    description: Clear paragraph organization and balance.
+  grammar:
+    group: expression
+    description: Accuracy of grammar usage.
+  vocabulary:
+    group: expression
+    description: Diversity and contextual appropriateness of vocabulary.
+  sentence_expression:
+    group: expression
+    description: Diversity and appropriateness of sentence expression.
