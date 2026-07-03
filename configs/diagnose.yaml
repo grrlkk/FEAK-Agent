@@ -1,0 +1,8 @@
+diagnoser: stub
+weak_rubric_top_n: 3
+kanana:
+  question: "다음 글을 평가하세요."
+  keywords:
+  m: 3
+  device_id: 0
+  load_in_4bit: true
