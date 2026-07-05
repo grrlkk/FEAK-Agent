@@ -1,9 +1,11 @@
 from feak_tc.diagnose import RUBRIC_KEYS, StubDiagnoser
 from feak_tc.diagnose.constants import FEAK_FEATURE_NAMES
 from feak_tc.diagnose.kanana import KananaDiagnoser
+from feak_tc.mvp.heuristic import build_result, select
 from feak_tc.mvp.patch import apply_patch
 from feak_tc.mvp.propose import propose
-from feak_tc.mvp.schemas import Candidate
+from feak_tc.mvp.schemas import Candidate, Transition
+from feak_tc.mvp.transition import edit_ratio, source_token_retention
 from feak_tc.mvp import serializable_one_step
 
 
@@ -121,3 +123,70 @@ def test_llm_patcher_applies_structured_patch(monkeypatch):
 
     assert "자유롭게 의견을 말할 권리" in patched.new_text
     assert patched.patch.operation == "insert_after"
+
+
+def test_deterministic_add_detail_uses_small_topic_specific_insert():
+    text = "인권은 인간이 태어날 때부터 가지는 기본적인 권리이다. 우리는 서로의 권리를 존중해야 한다."
+    candidate = Candidate(
+        action_type="ADD_DETAIL",
+        target_rubric="content_2",
+        target_span="인권은 인간이 태어날 때부터 가지는 기본적인 권리이다.",
+        instruction="구체 사례를 덧붙인다.",
+    )
+
+    patched = apply_patch(text, candidate, cfg={"patcher": {"mode": "deterministic"}})
+
+    assert patched.patch.after == "예를 들어, 표현의 자유와 안전하게 살 권리가 이에 해당한다."
+    assert edit_ratio(text, patched.new_text) < 0.5
+    assert source_token_retention(text, patched.new_text) == 1.0
+
+
+def test_non_stop_no_effect_candidate_is_rejected():
+    candidate = Candidate(
+        action_type="COMPRESS",
+        target_rubric="content_2",
+        target_span="인권은 기본적인 권리이다.",
+        instruction="반복 표현을 압축한다.",
+    )
+    result = build_result(candidate, _transition(action_type="COMPRESS", target_rubric="content_2"))
+
+    assert result.rejected
+    assert "no_effect" in result.reject_reasons
+
+
+def test_selects_stop_when_only_stop_remains_viable():
+    no_effect = Candidate(
+        action_type="DELETE_OR_FOCUS",
+        target_rubric="content_3",
+        target_span="인권은 기본적인 권리이다.",
+        instruction="초점을 맞춘다.",
+    )
+    stop = Candidate(
+        action_type="STOP",
+        target_rubric="content_3",
+        target_span="",
+        instruction="수정하지 않는다.",
+    )
+    results = [
+        build_result(no_effect, _transition(action_type="DELETE_OR_FOCUS", target_rubric="content_3")),
+        build_result(stop, _transition(action_type="STOP", target_rubric="content_3")),
+    ]
+
+    decision = select(results)
+
+    assert decision.decision == "stop"
+    assert decision.chosen_index == 1
+
+
+def _transition(action_type: str, target_rubric: str) -> Transition:
+    return Transition(
+        action_type=action_type,
+        target_rubric=target_rubric,
+        target_gain=0.0,
+        non_target_drop=0.0,
+        target_gap_reduction=0.0,
+        evidence_match=0.9,
+        edit_ratio=0.0,
+        goal_preservation=1.0,
+        emb_sim=1.0,
+    )

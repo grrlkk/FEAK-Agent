@@ -169,7 +169,7 @@ def _first_sentence(text: str) -> str:
 def _rewrite_span(span: str, action_type: str) -> str:
     stripped = span.strip()
     if action_type == "ADD_DETAIL":
-        return "예를 들어, 이 내용은 글의 핵심 주장과 직접 연결되는 구체적인 사례로 보완할 수 있다."
+        return _add_detail_sentence(stripped)
     if action_type == "DELETE_OR_FOCUS":
         return _focus_sentence(stripped)
     if action_type == "COMPRESS":
@@ -179,6 +179,12 @@ def _rewrite_span(span: str, action_type: str) -> str:
     if action_type == "STYLE_REFINE":
         return _style_refine(stripped)
     return stripped
+
+
+def _add_detail_sentence(sentence: str) -> str:
+    if any(keyword in sentence for keyword in ("인권", "권리", "존중")):
+        return "예를 들어, 표현의 자유와 안전하게 살 권리가 이에 해당한다."
+    return "예를 들어, 생활 속 사례를 덧붙이면 주장이 더 분명해진다."
 
 
 def _focus_sentence(sentence: str) -> str:

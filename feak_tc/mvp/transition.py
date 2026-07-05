@@ -21,7 +21,8 @@ def compute_transition(before: Diagnosis, after: Diagnosis, cand: Candidate) -> 
     )
     non_target_drop = max(0.0, non_target_drop)
     target_gap_reduction = _feature_gap_reduction(before, after, target)
-    goal_preservation = lexical_similarity(before.text, after.text)
+    goal_preservation = source_token_retention(before.text, after.text)
+    emb_sim = lexical_similarity(before.text, after.text)
     return Transition(
         action_type=cand.action_type,
         target_rubric=target,
@@ -31,18 +32,33 @@ def compute_transition(before: Diagnosis, after: Diagnosis, cand: Candidate) -> 
         evidence_match=float(_evidence_match(before, cand)),
         edit_ratio=float(edit_ratio(before.text, after.text)),
         goal_preservation=float(goal_preservation),
-        emb_sim=float(goal_preservation),
+        emb_sim=float(emb_sim),
     )
 
 
 def edit_ratio(before_text: str, after_text: str) -> float:
     before_tokens = tokenize(before_text)
     after_tokens = tokenize(after_text)
-    total = max(1, len(before_tokens))
+    total = max(1, len(before_tokens), len(after_tokens))
     matcher = SequenceMatcher(a=before_tokens, b=after_tokens)
-    unchanged = sum(size for _, _, size in matcher.get_matching_blocks())
-    changed = max(len(before_tokens), len(after_tokens)) - unchanged
+    changed = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        changed += max(i2 - i1, j2 - j1)
     return min(1.0, changed / total)
+
+
+def source_token_retention(before_text: str, after_text: str) -> float:
+    before_tokens = tokenize(before_text)
+    after_tokens = tokenize(after_text)
+    if not before_tokens and not after_tokens:
+        return 1.0
+    if not before_tokens or not after_tokens:
+        return 0.0
+    matcher = SequenceMatcher(a=before_tokens, b=after_tokens)
+    retained = sum(size for _, _, size in matcher.get_matching_blocks())
+    return min(1.0, retained / len(before_tokens))
 
 
 def lexical_similarity(a: str, b: str) -> float:

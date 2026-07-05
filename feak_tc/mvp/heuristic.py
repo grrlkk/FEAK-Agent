@@ -49,6 +49,8 @@ def build_result(
     reasons = _hard_constraint_violations(transition, cfg)
     if candidate.action_type == "STOP":
         reasons = []
+    elif _has_no_effect(transition):
+        reasons.append("no_effect")
     return CandidateResult(
         candidate=candidate,
         transition=transition,
@@ -70,6 +72,21 @@ def select(results: list[CandidateResult], cfg: Optional[Mapping[str, Any]] = No
         if not result.rejected and result.candidate.action_type != "STOP"
     ]
     if not viable:
+        stop_idx = next(
+            (
+                idx
+                for idx, result in enumerate(results)
+                if not result.rejected and result.candidate.action_type == "STOP"
+            ),
+            None,
+        )
+        if stop_idx is not None:
+            return Decision(
+                "stop",
+                stop_idx,
+                "No viable non-STOP candidates remain; selecting STOP.",
+                scores,
+            )
         return Decision("reject_all", None, "All non-STOP candidates violated hard constraints.", scores)
 
     chosen_idx, chosen = max(viable, key=lambda item: item[1].heuristic_score)
@@ -100,6 +117,15 @@ def _hard_constraint_violations(transition: Transition, cfg: Mapping[str, Any]) 
     if transition.evidence_match < float(hard["evidence_match_min"]):
         reasons.append("evidence_match")
     return reasons
+
+
+def _has_no_effect(transition: Transition) -> bool:
+    eps = 1e-9
+    return (
+        abs(transition.edit_ratio) <= eps
+        and abs(transition.target_gain) <= eps
+        and abs(transition.target_gap_reduction) <= eps
+    )
 
 
 def _merged_cfg(cfg: Optional[Mapping[str, Any]]) -> dict[str, Any]:
