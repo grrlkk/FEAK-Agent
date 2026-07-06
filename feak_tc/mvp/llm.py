@@ -39,7 +39,7 @@ def request_json(
         raise LLMUnavailable("OPENAI_API_KEY is not set.")
 
     try:
-        from openai import OpenAI
+        from openai import OpenAI, OpenAIError
     except ModuleNotFoundError as exc:
         raise LLMUnavailable("The `openai` package is not installed.") from exc
 
@@ -51,15 +51,18 @@ def request_json(
         client_kwargs["timeout"] = timeout
 
     client = OpenAI(**client_kwargs)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=temperature,
-        response_format={"type": "json_object"},
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+    except OpenAIError as exc:
+        raise LLMUnavailable(f"OpenAI request failed: {exc}") from exc
     content = response.choices[0].message.content
     if not content:
         raise LLMResponseError("LLM returned an empty response.")

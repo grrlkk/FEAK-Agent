@@ -7,10 +7,10 @@ from typing import Any, Mapping, Optional
 
 from feak_tc.diagnose import Diagnosis
 from feak_tc.diagnose.constants import ACTION_TYPES, RUBRIC_KEYS, RUBRIC_NAMES_KO
-from feak_tc.diagnose.stub import split_sentences
 
 from .llm import LLMResponseError, LLMUnavailable, request_json
 from .schemas import Candidate
+from .targeting import rank_target_spans, select_target_span
 
 
 _ACTION_INSTRUCTIONS = {
@@ -71,15 +71,17 @@ def _propose_deterministic(diag: Diagnosis, n_per_action: int = 1) -> list[Candi
 
     candidates: list[Candidate] = []
     target_order = list(diag.weak_rubrics) or list(RUBRIC_KEYS[:3])
-    sentences = split_sentences(diag.text)
-    target_span = _select_target_span(sentences)
 
     for action_type in ACTION_TYPES:
         if action_type == "STOP":
             target_rubric = target_order[0]
+            target_span = ""
+            target_hints = []
         else:
             preferred = [rubric for rubric in target_order if _RUBRIC_TO_ACTION_HINT.get(rubric) == action_type]
             target_rubric = (preferred or target_order)[0]
+            target_hints = rank_target_spans(diag.text, target_rubric, action_type=action_type, limit=3)
+            target_span = str(target_hints[0]["span"]) if target_hints else ""
         for _ in range(max(1, n_per_action)):
             candidates.append(
                 Candidate(
@@ -87,7 +89,10 @@ def _propose_deterministic(diag: Diagnosis, n_per_action: int = 1) -> list[Candi
                     target_rubric=target_rubric,
                     target_span=target_span,
                     instruction=_build_instruction(action_type, target_rubric),
-                    metadata={"source": "deterministic_proposer"},
+                    metadata={
+                        "source": "deterministic_proposer",
+                        "target_hints": target_hints,
+                    },
                 )
             )
             break
@@ -133,6 +138,7 @@ def _propose_with_llm(
 
 def _build_llm_prompt(diag: Diagnosis, n_per_action: int) -> str:
     weak_features = _diagnostic_feature_slice(diag)
+    target_hints = _target_hint_payload(diag)
     schema = {
         "candidates": [
             {
@@ -170,6 +176,9 @@ def _build_llm_prompt(diag: Diagnosis, n_per_action: int) -> str:
             "",
             "[Related features]",
             json.dumps(weak_features, ensure_ascii=False),
+            "",
+            "[Suggested target spans]",
+            json.dumps(target_hints, ensure_ascii=False),
         ]
     )
 
@@ -197,8 +206,8 @@ def _parse_candidate_payload(
             instruction = str(raw["instruction"]).strip()
             if not instruction:
                 raise ValueError("empty instruction")
-            if action_type != "STOP" and target_span and target_span not in diag.text:
-                target_span = _select_target_span(split_sentences(diag.text))
+            if action_type != "STOP" and (not target_span or target_span not in diag.text):
+                target_span = select_target_span(diag.text, target_rubric, action_type=action_type)
             cand = Candidate(
                 action_type=action_type,
                 target_rubric=target_rubric,
@@ -238,11 +247,17 @@ def _section(cfg: Optional[Mapping[str, Any]], key: str) -> Mapping[str, Any]:
     return section if isinstance(section, Mapping) else {}
 
 
-def _select_target_span(sentences: list[str]) -> str:
-    if not sentences:
-        return ""
-    ranked = sorted(sentences, key=lambda sentence: (len(sentence.split()), len(sentence)))
-    return ranked[0]
+def _target_hint_payload(diag: Diagnosis) -> dict[str, list[dict[str, Any]]]:
+    target_order = list(diag.weak_rubrics) or list(RUBRIC_KEYS[:3])
+    hints: dict[str, list[dict[str, Any]]] = {}
+    for action_type in ACTION_TYPES:
+        if action_type == "STOP":
+            hints[action_type] = []
+            continue
+        preferred = [rubric for rubric in target_order if _RUBRIC_TO_ACTION_HINT.get(rubric) == action_type]
+        target_rubric = (preferred or target_order)[0]
+        hints[action_type] = rank_target_spans(diag.text, target_rubric, action_type=action_type, limit=3)
+    return hints
 
 
 def _build_instruction(action_type: str, target_rubric: str) -> str:
