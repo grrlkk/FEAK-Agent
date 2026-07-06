@@ -1,0 +1,15 @@
+# FEAK-TC Kanana MVP runtime.
+#
+# Use this file for the single feak_agent environment that runs FEAK-Agent with
+# the sibling Kanana scorer. The [live] extra installs the heavy live-scoring
+# dependencies from essay_scoring_llm: torch, transformers, peft,
+# bitsandbytes, Bareun/UTagger clients, and FEAK feature extraction packages.
+
+-e /home/chanwoo/essay_scoring_llm[live]
+
+# FEAK-Agent MVP dependencies.
+PyYAML>=6.0
+pydantic>=2.0
+openai>=1.0
+python-dotenv
+pytest>=8.0

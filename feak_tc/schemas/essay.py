@@ -1,19 +1,33 @@
 """Canonical essay schemas for AI-Hub ingestion."""
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+import pydantic
+from pydantic import BaseModel, Field
+
+try:  # pydantic v2
+    from pydantic import ConfigDict, field_validator
+except ImportError:  # pydantic v1
+    ConfigDict = None
+    from pydantic import validator as field_validator
+
+
+_PYDANTIC_V2 = int(pydantic.VERSION.split(".", 1)[0]) >= 2
 
 
 class EssayRecord(BaseModel):
     """Normalized essay record stored in the `essays` collection."""
 
-    model_config = ConfigDict(extra="forbid")
+    if _PYDANTIC_V2:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
 
     essay_id: str
     prompt: Optional[str] = None
     topic: Optional[str] = None
-    grade: Optional[Union[str, int]] = None
+    grade: Optional[Union[int, str]] = None
     purpose: Optional[str] = None
     text: str
     features: Dict[str, Any] = Field(default_factory=dict)
@@ -24,12 +38,10 @@ class EssayRecord(BaseModel):
     raw_path: str
 
     @field_validator("essay_id", "text", "raw_path")
-    @classmethod
     def _strip_required_strings(cls, value: str) -> str:
         return value.strip()
 
     @field_validator("prompt", "topic", "purpose")
-    @classmethod
     def _strip_optional_strings(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
@@ -39,4 +51,6 @@ class EssayRecord(BaseModel):
     def to_mongo_document(self) -> Dict[str, Any]:
         """Return a JSON-compatible document for MongoDB insertion."""
 
-        return self.model_dump(mode="json")
+        if hasattr(self, "model_dump"):
+            return self.model_dump(mode="json")
+        return self.dict()

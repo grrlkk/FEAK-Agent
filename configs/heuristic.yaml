@@ -1,0 +1,25 @@
+weak_rubric_top_n: 3
+n_per_action: 1
+proposer:
+  mode: auto
+  model: gpt-4o-mini
+  temperature: 0.2
+  timeout: 30
+patcher:
+  mode: auto
+  model: gpt-4o-mini
+  temperature: 0.1
+  timeout: 30
+accept_threshold: 0.0
+hard_constraints:
+  non_target_drop_max: 1.0
+  edit_ratio_max: 0.5
+  goal_preservation_min: 0.7
+  evidence_match_min: 0.3
+weights:
+  target_gain: 1.0
+  target_gap_reduction: 1.0
+  evidence_match: 1.0
+  goal_preservation: 1.0
+  non_target_drop: -1.0
+  edit_ratio: -1.0

@@ -1,25 +1,25 @@
 rubrics:
-  topic_clarity:
+  task_1:
+    group: task
+    description: 과제 수행의 충실성.
+  content_1:
     group: content
-    description: Clarity and relevance of the main argument.
-  narrative:
+    description: 설명의 명료성.
+  content_2:
     group: content
-    description: Validity and variety of supporting evidence.
-  originality:
+    description: 설명의 구체성.
+  content_3:
     group: content
-    description: Novelty, perspective, and logical consistency.
-  intra_paragraph_structure:
+    description: 설명의 적절성.
+  organization_1:
     group: organization
-    description: Coherence between topic sentence and supporting sentences.
-  inter_paragraph_structure:
+    description: 문장의 연결성.
+  organization_2:
     group: organization
-    description: Clear paragraph organization and balance.
-  grammar:
+    description: 글의 통일성.
+  expression_1:
     group: expression
-    description: Accuracy of grammar usage.
-  vocabulary:
+    description: 어휘의 적절성.
+  expression_2:
     group: expression
-    description: Diversity and contextual appropriateness of vocabulary.
-  sentence_expression:
-    group: expression
-    description: Diversity and appropriateness of sentence expression.
+    description: 어법의 적절성.
