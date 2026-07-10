@@ -1,0 +1,154 @@
+features:
+  2-gram_NDW:
+    high: 358.25
+    low: 139.75
+    mean: 299.77
+    n: 200
+  2-gram_RTTR:
+    high: 6.322188
+    low: 4.140565
+    mean: 5.440153
+    n: 200
+  C_Cnt:
+    high: 253.0
+    low: 83.0
+    mean: 208.16
+    n: 200
+  E_Cnt:
+    high: 105.0
+    low: 34.0
+    mean: 83.37
+    n: 200
+  E_NDW:
+    high: 105.0
+    low: 34.0
+    mean: 83.37
+    n: 200
+  F_Cnt:
+    high: 215.25
+    low: 74.75
+    mean: 182.905
+    n: 200
+  J_Cnt:
+    high: 102.5
+    low: 37.0
+    mean: 84.605
+    n: 200
+  NN_repRatio:
+    high: 0.311755
+    low: 0.250727
+    mean: 0.280166
+    n: 200
+  N_MSTTR:
+    high: 0.71
+    low: 0.59
+    mean: 0.648287
+    n: 200
+  V_HDD:
+    high: 0.701634
+    low: 0.0
+    mean: 0.420359
+    n: 200
+  X_Cnt:
+    high: 17.0
+    low: 4.75
+    mean: 14.93
+    n: 200
+  adjacent_sentence_overlap_function_lemmas:
+    high: 150.5
+    low: 45.0
+    mean: 120.6
+    n: 200
+  avgSentSimilarity:
+    high: 0.312014
+    low: 0.174579
+    mean: 0.243723
+    n: 200
+  char_Cnt:
+    high: 702.0
+    low: 233.0
+    mean: 587.27
+    n: 200
+  char_paraLenAvg:
+    high: 358.0
+    low: 195.05
+    mean: 342.416312
+    n: 200
+  grade_2_ratio:
+    high: 0.11599
+    low: 0.059049
+    mean: 0.08778
+    n: 200
+  grade_3_ratio:
+    high: 0.078466
+    low: 0.034662
+    mean: 0.056524
+    n: 200
+  grade_4_ratio:
+    high: 0.067783
+    low: 0.026037
+    mean: 0.046225
+    n: 200
+  grade_m1_ratio:
+    high: 0.512938
+    low: 0.45914
+    mean: 0.487214
+    n: 200
+  lemma_MATTR:
+    high: 0.783387
+    low: 0.734702
+    mean: 0.755434
+    n: 200
+  morph_LenAvg:
+    high: 1.605505
+    low: 1.506108
+    mean: 1.548015
+    n: 200
+  morph_LenStd:
+    high: 0.757897
+    low: 0.692158
+    mean: 0.726212
+    n: 200
+  morph_NDW:
+    high: 187.0
+    low: 88.0
+    mean: 154.63
+    n: 200
+  text_dalechall:
+    high: 6.776797
+    low: 5.775378
+    mean: 6.262803
+    n: 200
+  text_oridx:
+    high: 40044.183655
+    low: 14132.376884
+    mean: 33214.777721
+    n: 200
+  topicConsistency:
+    high: 0.617175
+    low: 0.504275
+    mean: 0.55936
+    n: 200
+  word_Cnt:
+    high: 236.0
+    low: 79.75
+    mean: 197.465
+    n: 200
+  word_LenStd:
+    high: 1.138488
+    low: 1.002032
+    mean: 1.088278
+    n: 200
+  word_sentLenAvg:
+    high: 13.71627
+    low: 10.371676
+    mean: 12.432974
+    n: 200
+meta:
+  built: '2026-07-10'
+  extractor: feak
+  failures: 0
+  high_q: 0.75
+  low_q: 0.25
+  source: /home/chanwoo/FEAK-Agent/data/data_jsonl/train.jsonl
+  top_n: 200
