@@ -19,9 +19,12 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 
 ## 현재 단계와 우선순위
 
-1. **지금: MVP 루프** (`docs/IMPLEMENTATION_MVP.md`) — 학습 없이 diagnose→propose→patch→re-diagnose→heuristic select 한 바퀴
-2. 다음: corruption 데이터 생성 (`docs/SPEC_CORRUPTION_TVM.md`)
-3. 그 다음: TVM 학습 → controller 통합 → 평가
+1. [완료] MVP 루프 (`docs/IMPLEMENTATION_MVP.md`) + validity/heuristic 수리
+   — 진행 기록과 다음 작업은 `중간정리/` 폴더 (최신: `CODEX_TASK_REQUEST.md`)
+2. **지금: MVP 로그 신뢰성 마무리** — 채점기 노이즈 m-sweep, SBERT 교체,
+   targeting 일반화 (`중간정리/CODEX_TASK_REQUEST.md`)
+3. 다음: corruption 데이터 생성 (`docs/SPEC_CORRUPTION_TVM.md`)
+4. 그 다음: TVM 학습 → controller 통합 → 평가
 
 ## 절대 규칙 (No Feature Creep)
 
