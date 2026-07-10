@@ -22,6 +22,8 @@ _ACTION_INSTRUCTIONS = {
     "STOP": "현재 상태에서 추가 수정하지 않는다.",
 }
 
+PROPOSAL_ACTION_TYPES = tuple(action_type for action_type in ACTION_TYPES if action_type != "STOP")
+
 _RUBRIC_TO_ACTION_HINT = {
     "task_1": "ADD_DETAIL",
     "content_1": "ADD_DETAIL",
@@ -72,17 +74,18 @@ def _propose_deterministic(diag: Diagnosis, n_per_action: int = 1) -> list[Candi
     candidates: list[Candidate] = []
     target_order = list(diag.weak_rubrics) or list(RUBRIC_KEYS[:3])
 
-    for action_type in ACTION_TYPES:
-        if action_type == "STOP":
-            target_rubric = target_order[0]
-            target_span = ""
-            target_hints = []
-        else:
-            preferred = [rubric for rubric in target_order if _RUBRIC_TO_ACTION_HINT.get(rubric) == action_type]
-            target_rubric = (preferred or target_order)[0]
-            target_hints = rank_target_spans(diag.text, target_rubric, action_type=action_type, limit=3)
-            target_span = str(target_hints[0]["span"]) if target_hints else ""
-        for _ in range(max(1, n_per_action)):
+    for action_type in PROPOSAL_ACTION_TYPES:
+        preferred = [rubric for rubric in target_order if _RUBRIC_TO_ACTION_HINT.get(rubric) == action_type]
+        target_rubric = (preferred or target_order)[0]
+        target_hints = rank_target_spans(
+            diag.text,
+            target_rubric,
+            action_type=action_type,
+            limit=max(3, n_per_action),
+        )
+        for rank in range(max(1, n_per_action)):
+            hint = target_hints[min(rank, len(target_hints) - 1)] if target_hints else {}
+            target_span = str(hint.get("span", "")) if hint else ""
             candidates.append(
                 Candidate(
                     action_type=action_type,
@@ -92,10 +95,10 @@ def _propose_deterministic(diag: Diagnosis, n_per_action: int = 1) -> list[Candi
                     metadata={
                         "source": "deterministic_proposer",
                         "target_hints": target_hints,
+                        "candidate_rank": rank,
                     },
                 )
             )
-            break
     return candidates
 
 
@@ -119,19 +122,21 @@ def _propose_with_llm(
     if not candidates:
         raise LLMResponseError("LLM produced no valid candidates.")
 
-    # Keep action coverage explicit. Missing actions are filled by deterministic
-    # candidates so the counterfactual comparison still has a complete slate.
+    # Keep non-STOP action coverage explicit. Missing actions are filled by
+    # deterministic candidates so the counterfactual comparison has a complete
+    # edit slate while stopping remains a controller decision.
     deterministic = _propose_deterministic(diag, n_per_action=n_per_action)
-    by_action: dict[str, list[Candidate]] = {action: [] for action in ACTION_TYPES}
+    by_action: dict[str, list[Candidate]] = {action: [] for action in PROPOSAL_ACTION_TYPES}
     for cand in candidates:
-        by_action[cand.action_type].append(cand)
+        if cand.action_type in by_action:
+            by_action[cand.action_type].append(cand)
     for cand in deterministic:
-        if not by_action[cand.action_type]:
+        if len(by_action[cand.action_type]) < max(1, n_per_action):
             cand.metadata["source"] = "deterministic_fill"
             by_action[cand.action_type].append(cand)
 
     ordered: list[Candidate] = []
-    for action_type in ACTION_TYPES:
+    for action_type in PROPOSAL_ACTION_TYPES:
         ordered.extend(by_action[action_type][: max(1, n_per_action)])
     return ordered
 
@@ -154,13 +159,17 @@ def _build_llm_prompt(diag: Diagnosis, n_per_action: int) -> str:
             "Return JSON matching this schema:",
             json.dumps(schema, ensure_ascii=False),
             "",
-            f"Create {n_per_action} candidate(s) for each action_type:",
-            ", ".join(ACTION_TYPES),
+            f"Create {n_per_action} candidate(s) for each non-STOP action_type:",
+            ", ".join(PROPOSAL_ACTION_TYPES),
             "Rules:",
-            "- target_span must be an exact contiguous substring from the essay, except STOP uses an empty string.",
+            "- Do not create STOP candidates; stopping is decided later by the controller.",
+            "- target_span must be an exact contiguous substring from the essay.",
             "- instruction must be local and reversible; do not request a full rewrite.",
             "- Prefer weak rubrics and the related diagnostic features.",
-            "- STOP must explain why no further local edit is useful.",
+            "- Follow the Korean action definition for each action_type.",
+            "",
+            "[Action definitions]",
+            json.dumps(_proposal_action_definitions(), ensure_ascii=False),
             "",
             "[Rubric keys]",
             json.dumps(RUBRIC_NAMES_KO, ensure_ascii=False),
@@ -193,7 +202,7 @@ def _parse_candidate_payload(
         raise LLMResponseError("LLM JSON must contain a `candidates` list.")
 
     candidates: list[Candidate] = []
-    per_action_count = {action: 0 for action in ACTION_TYPES}
+    per_action_count = {action: 0 for action in PROPOSAL_ACTION_TYPES}
     default_target = (diag.weak_rubrics or list(RUBRIC_KEYS))[0]
 
     for raw in raw_candidates:
@@ -201,12 +210,14 @@ def _parse_candidate_payload(
             continue
         try:
             action_type = str(raw["action_type"])
+            if action_type not in PROPOSAL_ACTION_TYPES:
+                continue
             target_rubric = str(raw.get("target_rubric") or default_target)
             target_span = str(raw.get("target_span") or "")
             instruction = str(raw["instruction"]).strip()
             if not instruction:
                 raise ValueError("empty instruction")
-            if action_type != "STOP" and (not target_span or target_span not in diag.text):
+            if not target_span or target_span not in diag.text:
                 target_span = select_target_span(diag.text, target_rubric, action_type=action_type)
             cand = Candidate(
                 action_type=action_type,
@@ -250,14 +261,15 @@ def _section(cfg: Optional[Mapping[str, Any]], key: str) -> Mapping[str, Any]:
 def _target_hint_payload(diag: Diagnosis) -> dict[str, list[dict[str, Any]]]:
     target_order = list(diag.weak_rubrics) or list(RUBRIC_KEYS[:3])
     hints: dict[str, list[dict[str, Any]]] = {}
-    for action_type in ACTION_TYPES:
-        if action_type == "STOP":
-            hints[action_type] = []
-            continue
+    for action_type in PROPOSAL_ACTION_TYPES:
         preferred = [rubric for rubric in target_order if _RUBRIC_TO_ACTION_HINT.get(rubric) == action_type]
         target_rubric = (preferred or target_order)[0]
         hints[action_type] = rank_target_spans(diag.text, target_rubric, action_type=action_type, limit=3)
     return hints
+
+
+def _proposal_action_definitions() -> dict[str, str]:
+    return {action_type: _ACTION_INSTRUCTIONS[action_type] for action_type in PROPOSAL_ACTION_TYPES}
 
 
 def _build_instruction(action_type: str, target_rubric: str) -> str:

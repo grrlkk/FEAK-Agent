@@ -32,6 +32,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-4bit", action="store_true")
     parser.add_argument("--proposer-mode", choices=["auto", "llm", "deterministic"], default=None)
     parser.add_argument("--patcher-mode", choices=["auto", "llm", "deterministic"], default=None)
+    parser.add_argument("--n-per-action", type=_positive_int, default=None)
     parser.add_argument("--json", action="store_true", help="Print raw JSON instead of readable summary")
     return parser.parse_args(argv)
 
@@ -59,10 +60,19 @@ def _load_yaml(path: str) -> dict[str, Any]:
 
 
 def _apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
+    if args.n_per_action is not None:
+        cfg["n_per_action"] = args.n_per_action
     if args.proposer_mode is not None:
         cfg.setdefault("proposer", {})["mode"] = args.proposer_mode
     if args.patcher_mode is not None:
         cfg.setdefault("patcher", {})["mode"] = args.patcher_mode
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
 
 
 def _build_diagnoser(args: argparse.Namespace, cfg: dict[str, Any]):

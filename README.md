@@ -46,9 +46,10 @@ Batch JSONL logging:
 
 ```bash
 python scripts/run_mvp_batch.py \
-  --input data/sample_essays.jsonl \
+  --input data/data_jsonl/train.jsonl \
   --output experiments/results/mvp_batch.jsonl \
   --diagnoser stub \
+  --min-chars 150 \
   --proposer-mode deterministic \
   --patcher-mode deterministic
 ```
@@ -64,7 +65,6 @@ python scripts/run_mvp.py \
   --diagnoser kanana \
   --device-id 3 \
   --question "인권의 뜻과 특징에 대해 서술하세요" \
-  --keywords "인간(사람), 당연, 권리, 존중(침해)" \
   --text-file sample_essay.txt
 ```
 

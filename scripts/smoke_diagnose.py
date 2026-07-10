@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--diagnoser", default="stub", choices=["stub", "kanana", "feak_kobert"])
     parser.add_argument("--text", default="인권은 인간이 태어날 때부터 가지는 기본적인 권리이다.")
     parser.add_argument("--question", default="인권의 뜻과 특징에 대해 서술하세요")
-    parser.add_argument("--keywords", default="인간(사람), 당연, 권리, 존중(침해)")
+    parser.add_argument("--keywords", default=None)
     parser.add_argument("--kanana-m", type=int, default=3)
     parser.add_argument("--chunk-m", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=32)

@@ -31,7 +31,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-4bit", action="store_true")
     parser.add_argument("--proposer-mode", choices=["auto", "llm", "deterministic"], default=None)
     parser.add_argument("--patcher-mode", choices=["auto", "llm", "deterministic"], default=None)
+    parser.add_argument("--n-per-action", type=_positive_int, default=None)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--min-chars", type=int, default=0, help="Skip records with essay text shorter than this")
     parser.add_argument("--append", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
@@ -53,6 +55,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         diagnoser=diagnoser,
         cfg=cfg,
         limit=args.limit,
+        min_chars=args.min_chars,
         append=args.append,
         fail_fast=args.fail_fast,
     )
@@ -69,10 +72,19 @@ def _load_yaml(path: str) -> dict[str, Any]:
 
 
 def _apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
+    if args.n_per_action is not None:
+        cfg["n_per_action"] = args.n_per_action
     if args.proposer_mode is not None:
         cfg.setdefault("proposer", {})["mode"] = args.proposer_mode
     if args.patcher_mode is not None:
         cfg.setdefault("patcher", {})["mode"] = args.patcher_mode
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
 
 
 def _build_diagnoser(args: argparse.Namespace, cfg: dict[str, Any]):
