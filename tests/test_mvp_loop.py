@@ -1,9 +1,9 @@
 import json
 
-from feak_tc.diagnose import RUBRIC_KEYS, StubDiagnoser
+from feak_tc.diagnose import Diagnosis, RUBRIC_KEYS, StubDiagnoser
 from feak_tc.diagnose.constants import FEAK_FEATURE_NAMES
 from feak_tc.diagnose.kanana import KananaDiagnoser
-from feak_tc.mvp.batch import run_batch
+from feak_tc.mvp.batch import iter_text_records, run_batch
 from feak_tc.mvp.heuristic import build_result, select
 from feak_tc.mvp.patch import apply_patch
 from feak_tc.mvp.propose import propose
@@ -11,6 +11,14 @@ from feak_tc.mvp.schemas import Candidate, Transition
 from feak_tc.mvp.targeting import select_target_span
 from feak_tc.mvp.transition import edit_ratio, source_token_retention
 from feak_tc.mvp import serializable_one_step
+
+NON_STOP_ACTIONS = {
+    "ADD_DETAIL",
+    "DELETE_OR_FOCUS",
+    "COMPRESS",
+    "RESTRUCTURE",
+    "STYLE_REFINE",
+}
 
 
 def test_stub_diagnoser_uses_kanana_rubric_shape():
@@ -28,7 +36,7 @@ def test_one_step_mvp_returns_decision_and_candidates():
     )
 
     assert output["before"]["weak_rubrics"]
-    assert len(output["results"]) == 6
+    assert len(output["results"]) == 5
     assert output["decision"]["decision"] in {"accept", "reject_all", "stop"}
     for result in output["results"]:
         assert result["candidate"]["action_type"]
@@ -88,16 +96,20 @@ def test_llm_proposer_accepts_schema_valid_json(monkeypatch):
 
     candidates = propose(diag, cfg={"proposer": {"mode": "llm"}})
 
-    assert len(candidates) == 6
+    assert len(candidates) == 5
     assert candidates[0].metadata["source"] == "llm_proposer"
-    assert {candidate.action_type for candidate in candidates} == {
-        "ADD_DETAIL",
-        "DELETE_OR_FOCUS",
-        "COMPRESS",
-        "RESTRUCTURE",
-        "STYLE_REFINE",
-        "STOP",
-    }
+    assert {candidate.action_type for candidate in candidates} == NON_STOP_ACTIONS
+
+
+def test_deterministic_proposer_honors_n_per_action_without_stop():
+    diag = StubDiagnoser().diagnose("인권은 기본적인 권리이다. 서로 존중해야 한다.")
+
+    candidates = propose(diag, n_per_action=2, cfg={"proposer": {"mode": "deterministic"}})
+
+    assert len(candidates) == 10
+    assert {candidate.action_type for candidate in candidates} == NON_STOP_ACTIONS
+    for action_type in NON_STOP_ACTIONS:
+        assert sum(1 for candidate in candidates if candidate.action_type == action_type) == 2
 
 
 def test_auto_proposer_falls_back_when_llm_unavailable(monkeypatch):
@@ -110,7 +122,7 @@ def test_auto_proposer_falls_back_when_llm_unavailable(monkeypatch):
 
     candidates = propose(diag, cfg={"proposer": {"mode": "auto"}})
 
-    assert len(candidates) == 6
+    assert len(candidates) == 5
     assert all(candidate.metadata["source"] == "deterministic_proposer" for candidate in candidates)
     assert all("llm_error" in candidate.metadata for candidate in candidates)
 
@@ -211,7 +223,7 @@ def test_batch_runner_writes_jsonl_logs(tmp_path):
     assert summary["error"] == 0
     assert rows[0]["record_id"] == "essay-a"
     assert rows[0]["status"] == "ok"
-    assert len(rows[0]["output"]["results"]) == 6
+    assert len(rows[0]["output"]["results"]) == 5
     assert rows[0]["output"]["decision"]["decision"] in {"accept", "reject_all", "stop"}
 
 
@@ -241,6 +253,99 @@ def test_batch_runner_reads_json_files_from_directory(tmp_path):
     assert summary["total"] == 1
     assert row["record_id"] == "essay-dir"
     assert row["status"] == "ok"
+
+
+def test_batch_reader_extracts_essay_from_scoring_jsonl_without_keywords(tmp_path):
+    source = tmp_path / "train.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "user": (
+                    "질문: 인권의 뜻과 특징에 대해 서술하세요\n"
+                    "에세이: 인권은 사람이 태어나면서 가지는 기본적인 권리이다. "
+                    "서로의 권리를 존중해야 한다.\n"
+                    "핵심 키워드: 인간(사람), 당연, 권리, 존중(침해)"
+                ),
+                "assistant": "1 2 3 4 5 6 7 8",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(iter_text_records(source))
+
+    assert len(records) == 1
+    assert records[0].text == "인권은 사람이 태어나면서 가지는 기본적인 권리이다. 서로의 권리를 존중해야 한다."
+    assert "핵심 키워드" not in records[0].text
+    assert records[0].metadata["question"] == "인권의 뜻과 특징에 대해 서술하세요"
+    assert records[0].metadata["keywords"] == "인간(사람), 당연, 권리, 존중(침해)"
+
+
+def test_batch_runner_applies_record_question_without_keywords_to_diagnoser(tmp_path):
+    source = tmp_path / "train.jsonl"
+    output = tmp_path / "mvp.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "user": (
+                    "질문: 인권의 뜻과 특징에 대해 서술하세요\n"
+                    "에세이: 인권은 사람이 태어나면서 가지는 기본적인 권리이다. "
+                    "서로의 권리를 존중해야 한다.\n"
+                    "핵심 키워드: 인간(사람), 당연, 권리, 존중(침해)"
+                ),
+                "assistant": "1 2 3 4 5 6 7 8",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    class ContextDiagnoser:
+        def __init__(self):
+            self.question = "default question"
+            self.keywords = None
+
+        def diagnose(self, text):
+            return Diagnosis(
+                text=text,
+                rubrics={key: 5.0 for key in RUBRIC_KEYS},
+                features={},
+                weak_rubrics=["task_1", "content_1", "content_2"],
+                metadata={"question": self.question, "keywords": self.keywords},
+            )
+
+    diagnoser = ContextDiagnoser()
+    run_batch(
+        input_path=source,
+        output_path=output,
+        diagnoser=diagnoser,
+        cfg={"proposer": {"mode": "deterministic"}, "patcher": {"mode": "deterministic"}},
+    )
+
+    row = json.loads(output.read_text(encoding="utf-8").strip())
+    assert row["output"]["before"]["metadata"]["question"] == "인권의 뜻과 특징에 대해 서술하세요"
+    assert row["input"]["metadata"]["keywords"] == "인간(사람), 당연, 권리, 존중(침해)"
+    assert row["output"]["before"]["metadata"]["keywords"] is None
+    assert diagnoser.question == "default question"
+    assert diagnoser.keywords is None
+
+
+def test_batch_reader_skips_short_records_with_min_chars(tmp_path):
+    source = tmp_path / "train.jsonl"
+    source.write_text(
+        "\n".join(
+            [
+                json.dumps({"essay_id": "short", "text": "짧은 글"}, ensure_ascii=False),
+                json.dumps({"essay_id": "long", "text": "인권은 기본적인 권리이다. 서로의 권리를 존중해야 한다."}, ensure_ascii=False),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(iter_text_records(source, min_chars=20))
+
+    assert [record.record_id for record in records] == ["long"]
 
 
 def test_non_stop_no_effect_candidate_is_rejected():
@@ -292,3 +397,172 @@ def _transition(action_type: str, target_rubric: str) -> Transition:
         goal_preservation=1.0,
         emb_sim=1.0,
     )
+
+
+def test_validity_rejects_sentence_fragment_replace():
+    from feak_tc.mvp.schemas import Patch
+    from feak_tc.mvp.validity import patch_validity_violations
+
+    text = "미국은 이민자의 나라이다. 많은 이민자들을 받아들여 성장한 나라이기 때문이다. 따라서 다양성이 중요하다."
+    candidate = Candidate(
+        action_type="COMPRESS",
+        target_rubric="expression_1",
+        target_span="많은 이민자들을 받아들여 성장한 나라이기 때문이다.",
+        instruction="압축한다.",
+    )
+    candidate.patch = Patch(
+        operation="replace",
+        target_span=candidate.target_span,
+        before="많은 이민자들을 받아들여 성장한 나라이기 때문이다.",
+        after="많은 이민자들을 받아",
+        reason="압축",
+    )
+    candidate.new_text = text.replace(candidate.patch.before, candidate.patch.after, 1)
+
+    violations = patch_validity_violations(text, candidate)
+
+    assert "validity:sentence_fragment" in violations
+
+
+def test_validity_accepts_complete_sentence_insert():
+    from feak_tc.mvp.schemas import Patch
+    from feak_tc.mvp.validity import patch_validity_violations
+
+    text = "모든 사람들은 태어날 때부터 인간답게 살 권리를 가지고 있다. 우리는 이를 존중해야 한다."
+    candidate = Candidate(
+        action_type="ADD_DETAIL",
+        target_rubric="content_2",
+        target_span="모든 사람들은 태어날 때부터 인간답게 살 권리를 가지고 있다.",
+        instruction="예시를 추가한다.",
+    )
+    candidate.patch = Patch(
+        operation="insert_after",
+        target_span=candidate.target_span,
+        before=candidate.target_span,
+        after="예를 들어, 교육을 받을 권리와 의료 서비스에 접근할 권리가 포함된다.",
+        reason="예시 추가",
+    )
+    candidate.new_text = text.replace(
+        candidate.patch.before, f"{candidate.patch.before} {candidate.patch.after}", 1
+    )
+
+    assert patch_validity_violations(text, candidate) == []
+
+
+def test_validity_rejects_essay_collapse():
+    from feak_tc.mvp.schemas import Patch
+    from feak_tc.mvp.validity import patch_validity_violations
+
+    text = "문화를 바라보는 시각에는 세 가지가 있다. 첫째는 문화절대주의이다. 둘째는 문화상대주의이다. 셋째는 문화보편주의이다."
+    deleted = "첫째는 문화절대주의이다. 둘째는 문화상대주의이다. 셋째는 문화보편주의이다."
+    candidate = Candidate(
+        action_type="DELETE_OR_FOCUS",
+        target_rubric="content_3",
+        target_span=deleted,
+        instruction="삭제한다.",
+    )
+    candidate.patch = Patch(
+        operation="delete",
+        target_span=deleted,
+        before=deleted,
+        after="",
+        reason="삭제",
+    )
+    candidate.new_text = text.replace(deleted, "", 1).strip()
+
+    violations = patch_validity_violations(text, candidate)
+
+    assert "validity:essay_collapse" in violations
+
+
+def test_target_gain_min_hard_constraint():
+    candidate = Candidate(
+        action_type="COMPRESS",
+        target_rubric="content_2",
+        target_span="인권은 기본적인 권리이다.",
+        instruction="압축한다.",
+    )
+    transition = Transition(
+        action_type="COMPRESS",
+        target_rubric="content_2",
+        target_gain=0.0,
+        non_target_drop=1.0,
+        target_gap_reduction=0.0,
+        evidence_match=0.9,
+        edit_ratio=0.1,
+        goal_preservation=0.95,
+        emb_sim=0.95,
+    )
+    cfg = {"hard_constraints": {"target_gain_min": 1.0}}
+
+    result = build_result(candidate, transition, cfg)
+
+    assert result.rejected
+    assert "target_gain" in result.reject_reasons
+
+
+def test_heuristic_score_normalizes_rubric_scale():
+    from feak_tc.mvp.heuristic import heuristic_score
+
+    transition = Transition(
+        action_type="ADD_DETAIL",
+        target_rubric="content_2",
+        target_gain=4.0,
+        non_target_drop=0.0,
+        target_gap_reduction=0.0,
+        evidence_match=0.0,
+        edit_ratio=0.0,
+        goal_preservation=0.0,
+        emb_sim=1.0,
+    )
+    cfg = {
+        "rubric_score_range": 8.0,
+        "weights": {
+            "target_gain": 2.0,
+            "target_gap_reduction": 1.0,
+            "evidence_match": 0.5,
+            "goal_preservation": 0.5,
+            "non_target_drop": -2.0,
+            "edit_ratio": -0.5,
+        },
+    }
+
+    # gain 4 on a 1-9 scale -> 0.5 normalized, weighted 2.0 -> 1.0
+    assert abs(heuristic_score(transition, cfg) - 1.0) < 1e-9
+
+
+def test_gap_reduction_uses_elite_band():
+    from feak_tc.mvp.transition import compute_transition
+
+    features_before = {name: 0.0 for name in FEAK_FEATURE_NAMES}
+    features_after = dict(features_before)
+    features_before.update({"word_Cnt": 100.0, "char_Cnt": 400.0, "2-gram_NDW": 50.0})
+    features_after.update({"word_Cnt": 150.0, "char_Cnt": 600.0, "2-gram_NDW": 80.0})
+    rubrics = {key: 3.0 for key in RUBRIC_KEYS}
+    before = Diagnosis(text="원문이다.", rubrics=dict(rubrics), features=features_before, weak_rubrics=["content_2"])
+    after = Diagnosis(text="수정본이다.", rubrics=dict(rubrics), features=features_after, weak_rubrics=["content_2"])
+    candidate = Candidate(
+        action_type="ADD_DETAIL",
+        target_rubric="content_2",
+        target_span="원문이다.",
+        instruction="구체화한다.",
+    )
+    elite_stats = {
+        "word_Cnt": {"low": 150.0, "high": 250.0},
+        "char_Cnt": {"low": 600.0, "high": 1000.0},
+        "2-gram_NDW": {"low": 80.0, "high": 140.0},
+    }
+
+    transition = compute_transition(before, after, candidate, elite_stats=elite_stats)
+
+    # Every target feature moved from below the elite band to its lower edge.
+    assert transition.target_gap_reduction > 0.4
+
+    overshoot = dict(features_before)
+    overshoot.update({"word_Cnt": 400.0, "char_Cnt": 1600.0, "2-gram_NDW": 230.0})
+    after_over = Diagnosis(text="과수정본이다.", rubrics=dict(rubrics), features=overshoot, weak_rubrics=["content_2"])
+
+    over_transition = compute_transition(before, after_over, candidate, elite_stats=elite_stats)
+
+    # Overshooting past the band must score worse than landing inside it.
+    assert over_transition.target_gap_reduction < transition.target_gap_reduction

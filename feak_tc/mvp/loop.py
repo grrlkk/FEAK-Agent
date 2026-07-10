@@ -10,6 +10,7 @@ from .heuristic import build_result, select
 from .patch import apply_patch
 from .propose import propose
 from .transition import compute_transition
+from .validity import patch_validity_violations
 
 
 def one_step(
@@ -26,9 +27,14 @@ def one_step(
     for candidate in candidates:
         patched = apply_patch(text, candidate, cfg=cfg)
         after_text = patched.new_text if patched.new_text is not None else text
-        after = before if after_text == text else diagnoser.diagnose(after_text)
+        violations = patch_validity_violations(text, patched, cfg=cfg)
+        if violations:
+            # Structurally invalid patch: reject without spending a re-diagnosis.
+            after = before
+        else:
+            after = before if after_text == text else diagnoser.diagnose(after_text)
         transition = compute_transition(before, after, patched)
-        results.append(build_result(patched, transition, cfg))
+        results.append(build_result(patched, transition, cfg, extra_reject_reasons=violations))
 
     decision = select(results, cfg)
     return {

@@ -40,7 +40,11 @@ class TextRecord:
         return asdict(self)
 
 
-def iter_text_records(input_path: PathLike, limit: Optional[int] = None) -> Iterator[TextRecord]:
+def iter_text_records(
+    input_path: PathLike,
+    limit: Optional[int] = None,
+    min_chars: int = 0,
+) -> Iterator[TextRecord]:
     """Yield text records from txt, jsonl, json, or a directory of txt files."""
 
     path = Path(input_path)
@@ -49,7 +53,10 @@ def iter_text_records(input_path: PathLike, limit: Optional[int] = None) -> Iter
 
     emitted = 0
     for record in _iter_text_records(path):
-        if not record.text.strip():
+        text = record.text.strip()
+        if not text:
+            continue
+        if len(text) < min_chars:
             continue
         yield record
         emitted += 1
@@ -64,6 +71,7 @@ def run_batch(
     diagnoser: Diagnoser,
     cfg: Optional[Mapping[str, Any]] = None,
     limit: Optional[int] = None,
+    min_chars: int = 0,
     append: bool = False,
     fail_fast: bool = False,
 ) -> dict[str, Any]:
@@ -73,15 +81,17 @@ def run_batch(
     output.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if append else "w"
     summary = {"total": 0, "ok": 0, "error": 0, "output_path": str(output)}
+    cfg_snapshot = _json_safe(cfg) if cfg else {}
 
     with output.open(mode, encoding="utf-8") as f:
-        for record in iter_text_records(input_path, limit=limit):
+        for record in iter_text_records(input_path, limit=limit, min_chars=min_chars):
             summary["total"] += 1
             try:
-                result = serializable_one_step(text=record.text, diagnoser=diagnoser, cfg=cfg)
+                result = _serializable_one_step_for_record(record, diagnoser, cfg)
                 row = {
                     "record_id": record.record_id,
                     "status": "ok",
+                    "cfg": cfg_snapshot,
                     "input": record.to_dict(),
                     "output": result,
                 }
@@ -106,6 +116,32 @@ def run_batch(
             f.flush()
 
     return summary
+
+
+def _serializable_one_step_for_record(
+    record: TextRecord,
+    diagnoser: Diagnoser,
+    cfg: Optional[Mapping[str, Any]],
+) -> dict[str, Any]:
+    restore = _apply_record_diagnoser_context(diagnoser, record.metadata)
+    try:
+        return serializable_one_step(text=record.text, diagnoser=diagnoser, cfg=cfg)
+    finally:
+        _restore_diagnoser_context(diagnoser, restore)
+
+
+def _apply_record_diagnoser_context(diagnoser: Diagnoser, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    restore: dict[str, Any] = {}
+    value = metadata.get("question")
+    if value is not None and hasattr(diagnoser, "question"):
+        restore["question"] = getattr(diagnoser, "question")
+        setattr(diagnoser, "question", value)
+    return restore
+
+
+def _restore_diagnoser_context(diagnoser: Diagnoser, restore: Mapping[str, Any]) -> None:
+    for attr, value in restore.items():
+        setattr(diagnoser, attr, value)
 
 
 def _iter_text_records(path: Path) -> Iterator[TextRecord]:
@@ -184,7 +220,16 @@ def _coerce_record(raw: Any, path: Path, index: int) -> TextRecord:
         "source_path": str(path),
         "record_index": index,
     }
+    scoring_prompt = _parse_scoring_user_prompt(raw.get("user"))
+    if scoring_prompt:
+        text = scoring_prompt["essay"]
+        metadata["question"] = scoring_prompt["question"]
+        if scoring_prompt.get("keywords"):
+            metadata["keywords"] = scoring_prompt["keywords"]
+        metadata["source_format"] = "scoring_user_prompt"
     for key in ("prompt", "question", "topic", "grade", "purpose"):
+        if key in metadata:
+            continue
         value = _find_scalar(raw, (key,))
         if value is not None:
             metadata[key] = value
@@ -243,5 +288,39 @@ def _coerce_text(value: Any) -> str:
     return ""
 
 
+def _parse_scoring_user_prompt(value: Any) -> Optional[dict[str, str]]:
+    if not isinstance(value, str):
+        return None
+    essay_marker = "에세이:"
+    if essay_marker not in value:
+        return None
+
+    question = ""
+    if "질문:" in value:
+        before_essay = value.split(essay_marker, 1)[0]
+        question = before_essay.split("질문:", 1)[1].strip()
+
+    essay = value.split(essay_marker, 1)[1]
+    keywords = ""
+    for marker in ("\n핵심 키워드:", "\r\n핵심 키워드:"):
+        if marker in essay:
+            essay, keywords = essay.split(marker, 1)
+            break
+    essay = essay.strip()
+    if not essay:
+        return None
+    return {"question": question, "essay": essay, "keywords": keywords.strip()}
+
+
 def _normalize_key(key: Any) -> str:
     return "".join(ch for ch in str(key).lower() if ch.isalnum())
+
+
+def _json_safe(obj: Any) -> Any:
+    if isinstance(obj, Mapping):
+        return {str(key): _json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(item) for item in obj]
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    return str(obj)

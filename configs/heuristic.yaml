@@ -11,15 +11,32 @@ patcher:
   temperature: 0.1
   timeout: 30
 accept_threshold: 0.0
+# Kanana rubric scores are integers on a 1-9 scale; deltas are normalized by
+# this range inside the heuristic score so they are commensurable with the
+# 0-1 signals (evidence_match, goal_preservation, edit_ratio).
+rubric_score_range: 8
 hard_constraints:
+  # Rubric granularity is 1.0, so any real improvement is >= 1.
+  target_gain_min: 1.0
+  # Hold at 1.0 until the scorer noise floor is measured; 0.0 would reject on
+  # a single quantization-step fluctuation.
   non_target_drop_max: 1.0
   edit_ratio_max: 0.5
+  # goal_preservation is token retention for now; raising this to 0.9 would
+  # effectively ban DELETE/COMPRESS. Revisit after switching to embeddings.
   goal_preservation_min: 0.7
   evidence_match_min: 0.3
 weights:
-  target_gain: 1.0
+  target_gain: 2.0
   target_gap_reduction: 1.0
-  evidence_match: 1.0
-  goal_preservation: 1.0
-  non_target_drop: -1.0
-  edit_ratio: -1.0
+  evidence_match: 0.5
+  goal_preservation: 0.5
+  non_target_drop: -2.0
+  edit_ratio: -0.5
+# Cheap structural patch checks run before re-diagnosis (feak_tc/mvp/validity.py).
+validity:
+  enabled: true
+  min_after_chars: 5
+  replace_min_ratio: 0.3
+  essay_min_ratio: 0.6
+  require_sentence_ending: true
