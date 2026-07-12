@@ -82,6 +82,7 @@ def _propose_deterministic(diag: Diagnosis, n_per_action: int = 1) -> list[Candi
             target_rubric,
             action_type=action_type,
             limit=max(3, n_per_action),
+            question=_diagnosis_question(diag),
         )
         for rank in range(max(1, n_per_action)):
             hint = target_hints[min(rank, len(target_hints) - 1)] if target_hints else {}
@@ -218,7 +219,12 @@ def _parse_candidate_payload(
             if not instruction:
                 raise ValueError("empty instruction")
             if not target_span or target_span not in diag.text:
-                target_span = select_target_span(diag.text, target_rubric, action_type=action_type)
+                target_span = select_target_span(
+                    diag.text,
+                    target_rubric,
+                    action_type=action_type,
+                    question=_diagnosis_question(diag),
+                )
             cand = Candidate(
                 action_type=action_type,
                 target_rubric=target_rubric,
@@ -264,8 +270,19 @@ def _target_hint_payload(diag: Diagnosis) -> dict[str, list[dict[str, Any]]]:
     for action_type in PROPOSAL_ACTION_TYPES:
         preferred = [rubric for rubric in target_order if _RUBRIC_TO_ACTION_HINT.get(rubric) == action_type]
         target_rubric = (preferred or target_order)[0]
-        hints[action_type] = rank_target_spans(diag.text, target_rubric, action_type=action_type, limit=3)
+        hints[action_type] = rank_target_spans(
+            diag.text,
+            target_rubric,
+            action_type=action_type,
+            limit=3,
+            question=_diagnosis_question(diag),
+        )
     return hints
+
+
+def _diagnosis_question(diag: Diagnosis) -> Optional[str]:
+    question = diag.metadata.get("question")
+    return str(question) if question else None
 
 
 def _proposal_action_definitions() -> dict[str, str]:

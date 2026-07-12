@@ -2,22 +2,35 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from collections import Counter
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Mapping, Optional
 
 from feak_tc.diagnose.constants import RUBRIC_KEYS
 from feak_tc.diagnose.stub import split_sentences, tokenize
 
 
-_CONNECTORS = ("그리고", "그러나", "따라서", "또한", "즉", "그래서", "반면")
-_EXAMPLE_MARKERS = ("예를 들어", "사례", "예시", "구체적으로", "5.18", "헌법")
-_TOPIC_MARKERS = ("인권", "권리", "존중", "인간", "사람", "침해", "자유", "평등")
-_STYLE_RED_FLAGS = (
-    "  ",
-    ",,",
-    "맛있는 밥",
-    "화장실을 자유롭게 갈 수 있다",
-    "목숨을 가져갔다",
-    "들고 일어났다",
+TARGETING_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "targeting.yaml"
+_DEFAULT_CONNECTORS = ("그리고", "그러나", "따라서", "또한", "즉", "그래서", "반면", "하지만", "그러므로")
+_DEFAULT_EXAMPLE_MARKERS = ("예를 들어", "예컨대", "가령", "사례", "예시", "구체적으로")
+_DEFAULT_STYLE_RED_FLAGS = ("  ", ",,", "??", "!!", "것이다 것이다")
+_DEFAULT_STOPWORDS = (
+    "다음",
+    "대해",
+    "서술하세요",
+    "설명하세요",
+    "자신의",
+    "생각",
+    "의견",
+    "이유",
+    "그리고",
+    "그러나",
+    "따라서",
+    "또한",
+    "있다",
+    "한다",
+    "것이다",
 )
 
 _RUBRIC_TO_DEFAULT_ACTION = {
@@ -36,10 +49,11 @@ def select_target_span(
     text: str,
     target_rubric: str,
     action_type: Optional[str] = None,
+    question: Optional[str] = None,
 ) -> str:
     """Return the best sentence-level target for a local candidate edit."""
 
-    ranked = rank_target_spans(text, target_rubric, action_type=action_type, limit=1)
+    ranked = rank_target_spans(text, target_rubric, action_type=action_type, limit=1, question=question)
     return str(ranked[0]["span"]) if ranked else ""
 
 
@@ -48,6 +62,7 @@ def rank_target_spans(
     target_rubric: str,
     action_type: Optional[str] = None,
     limit: int = 3,
+    question: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Rank sentence spans with transparent MVP heuristics.
 
@@ -65,11 +80,13 @@ def rank_target_spans(
         return []
 
     action = action_type or _RUBRIC_TO_DEFAULT_ACTION.get(target_rubric, "ADD_DETAIL")
+    cfg = _targeting_config()
+    context = _targeting_context(text, question, cfg)
     scored = [
         {
             "span": sentence,
             "index": idx,
-            "score": round(_score_sentence(sentence, idx, len(sentences), target_rubric, action), 6),
+            "score": round(_score_sentence(sentence, idx, len(sentences), target_rubric, action, context), 6),
         }
         for idx, sentence in enumerate(sentences)
     ]
@@ -83,36 +100,39 @@ def _score_sentence(
     sentence_count: int,
     target_rubric: str,
     action_type: str,
+    context: Mapping[str, Any],
 ) -> float:
     tokens = tokenize(sentence)
     word_count = len(tokens)
-    topic_hits = _count_markers(sentence, _TOPIC_MARKERS)
-    example_hits = _count_markers(sentence, _EXAMPLE_MARKERS)
-    connector_hits = _count_markers(sentence, _CONNECTORS)
-    style_hits = _count_markers(sentence, _STYLE_RED_FLAGS)
+    topic_overlap = _topic_overlap(tokens, context["topic_terms"])
+    example_hits = _count_markers(sentence, context["example_markers"])
+    connector_hits = _count_markers(sentence, context["connectors"])
+    style_hits = _count_markers(sentence, context["style_red_flags"])
+    repetition_hits = _repetition_hits(tokens)
     score = 0.0
 
     if action_type == "ADD_DETAIL":
-        score += 2.0 if topic_hits else 0.4
+        score += 0.4 + 1.8 * topic_overlap
         score += 1.2 if example_hits == 0 else -0.4
         score += _short_enough_bonus(word_count)
     elif action_type == "DELETE_OR_FOCUS":
-        score += 2.0 if topic_hits == 0 else 0.3
+        score += 2.0 * (1.0 - topic_overlap)
         score += 0.7 if word_count >= 12 else 0.2
     elif action_type == "COMPRESS":
         score += min(3.0, word_count / 6.0)
+        score += min(1.0, repetition_hits * 0.5)
     elif action_type == "RESTRUCTURE":
         score += 1.6 if index > 0 and connector_hits == 0 else 0.4
         score += 0.5 if sentence_count > 1 else 0.0
     elif action_type == "STYLE_REFINE":
-        score += 2.0 if style_hits else 0.3
+        score += 2.0 if style_hits or repetition_hits else 0.3
         score += 0.5 if word_count >= 10 else 0.0
 
     if target_rubric in {"task_1", "content_1", "content_2"}:
-        score += 0.8 if topic_hits else 0.0
+        score += 0.8 * topic_overlap
         score += 0.5 if example_hits == 0 else -0.2
     elif target_rubric in {"content_3", "organization_2"}:
-        score += 0.9 if topic_hits == 0 else 0.1
+        score += 0.9 * (1.0 - topic_overlap)
     elif target_rubric == "organization_1":
         score += 0.9 if index > 0 and connector_hits == 0 else 0.0
     elif target_rubric.startswith("expression"):
@@ -123,6 +143,83 @@ def _score_sentence(
 
 def _count_markers(text: str, markers: tuple[str, ...]) -> int:
     return sum(text.count(marker) for marker in markers)
+
+
+def _topic_overlap(tokens: list[str], topic_terms: set[str]) -> float:
+    if not tokens or not topic_terms:
+        return 0.0
+    sentence_terms = {_normalize_token(token) for token in tokens}
+    overlap = len(sentence_terms & topic_terms)
+    return min(1.0, overlap / max(1, min(3, len(topic_terms))))
+
+
+def _targeting_context(text: str, question: Optional[str], cfg: Mapping[str, tuple[str, ...]]) -> dict[str, Any]:
+    return {
+        "connectors": cfg["connectors"],
+        "example_markers": cfg["example_markers"],
+        "style_red_flags": cfg["style_red_flags"],
+        "topic_terms": _topic_terms(text, question, set(cfg["stopwords"])),
+    }
+
+
+def _topic_terms(text: str, question: Optional[str], stopwords: set[str]) -> set[str]:
+    question_terms = _content_terms(question or "", stopwords)
+    if question_terms:
+        return set(question_terms)
+
+    terms = _content_terms(text, stopwords)
+    counts = Counter(terms)
+    repeated = [term for term, count in counts.most_common(12) if count > 1]
+    if repeated:
+        return set(repeated)
+    return {term for term, _ in counts.most_common(8)}
+
+
+def _content_terms(text: str, stopwords: set[str]) -> list[str]:
+    terms = []
+    for token in tokenize(text):
+        normalized = _normalize_token(token)
+        if len(normalized) < 2:
+            continue
+        if normalized in stopwords:
+            continue
+        terms.append(normalized)
+    return terms
+
+
+def _normalize_token(token: str) -> str:
+    return token.strip().lower()
+
+
+def _repetition_hits(tokens: list[str]) -> int:
+    counts = Counter(_normalize_token(token) for token in tokens)
+    return sum(count - 1 for count in counts.values() if count > 1)
+
+
+@lru_cache(maxsize=1)
+def _targeting_config() -> dict[str, tuple[str, ...]]:
+    payload: Mapping[str, Any] = {}
+    if TARGETING_CONFIG_PATH.exists():
+        import yaml
+
+        with TARGETING_CONFIG_PATH.open(encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+        if isinstance(loaded, Mapping):
+            payload = loaded
+    return {
+        "connectors": _tuple_config(payload, "connectors", _DEFAULT_CONNECTORS),
+        "example_markers": _tuple_config(payload, "example_markers", _DEFAULT_EXAMPLE_MARKERS),
+        "style_red_flags": _tuple_config(payload, "style_red_flags", _DEFAULT_STYLE_RED_FLAGS),
+        "stopwords": _tuple_config(payload, "stopwords", _DEFAULT_STOPWORDS),
+    }
+
+
+def _tuple_config(payload: Mapping[str, Any], key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return default
+    items = [str(item) for item in value if str(item)]
+    return tuple(items) if items else default
 
 
 def _short_enough_bonus(word_count: int) -> float:

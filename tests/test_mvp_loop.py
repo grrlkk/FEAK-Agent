@@ -168,6 +168,19 @@ def test_targeter_prefers_rubric_relevant_sentence_over_shortest():
     assert target == "인권은 인간이 태어날 때부터 가지는 기본적인 권리이다."
 
 
+def test_targeter_uses_question_overlap_without_topic_markers():
+    text = (
+        "짧다. "
+        "도시의 쓰레기 문제는 주민의 생활 환경을 악화시킨다. "
+        "예를 들어 분리배출 교육을 확대할 수 있다."
+    )
+    question = "도시 쓰레기 문제의 원인과 해결 방안을 서술하세요."
+
+    target = select_target_span(text, "content_2", action_type="ADD_DETAIL", question=question)
+
+    assert target == "도시의 쓰레기 문제는 주민의 생활 환경을 악화시킨다."
+
+
 def test_deterministic_add_detail_uses_small_topic_specific_insert():
     text = "인권은 인간이 태어날 때부터 가지는 기본적인 권리이다. 우리는 서로의 권리를 존중해야 한다."
     candidate = Candidate(
@@ -566,3 +579,37 @@ def test_gap_reduction_uses_elite_band():
 
     # Overshooting past the band must score worse than landing inside it.
     assert over_transition.target_gap_reduction < transition.target_gap_reduction
+
+
+def test_transition_similarity_falls_back_and_logs_method(monkeypatch):
+    from feak_tc.mvp import transition as transition_module
+
+    monkeypatch.setattr(
+        transition_module,
+        "_embedding_model",
+        lambda: (None, {"error": "sentence-transformers unavailable"}),
+    )
+    before = Diagnosis(
+        text="도시는 쓰레기 문제를 해결해야 한다.",
+        rubrics={key: 5.0 for key in RUBRIC_KEYS},
+        features={},
+        weak_rubrics=["content_2"],
+    )
+    after = Diagnosis(
+        text="도시는 쓰레기 문제를 해결해야 한다. 예를 들어 분리배출 교육을 확대할 수 있다.",
+        rubrics={key: 6.0 for key in RUBRIC_KEYS},
+        features={},
+        weak_rubrics=["content_2"],
+    )
+    candidate = Candidate(
+        action_type="ADD_DETAIL",
+        target_rubric="content_2",
+        target_span="도시는 쓰레기 문제를 해결해야 한다.",
+        instruction="예시를 추가한다.",
+    )
+
+    result = transition_module.compute_transition(before, after, candidate, elite_stats={})
+
+    assert result.goal_preservation == result.emb_sim
+    assert result.goal_preservation == source_token_retention(before.text, after.text)
+    assert candidate.metadata["similarity"]["method"] == "token_fallback"

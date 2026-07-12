@@ -83,6 +83,7 @@ class KananaDiagnoser:
             weak_rubrics=weak,
             metadata={
                 "diagnoser": "kanana",
+                "question": self.question,
                 "feature_device": "isolated_subprocess",
                 "soft_mean": [float(x) for x in means],
                 "soft_std": [float(x) for x in stds],
