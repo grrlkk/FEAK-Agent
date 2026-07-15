@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from feak_tc.diagnose import Diagnosis, RUBRIC_KEYS, StubDiagnoser
 from feak_tc.diagnose.constants import FEAK_FEATURE_NAMES
 from feak_tc.diagnose.kanana import KananaDiagnoser
@@ -8,8 +10,9 @@ from feak_tc.mvp.heuristic import build_result, select
 from feak_tc.mvp.patch import apply_patch
 from feak_tc.mvp.propose import propose
 from feak_tc.mvp.schemas import Candidate, Transition
+from feak_tc.mvp.surface import normalize_surface_text
 from feak_tc.mvp.targeting import select_target_span
-from feak_tc.mvp.transition import edit_ratio, source_token_retention
+from feak_tc.mvp.transition import compute_transition, edit_ratio, source_token_retention
 from feak_tc.mvp import serializable_one_step
 
 NON_STOP_ACTIONS = {
@@ -75,6 +78,144 @@ def test_kanana_diagnoser_extracts_features_before_loading_model():
     OrderedDiagnoser().diagnose("인권은 기본권이다.")
 
     assert calls == ["features", "model"]
+
+
+def test_kanana_diagnoser_normalizes_only_scoring_prompt_text():
+    captured = {}
+
+    class FakeCorrection:
+        def predict(self, means, stds, features):
+            return means, means
+
+    class CapturingDiagnoser(KananaDiagnoser):
+        def _extract_features(self, text):
+            captured["feature_text"] = text
+            return {name: 0.0 for name in FEAK_FEATURE_NAMES}
+
+        def _ensure_loaded(self):
+            def build_user_prompt(question, text, keywords):
+                captured["prompt_text"] = text
+                return text
+
+            return {
+                "build_user_prompt": build_user_prompt,
+                "score_example": lambda *args: {
+                    "raw_scores": [[1, 2, 3, 4, 1, 2, 3, 4]],
+                    "feedbacks": [],
+                },
+                "model": object(),
+                "tokenizer": object(),
+                "helper": object(),
+                "system_prompt": "system",
+                "config": object(),
+                "correction": FakeCorrection(),
+            }
+
+    raw_text = "  첫 문장이다.   다음이다.  \n    둘째   문장이다.  \n"
+    diag = CapturingDiagnoser().diagnose(raw_text)
+
+    assert diag.text == raw_text
+    assert captured["feature_text"] == raw_text
+    assert captured["prompt_text"] == "첫 문장이다. 다음이다.\n둘째 문장이다."
+    assert diag.metadata["scoring_text_normalized"] is True
+
+
+def test_bareun_surface_normalizer_applies_allowed_categories(monkeypatch):
+    monkeypatch.setenv("BAREUN_API_KEY", "test-key")
+
+    def fake_post_json(url, *, payload, headers, timeout):
+        assert url == "https://api.bareun.ai/bareun.RevisionService/CorrectError"
+        assert headers["api-key"] == "test-key"
+        assert payload["document"]["content"] == "이주노동자는기본적인 권리가 있다."
+        return {
+            "revised": "이주 노동자는 기본적인 권리가 있다.",
+            "revised_blocks": [{"revisions": [{"category": "SPACING"}], "nested": []}],
+            "tokens_count": 5,
+            "language": "ko_KR",
+        }
+
+    monkeypatch.setattr("feak_tc.mvp.surface._post_json", fake_post_json)
+
+    result = normalize_surface_text(
+        "이주노동자는기본적인 권리가 있다.",
+        cfg={"surface_normalizer": {"mode": "bareun"}},
+    )
+
+    assert result is not None
+    assert result.applied is True
+    assert result.rejected is False
+    assert result.normalized_text == "이주 노동자는 기본적인 권리가 있다."
+
+
+def test_bareun_surface_normalizer_rejects_standard_word_changes(monkeypatch):
+    monkeypatch.setenv("BAREUN_API_KEY", "test-key")
+
+    def fake_post_json(url, *, payload, headers, timeout):
+        return {
+            "revised": "오늘은 총각무를 다듬었다.",
+            "revised_blocks": [{"revisions": [{"category": "STANDARD"}], "nested": []}],
+        }
+
+    monkeypatch.setattr("feak_tc.mvp.surface._post_json", fake_post_json)
+
+    result = normalize_surface_text(
+        "오늘은 알타리무를 다듬었다.",
+        cfg={"surface_normalizer": {"mode": "bareun"}},
+    )
+
+    assert result is not None
+    assert result.applied is False
+    assert result.rejected is True
+    assert result.normalized_text == "오늘은 알타리무를 다듬었다."
+    assert "surface:disallowed_category:STANDARD" in result.reject_reasons
+    assert result.metadata["suggested_text"] == "오늘은 총각무를 다듬었다."
+
+
+def test_one_step_scores_raw_text_before_surface_normalization(monkeypatch):
+    monkeypatch.setenv("BAREUN_API_KEY", "test-key")
+
+    def fake_post_json(url, *, payload, headers, timeout):
+        return {
+            "revised": "이주 노동자는 기본적인 권리가 있다.",
+            "revised_blocks": [{"revisions": [{"category": "SPACING"}], "nested": []}],
+        }
+
+    monkeypatch.setattr("feak_tc.mvp.surface._post_json", fake_post_json)
+
+    class RecordingDiagnoser:
+        def __init__(self):
+            self.texts = []
+
+        def diagnose(self, text):
+            self.texts.append(text)
+            return Diagnosis(
+                text=text,
+                rubrics={key: 5.0 for key in RUBRIC_KEYS},
+                features={name: 0.0 for name in FEAK_FEATURE_NAMES},
+                weak_rubrics=["task_1", "content_1", "content_2"],
+                metadata={"call_index": len(self.texts) - 1},
+            )
+
+    diagnoser = RecordingDiagnoser()
+    output = serializable_one_step(
+        "이주노동자는기본적인 권리가 있다.",
+        diagnoser=diagnoser,
+        cfg={
+            "surface_normalizer": {"mode": "bareun"},
+            "proposer": {"mode": "deterministic"},
+            "patcher": {"mode": "deterministic"},
+        },
+    )
+
+    assert diagnoser.texts[:2] == [
+        "이주노동자는기본적인 권리가 있다.",
+        "이주 노동자는 기본적인 권리가 있다.",
+    ]
+    assert output["before"]["text"] == "이주노동자는기본적인 권리가 있다."
+    assert output["action_before"]["text"] == "이주 노동자는 기본적인 권리가 있다."
+    assert output["surface_normalization"]["original_text"] == "이주노동자는기본적인 권리가 있다."
+    assert output["before"]["metadata"]["surface_normalizer"]["provider"] == "bareun"
+    assert output["action_before"]["metadata"]["weak_rubrics_source"] == "pre_surface_diagnosis"
 
 
 def test_llm_proposer_accepts_schema_valid_json(monkeypatch):
@@ -545,8 +686,6 @@ def test_heuristic_score_normalizes_rubric_scale():
 
 
 def test_gap_reduction_uses_elite_band():
-    from feak_tc.mvp.transition import compute_transition
-
     features_before = {name: 0.0 for name in FEAK_FEATURE_NAMES}
     features_after = dict(features_before)
     features_before.update({"word_Cnt": 100.0, "char_Cnt": 400.0, "2-gram_NDW": 50.0})
@@ -579,6 +718,93 @@ def test_gap_reduction_uses_elite_band():
 
     # Overshooting past the band must score worse than landing inside it.
     assert over_transition.target_gap_reduction < transition.target_gap_reduction
+
+
+def test_transition_uses_rf_corrected_scores_when_both_present(monkeypatch):
+    from feak_tc.mvp import transition as transition_module
+
+    monkeypatch.setattr(
+        transition_module,
+        "_embedding_model",
+        lambda: (None, {"error": "sentence-transformers unavailable"}),
+    )
+    integer_rubrics = {key: 4.0 for key in RUBRIC_KEYS}
+    before_rf = dict(integer_rubrics)
+    after_rf = dict(integer_rubrics)
+    before_rf["content_2"] = 4.20
+    after_rf["content_2"] = 4.65
+    before_rf["task_1"] = 4.80
+    after_rf["task_1"] = 4.55
+    before = Diagnosis(
+        text="도시는 쓰레기 문제를 해결해야 한다.",
+        rubrics=dict(integer_rubrics),
+        features={},
+        weak_rubrics=["content_2"],
+        metadata={"rf_corrected_score": [before_rf[key] for key in RUBRIC_KEYS]},
+    )
+    after = Diagnosis(
+        text="도시는 쓰레기 문제를 해결해야 한다. 예시를 덧붙였다.",
+        rubrics=dict(integer_rubrics),
+        features={},
+        weak_rubrics=["content_2"],
+        metadata={"rf_corrected_score": [after_rf[key] for key in RUBRIC_KEYS]},
+    )
+    candidate = Candidate(
+        action_type="ADD_DETAIL",
+        target_rubric="content_2",
+        target_span="도시는 쓰레기 문제를 해결해야 한다.",
+        instruction="예시를 추가한다.",
+    )
+
+    result = compute_transition(before, after, candidate, elite_stats={})
+    same_text_result = compute_transition(before, before, candidate, elite_stats={})
+
+    assert result.target_gain == pytest.approx(0.45)
+    assert result.non_target_drop == pytest.approx(0.25)
+    assert candidate.metadata["score_basis"] == "rf_corrected"
+    assert same_text_result.target_gain == 0.0
+    assert same_text_result.non_target_drop == 0.0
+
+
+def test_transition_falls_back_to_integer_scores_when_continuous_missing(monkeypatch):
+    from feak_tc.mvp import transition as transition_module
+
+    monkeypatch.setattr(
+        transition_module,
+        "_embedding_model",
+        lambda: (None, {"error": "sentence-transformers unavailable"}),
+    )
+    before_rubrics = {key: 4.0 for key in RUBRIC_KEYS}
+    after_rubrics = dict(before_rubrics)
+    after_rubrics["content_2"] = 5.0
+    before_rubrics["task_1"] = 5.0
+    after_rubrics["task_1"] = 3.0
+    misleading_rf = {key: 7.5 for key in RUBRIC_KEYS}
+    before = Diagnosis(
+        text="원문이다.",
+        rubrics=before_rubrics,
+        features={},
+        weak_rubrics=["content_2"],
+        metadata={"rf_corrected_score": [misleading_rf[key] for key in RUBRIC_KEYS]},
+    )
+    after = Diagnosis(
+        text="수정본이다.",
+        rubrics=after_rubrics,
+        features={},
+        weak_rubrics=["content_2"],
+    )
+    candidate = Candidate(
+        action_type="ADD_DETAIL",
+        target_rubric="content_2",
+        target_span="원문이다.",
+        instruction="예시를 추가한다.",
+    )
+
+    result = compute_transition(before, after, candidate, elite_stats={})
+
+    assert result.target_gain == 1.0
+    assert result.non_target_drop == 2.0
+    assert candidate.metadata["score_basis"] == "integer"
 
 
 def test_transition_similarity_falls_back_and_logs_method(monkeypatch):

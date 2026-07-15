@@ -32,6 +32,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-4bit", action="store_true")
     parser.add_argument("--proposer-mode", choices=["auto", "llm", "deterministic"], default=None)
     parser.add_argument("--patcher-mode", choices=["auto", "llm", "deterministic"], default=None)
+    parser.add_argument("--surface-normalizer", choices=["off", "bareun", "hanspell"], default=None)
     parser.add_argument("--n-per-action", type=_positive_int, default=None)
     parser.add_argument("--json", action="store_true", help="Print raw JSON instead of readable summary")
     return parser.parse_args(argv)
@@ -66,6 +67,8 @@ def _apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
         cfg.setdefault("proposer", {})["mode"] = args.proposer_mode
     if args.patcher_mode is not None:
         cfg.setdefault("patcher", {})["mode"] = args.patcher_mode
+    if args.surface_normalizer is not None:
+        cfg.setdefault("surface_normalizer", {})["mode"] = args.surface_normalizer
 
 
 def _positive_int(value: str) -> int:
@@ -96,6 +99,12 @@ def _build_diagnoser(args: argparse.Namespace, cfg: dict[str, Any]):
 def _print_summary(output: dict[str, Any]) -> None:
     before = output["before"]
     print("== Diagnosis ==")
+    surface = output.get("surface_normalization")
+    if surface:
+        print(
+            "surface_normalizer:",
+            f"{surface['provider']} applied={surface['applied']} rejected={surface['rejected']}",
+        )
     print("weak_rubrics:", ", ".join(before["weak_rubrics"]))
     print("rubrics:", json.dumps(before["rubrics"], ensure_ascii=False))
     print("\n== Candidates ==")

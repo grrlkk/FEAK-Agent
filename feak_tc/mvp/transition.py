@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from feak_tc.diagnose import Diagnosis
-from feak_tc.diagnose.constants import RUBRIC_FEATURE_MAP, RUBRIC_KEYS
+from feak_tc.diagnose.constants import RUBRIC_FEATURE_MAP, RUBRIC_KEYS, scores_to_rubric_dict
 from feak_tc.diagnose.stub import tokenize
 
 from .schemas import Candidate, Transition
@@ -29,9 +29,10 @@ def compute_transition(
     elite_stats: Optional[Mapping[str, Mapping[str, float]]] = None,
 ) -> Transition:
     target = cand.target_rubric
-    target_gain = after.rubrics[target] - before.rubrics[target]
+    before_scores, after_scores, score_basis = _transition_rubrics(before, after)
+    target_gain = after_scores[target] - before_scores[target]
     non_target_drop = max(
-        before.rubrics[key] - after.rubrics[key]
+        before_scores[key] - after_scores[key]
         for key in RUBRIC_KEYS
         if key != target
     )
@@ -39,6 +40,7 @@ def compute_transition(
     target_gap_reduction = _feature_gap_reduction(before, after, target, elite_stats)
     semantic_similarity, similarity_info = semantic_text_similarity(before.text, after.text)
     cand.metadata["similarity"] = similarity_info
+    cand.metadata["score_basis"] = score_basis
     return Transition(
         action_type=cand.action_type,
         target_rubric=target,
@@ -50,6 +52,34 @@ def compute_transition(
         goal_preservation=float(semantic_similarity),
         emb_sim=float(semantic_similarity),
     )
+
+
+def _continuous_rubrics(diag: Diagnosis) -> dict[str, float]:
+    rf_scores = _rf_corrected_rubrics(diag)
+    if rf_scores is not None:
+        return rf_scores
+    return dict(diag.rubrics)
+
+
+def _transition_rubrics(
+    before: Diagnosis,
+    after: Diagnosis,
+) -> tuple[dict[str, float], dict[str, float], str]:
+    before_continuous = _rf_corrected_rubrics(before)
+    after_continuous = _rf_corrected_rubrics(after)
+    if before_continuous is not None and after_continuous is not None:
+        return before_continuous, after_continuous, "rf_corrected"
+    return dict(before.rubrics), dict(after.rubrics), "integer"
+
+
+def _rf_corrected_rubrics(diag: Diagnosis) -> Optional[dict[str, float]]:
+    raw = diag.metadata.get("rf_corrected_score")
+    if raw is None:
+        return None
+    try:
+        return scores_to_rubric_dict(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def edit_ratio(before_text: str, after_text: str) -> float:

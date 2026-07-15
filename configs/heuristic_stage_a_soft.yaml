@@ -11,8 +11,8 @@ patcher:
   temperature: 0.1
   timeout: 30
 surface_normalizer:
-  # off by default so existing logs remain comparable. When enabled, this runs
-  # after the initial Kanana diagnosis and before action generation.
+  # Stage A baseline keeps this off unless a run explicitly enables it.
+  # This keeps the 100-row baseline comparable to prior Kanana+heuristic logs.
   mode: off
   timeout: 20
   api_key_env: BAREUN_API_KEY
@@ -29,19 +29,16 @@ surface_normalizer:
   max_sentence_count_delta: 1
   reject_new_numbers: true
 accept_threshold: 0.0
-# Kanana rubric scores are integers on a 1-9 scale; deltas are normalized by
-# this range inside the heuristic score so they are commensurable with the
-# 0-1 signals (evidence_match, goal_preservation, edit_ratio).
 rubric_score_range: 8
 hard_constraints:
-  # Rubric granularity is 1.0, so any real improvement is >= 1.
-  target_gain_min: 1.0
-  # Hold at 1.0 until the scorer noise floor is measured; 0.0 would reject on
-  # a single quantization-step fluctuation.
+  # Provisional soft-score threshold for Stage A baseline only.
+  # rf_corrected_score m=10 rerun max|diff| was 0.225 on the 5-row noise sweep,
+  # so 0.3 is just above that observed rerun noise ceiling.
+  target_gain_min: 0.3
+  # Kept unchanged for the baseline; the 20-row sweep showed this was not the
+  # main decision bottleneck compared with target_gain_min.
   non_target_drop_max: 1.0
   edit_ratio_max: 0.5
-  # goal_preservation is token retention for now; raising this to 0.9 would
-  # effectively ban DELETE/COMPRESS. Revisit after switching to embeddings.
   goal_preservation_min: 0.7
   evidence_match_min: 0.3
 weights:
@@ -51,7 +48,6 @@ weights:
   goal_preservation: 0.5
   non_target_drop: -2.0
   edit_ratio: -0.5
-# Cheap structural patch checks run before re-diagnosis (feak_tc/mvp/validity.py).
 validity:
   enabled: true
   min_after_chars: 5

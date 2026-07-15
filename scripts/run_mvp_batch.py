@@ -31,6 +31,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-4bit", action="store_true")
     parser.add_argument("--proposer-mode", choices=["auto", "llm", "deterministic"], default=None)
     parser.add_argument("--patcher-mode", choices=["auto", "llm", "deterministic"], default=None)
+    parser.add_argument("--surface-normalizer", choices=["off", "bareun", "hanspell"], default=None)
     parser.add_argument("--n-per-action", type=_positive_int, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--min-chars", type=int, default=0, help="Skip records with essay text shorter than this")
@@ -78,6 +79,8 @@ def _apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
         cfg.setdefault("proposer", {})["mode"] = args.proposer_mode
     if args.patcher_mode is not None:
         cfg.setdefault("patcher", {})["mode"] = args.patcher_mode
+    if args.surface_normalizer is not None:
+        cfg.setdefault("surface_normalizer", {})["mode"] = args.surface_normalizer
 
 
 def _positive_int(value: str) -> int:

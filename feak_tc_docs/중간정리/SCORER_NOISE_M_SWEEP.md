@@ -23,6 +23,9 @@ experiments/results/scorer_noise_m3.json
 experiments/results/scorer_noise_m10.json
 experiments/results/scorer_noise_m20.json
 experiments/results/scorer_noise_sweep.json
+experiments/results/scorer_noise_soft_m3.json
+experiments/results/scorer_noise_soft_m10.json
+experiments/results/scorer_noise_soft_m20.json
 ```
 
 ## 요약 표
@@ -59,6 +62,22 @@ train_140
 다만 최종 출력이 정수 rubric이므로, 내부 soft mean의 분산이 줄어도 최종 정수 점수에서는
 1점 단위 변동이 남을 수 있다.
 
+## 연속 점수 기준
+
+2026-07-12에 `scripts/measure_scorer_noise.py`를 확장해 정수 rubric과 함께
+`rf_corrected_score` 및 `soft_mean`을 기록했다. 아래 표는 transition에 쓰기로 한
+`rf_corrected_score` 기준 관측값이다. threshold는 조정하지 않고 숫자만 기록한다.
+
+| kanana m | n | rerun max\|diff\| | rerun mean\|diff\| | whitespace max\|diff\| | whitespace mean\|diff\| | synonym max\|diff\| | synonym mean\|diff\| |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 3 | 5 | 0.685 | 0.158 | 0.559 | 0.146 | 0.339 | 0.120 |
+| 10 | 5 | 0.225 | 0.080 | 0.490 | 0.161 | 0.319 | 0.131 |
+| 20 | 5 | 0.281 | 0.081 | 0.412 | 0.095 | 0.169 | 0.093 |
+
+보조로 기록한 `soft_mean` 기준 rerun max|diff|는 m=3/10/20에서 각각
+0.840 / 0.316 / 0.413이었다. 이번 transition 변경은 `soft_mean`이 아니라
+RF 보정 후 최종 정수 점수의 직전 연속값인 `rf_corrected_score`를 사용한다.
+
 후속 판단 시 선택지는 다음과 같다.
 
 1. 최종 정수 score 대신 `soft_mean`/`rf_corrected_score` 기반 transition을 별도 분석한다.
@@ -73,4 +92,3 @@ train_140
 
 따라서 `target_gain_min` 또는 `non_target_drop_max`를 지금 조정하면 안 되고,
 사용자 m 결정 전까지 현재 threshold를 유지하는 것이 맞다.
-

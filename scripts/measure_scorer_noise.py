@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from feak_tc.diagnose import get_diagnoser
-from feak_tc.diagnose.constants import RUBRIC_KEYS
+from feak_tc.diagnose.constants import RUBRIC_KEYS, scores_to_rubric_dict
 from feak_tc.mvp.batch import iter_text_records
 
 _SYNONYM_SWAPS = [
@@ -78,8 +78,13 @@ def main() -> int:
             diagnoser.question = question
         base = record.text
 
-        def score(text: str) -> dict[str, float]:
-            return dict(diagnoser.diagnose(text).rubrics)
+        def score(text: str) -> dict[str, dict[str, float]]:
+            diag = diagnoser.diagnose(text)
+            return {
+                "integer": dict(diag.rubrics),
+                "rf_corrected": _metadata_scores(diag.metadata.get("rf_corrected_score")),
+                "soft_mean": _metadata_scores(diag.metadata.get("soft_mean")),
+            }
 
         run1 = score(base)
         run2 = score(base)
@@ -90,24 +95,66 @@ def main() -> int:
         def diffs(a: dict[str, float], b: dict[str, float]) -> dict[str, float]:
             return {key: b[key] - a[key] for key in RUBRIC_KEYS if abs(b[key] - a[key]) > 1e-9}
 
+        def basis_diffs(
+            a: dict[str, dict[str, float]],
+            b: dict[str, dict[str, float]],
+            basis: str,
+        ) -> dict[str, float]:
+            if not a[basis] or not b[basis]:
+                return {}
+            return diffs(a[basis], b[basis])
+
         entry = {
             "record_id": record.record_id,
-            "run1": run1,
-            "rerun_diffs": diffs(run1, run2),
-            "whitespace_diffs": diffs(run1, ws_scores),
+            "run1": run1["integer"],
+            "run1_rf_corrected": run1["rf_corrected"],
+            "run1_soft_mean": run1["soft_mean"],
+            "rerun_diffs": basis_diffs(run1, run2, "integer"),
+            "rerun_diffs_rf_corrected": basis_diffs(run1, run2, "rf_corrected"),
+            "rerun_diffs_soft_mean": basis_diffs(run1, run2, "soft_mean"),
+            "whitespace_diffs": basis_diffs(run1, ws_scores, "integer"),
+            "whitespace_diffs_rf_corrected": basis_diffs(run1, ws_scores, "rf_corrected"),
+            "whitespace_diffs_soft_mean": basis_diffs(run1, ws_scores, "soft_mean"),
             "synonym_swap": swap,
-            "synonym_diffs": diffs(run1, syn_scores) if syn_scores else None,
+            "synonym_diffs": basis_diffs(run1, syn_scores, "integer") if syn_scores else None,
+            "synonym_diffs_rf_corrected": basis_diffs(run1, syn_scores, "rf_corrected") if syn_scores else None,
+            "synonym_diffs_soft_mean": basis_diffs(run1, syn_scores, "soft_mean") if syn_scores else None,
         }
         report.append(entry)
         print(json.dumps(entry, ensure_ascii=False))
 
-    max_abs = {"rerun": 0.0, "whitespace": 0.0, "synonym": 0.0}
+    max_abs_integer = {"rerun": 0.0, "whitespace": 0.0, "synonym": 0.0}
+    max_abs_continuous = {"rerun": 0.0, "whitespace": 0.0, "synonym": 0.0}
+    max_abs_soft_mean = {"rerun": 0.0, "whitespace": 0.0, "synonym": 0.0}
+    totals_integer = _diff_totals()
+    totals_continuous = _diff_totals()
+    totals_soft_mean = _diff_totals()
     for entry in report:
         for key, field in (("rerun", "rerun_diffs"), ("whitespace", "whitespace_diffs"), ("synonym", "synonym_diffs")):
-            values = entry.get(field) or {}
-            for delta in values.values():
-                max_abs[key] = max(max_abs[key], abs(delta))
-    summary = {"n_essays": len(report), "max_abs_diff": max_abs}
+            _accumulate_if_present(entry.get(field), key, max_abs_integer, totals_integer)
+        for key, field in (
+            ("rerun", "rerun_diffs_rf_corrected"),
+            ("whitespace", "whitespace_diffs_rf_corrected"),
+            ("synonym", "synonym_diffs_rf_corrected"),
+        ):
+            _accumulate_if_present(entry.get(field), key, max_abs_continuous, totals_continuous)
+        for key, field in (
+            ("rerun", "rerun_diffs_soft_mean"),
+            ("whitespace", "whitespace_diffs_soft_mean"),
+            ("synonym", "synonym_diffs_soft_mean"),
+        ):
+            _accumulate_if_present(entry.get(field), key, max_abs_soft_mean, totals_soft_mean)
+    summary = {
+        "n_essays": len(report),
+        "continuous_basis": "rf_corrected_score",
+        "max_abs_diff": max_abs_integer,
+        "max_abs_diff_integer": max_abs_integer,
+        "mean_abs_diff_integer": _mean_abs(totals_integer),
+        "max_abs_diff_continuous": max_abs_continuous,
+        "mean_abs_diff_continuous": _mean_abs(totals_continuous),
+        "max_abs_diff_soft_mean": max_abs_soft_mean,
+        "mean_abs_diff_soft_mean": _mean_abs(totals_soft_mean),
+    }
     print("SUMMARY " + json.dumps(summary, ensure_ascii=False))
 
     output_path = PROJECT_ROOT / args.output
@@ -118,6 +165,55 @@ def main() -> int:
     )
     print(f"wrote {output_path}")
     return 0
+
+def _metadata_scores(raw: object) -> dict[str, float]:
+    if raw is None:
+        return {}
+    try:
+        return scores_to_rubric_dict(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {}
+
+
+def _diff_totals() -> dict[str, dict[str, float]]:
+    return {
+        "rerun": {"sum": 0.0, "count": 0.0},
+        "whitespace": {"sum": 0.0, "count": 0.0},
+        "synonym": {"sum": 0.0, "count": 0.0},
+    }
+
+
+def _accumulate(
+    values: dict[str, float],
+    key: str,
+    max_abs: dict[str, float],
+    totals: dict[str, dict[str, float]],
+) -> None:
+    for rubric in RUBRIC_KEYS:
+        delta = values.get(rubric, 0.0)
+        abs_delta = abs(delta)
+        max_abs[key] = max(max_abs[key], abs_delta)
+        totals[key]["sum"] += abs_delta
+        totals[key]["count"] += 1.0
+
+
+def _accumulate_if_present(
+    values: object,
+    key: str,
+    max_abs: dict[str, float],
+    totals: dict[str, dict[str, float]],
+) -> None:
+    if values is None:
+        return
+    _accumulate(dict(values), key, max_abs, totals)  # type: ignore[arg-type]
+
+
+def _mean_abs(totals: dict[str, dict[str, float]]) -> dict[str, float]:
+    means = {}
+    for key, values in totals.items():
+        count = values["count"]
+        means[key] = values["sum"] / count if count else 0.0
+    return means
 
 
 if __name__ == "__main__":

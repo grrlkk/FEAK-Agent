@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -36,6 +38,7 @@ class KananaDiagnoser:
         package_path: Optional[str] = None,
         config_kwargs: Optional[dict[str, Any]] = None,
         feature_timeout_s: int = 300,
+        feature_retries: int = 2,
     ) -> None:
         self.question = question
         self.keywords = keywords
@@ -43,12 +46,14 @@ class KananaDiagnoser:
         self.package_path = package_path or os.getenv("ESSAY_SCORING_LLM_PATH")
         self.config_kwargs = config_kwargs or {}
         self.feature_timeout_s = feature_timeout_s
+        self.feature_retries = feature_retries
         self._loaded: Optional[dict[str, Any]] = None
 
     def diagnose(self, text: str) -> Diagnosis:
         features = self._extract_features(text)
         loaded = self._ensure_loaded()
-        user = loaded["build_user_prompt"](self.question, text, self.keywords)
+        scoring_text = _normalize_scoring_text(text)
+        user = loaded["build_user_prompt"](self.question, scoring_text, self.keywords)
         try:
             scored = loaded["score_example"](
                 loaded["model"],
@@ -85,6 +90,7 @@ class KananaDiagnoser:
                 "diagnoser": "kanana",
                 "question": self.question,
                 "feature_device": "isolated_subprocess",
+                "scoring_text_normalized": True,
                 "soft_mean": [float(x) for x in means],
                 "soft_std": [float(x) for x in stds],
                 "rf_corrected_score": [float(x) for x in corrected],
@@ -148,26 +154,37 @@ print("__FEAK_FEATURES_JSON__" + json.dumps(features, ensure_ascii=False))
                 else package_path + os.pathsep + env["PYTHONPATH"]
             )
 
-        try:
-            completed = subprocess.run(
-                [sys.executable, "-c", script],
-                input=text,
-                text=True,
-                capture_output=True,
-                check=False,
-                env=env,
-                timeout=self.feature_timeout_s,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(
-                "FEAK feature extraction timed out in isolated subprocess "
-                f"after {self.feature_timeout_s} seconds."
-            ) from exc
-        if completed.returncode != 0:
+        completed = None
+        for attempt in range(self.feature_retries + 1):
+            try:
+                completed = subprocess.run(
+                    [sys.executable, "-c", script],
+                    input=text,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=env,
+                    timeout=self.feature_timeout_s,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    "FEAK feature extraction timed out in isolated subprocess "
+                    f"after {self.feature_timeout_s} seconds."
+                ) from exc
+            if completed.returncode == 0:
+                break
+            if attempt < self.feature_retries:
+                time.sleep(1.0 + attempt)
+
+        if completed is None or completed.returncode != 0:
+            stdout = completed.stdout if completed is not None else ""
+            stderr = completed.stderr if completed is not None else ""
+            returncode = completed.returncode if completed is not None else "unknown"
             raise RuntimeError(
                 "FEAK feature extraction failed in isolated subprocess.\n"
-                f"stdout:\n{completed.stdout}\n"
-                f"stderr:\n{completed.stderr}"
+                f"returncode: {returncode}\n"
+                f"stdout:\n{stdout}\n"
+                f"stderr:\n{stderr}"
             )
 
         prefix = "__FEAK_FEATURES_JSON__"
@@ -181,6 +198,11 @@ print("__FEAK_FEATURES_JSON__" + json.dumps(features, ensure_ascii=False))
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
+
+
+def _normalize_scoring_text(text: str) -> str:
+    lines = text.strip().splitlines()
+    return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in lines)
 
 
 def _ensure_package_importable(package_path: Optional[str]) -> None:
