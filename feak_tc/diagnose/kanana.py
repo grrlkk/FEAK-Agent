@@ -8,8 +8,9 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import numpy as np
 
@@ -21,6 +22,8 @@ LOW_MEMORY_CONFIG_DEFAULTS = {
     "generate_feedback": False,
     "chunk_m": 1,
 }
+
+FEATURE_LOCK_PATH = Path(os.getenv("FEAK_FEATURE_LOCK_PATH", "/tmp/feak_feature_extract.lock"))
 
 
 class KananaDiagnoser:
@@ -143,6 +146,11 @@ print("__FEAK_FEATURES_JSON__" + json.dumps(features, ensure_ascii=False))
 """
         env = os.environ.copy()
         env.setdefault("TOKENIZERS_PARALLELISM", "false")
+        env.setdefault("HF_HUB_OFFLINE", "1")
+        env.setdefault("TRANSFORMERS_OFFLINE", "1")
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("MKL_NUM_THREADS", "1")
+        env.setdefault("MPLCONFIGDIR", "/tmp/feak_matplotlib")
         feature_cuda = os.getenv("FEAK_FEATURE_CUDA_VISIBLE_DEVICES")
         if feature_cuda is not None:
             env["CUDA_VISIBLE_DEVICES"] = feature_cuda
@@ -155,26 +163,27 @@ print("__FEAK_FEATURES_JSON__" + json.dumps(features, ensure_ascii=False))
             )
 
         completed = None
-        for attempt in range(self.feature_retries + 1):
-            try:
-                completed = subprocess.run(
-                    [sys.executable, "-c", script],
-                    input=text,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                    env=env,
-                    timeout=self.feature_timeout_s,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(
-                    "FEAK feature extraction timed out in isolated subprocess "
-                    f"after {self.feature_timeout_s} seconds."
-                ) from exc
-            if completed.returncode == 0:
-                break
-            if attempt < self.feature_retries:
-                time.sleep(1.0 + attempt)
+        with _feature_extraction_lock():
+            for attempt in range(self.feature_retries + 1):
+                try:
+                    completed = subprocess.run(
+                        [sys.executable, "-c", script],
+                        input=text,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                        env=env,
+                        timeout=self.feature_timeout_s,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError(
+                        "FEAK feature extraction timed out in isolated subprocess "
+                        f"after {self.feature_timeout_s} seconds."
+                    ) from exc
+                if completed.returncode == 0:
+                    break
+                if attempt < self.feature_retries:
+                    time.sleep(1.0 + attempt)
 
         if completed is None or completed.returncode != 0:
             stdout = completed.stdout if completed is not None else ""
@@ -198,6 +207,21 @@ print("__FEAK_FEATURES_JSON__" + json.dumps(features, ensure_ascii=False))
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
+
+
+@contextmanager
+def _feature_extraction_lock() -> Iterator[None]:
+    """Serialize the legacy FEAK extractor across parallel GPU shards."""
+
+    import fcntl
+
+    FEATURE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with FEATURE_LOCK_PATH.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _normalize_scoring_text(text: str) -> str:

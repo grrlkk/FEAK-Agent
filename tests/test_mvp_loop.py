@@ -1,7 +1,9 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
+import feak_tc.diagnose.kanana as kanana_module
 from feak_tc.diagnose import Diagnosis, RUBRIC_KEYS, StubDiagnoser
 from feak_tc.diagnose.constants import FEAK_FEATURE_NAMES
 from feak_tc.diagnose.kanana import KananaDiagnoser
@@ -118,6 +120,31 @@ def test_kanana_diagnoser_normalizes_only_scoring_prompt_text():
     assert captured["feature_text"] == raw_text
     assert captured["prompt_text"] == "첫 문장이다. 다음이다.\n둘째 문장이다."
     assert diag.metadata["scoring_text_normalized"] is True
+
+
+def test_kanana_feature_subprocess_uses_offline_stable_environment(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout='__FEAK_FEATURES_JSON__{"feature": 1.5}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(kanana_module, "_ensure_package_importable", lambda package_path: None)
+    monkeypatch.setattr(kanana_module, "FEATURE_LOCK_PATH", tmp_path / "feature.lock")
+    monkeypatch.setattr(kanana_module.subprocess, "run", fake_run)
+
+    features = KananaDiagnoser()._extract_features("인권은 기본권이다.")
+
+    assert features == {"feature": 1.5}
+    assert captured["env"]["HF_HUB_OFFLINE"] == "1"
+    assert captured["env"]["TRANSFORMERS_OFFLINE"] == "1"
+    assert captured["env"]["OMP_NUM_THREADS"] == "1"
+    assert captured["env"]["MKL_NUM_THREADS"] == "1"
+    assert captured["env"]["MPLCONFIGDIR"] == "/tmp/feak_matplotlib"
 
 
 def test_bareun_surface_normalizer_applies_allowed_categories(monkeypatch):
