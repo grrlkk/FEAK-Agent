@@ -20,7 +20,30 @@ DEFAULT_VALIDITY_CFG = {
     "replace_min_ratio": 0.3,
     "essay_min_ratio": 0.6,
     "require_sentence_ending": True,
+    "reject_new_numbers": True,
+    "reject_new_claim_markers": True,
+    # 0 disables the near-duplicate sentence check. Both thresholds must be
+    # met: min-side overlap 0.6 catches compress-without-delete duplication
+    # (observed at ~0.66), and the Jaccard floor filters out short sentences
+    # that merely share topic words with a longer neighbor (observed FP at
+    # Jaccard 0.29 vs genuine duplicates at 0.36+).
+    "near_dup_overlap": 0.6,
+    "near_dup_jaccard": 0.35,
 }
+
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*%?")
+# Phrases that present invented evidence as fact; only flagged when the patch
+# introduces them, since original essays may legitimately cite sources.
+_CLAIM_MARKERS = (
+    "조사에 따르면",
+    "통계에 따르면",
+    "연구에 따르면",
+    "조사 결과",
+    "연구 결과",
+    "설문",
+    "통계청",
+    "보고서",
+)
 
 _SENTENCE_FINAL_PUNCT = (".", "!", "?", "…", "。", "？", "！")
 _CLOSING_QUOTES = "\"'”’」』)】]"
@@ -72,7 +95,65 @@ def patch_validity_violations(
         if bool(merged["require_sentence_ending"]) and _must_be_full_sentence(patch.operation, before):
             if not is_complete_sentence(after):
                 reasons.append("validity:sentence_fragment")
+
+    if bool(merged["reject_new_numbers"]) and _new_numbers(text, cand.new_text):
+        reasons.append("validity:fabricated_numbers")
+    if bool(merged["reject_new_claim_markers"]) and _new_claim_markers(text, cand.new_text):
+        reasons.append("validity:fabricated_claim_marker")
+    overlap = float(merged["near_dup_overlap"])
+    jaccard = float(merged["near_dup_jaccard"])
+    if overlap > 0 and _introduced_near_duplicate(text, cand.new_text, overlap, jaccard):
+        reasons.append("validity:near_duplicate_sentence")
     return reasons
+
+
+def _new_numbers(text: str, new_text: str) -> set[str]:
+    return set(_NUMBER_RE.findall(new_text)) - set(_NUMBER_RE.findall(text))
+
+
+def _new_claim_markers(text: str, new_text: str) -> list[str]:
+    return [m for m in _CLAIM_MARKERS if m in new_text and m not in text]
+
+
+def _introduced_near_duplicate(
+    text: str, new_text: str, overlap: float, jaccard: float
+) -> bool:
+    """Detect near-duplicate sentence pairs the patch introduced.
+
+    Pairs where both sentences already existed in the original are ignored so
+    naturally repetitive essays are not punished for pre-existing repetition.
+    """
+
+    original = {re.sub(r"\s+", "", s) for s in _split_sentences(text)}
+    sentences = [re.sub(r"\s+", "", s) for s in _split_sentences(new_text)]
+    sentences = [s for s in sentences if len(s) > 10]
+    for i in range(len(sentences)):
+        for j in range(i + 1, len(sentences)):
+            if sentences[i] in original and sentences[j] in original:
+                continue
+            min_side, symmetric = _bigram_similarity(sentences[i], sentences[j])
+            if min_side >= overlap and symmetric >= jaccard:
+                return True
+    return False
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?。？！])\s+", text.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _bigram_similarity(a: str, b: str) -> tuple[float, float]:
+    """Return (min-side overlap, Jaccard) of character bigram sets."""
+
+    bigrams_a = {a[i : i + 2] for i in range(len(a) - 1)}
+    bigrams_b = {b[i : i + 2] for i in range(len(b) - 1)}
+    if not bigrams_a or not bigrams_b:
+        return 0.0, 0.0
+    intersection = len(bigrams_a & bigrams_b)
+    return (
+        intersection / min(len(bigrams_a), len(bigrams_b)),
+        intersection / len(bigrams_a | bigrams_b),
+    )
 
 
 def is_complete_sentence(span: str) -> bool:

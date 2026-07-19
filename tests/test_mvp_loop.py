@@ -773,6 +773,119 @@ def test_validity_rejects_essay_collapse():
     assert "validity:essay_collapse" in violations
 
 
+def test_validity_rejects_fabricated_numbers_and_claim_markers():
+    from feak_tc.mvp.schemas import Patch
+    from feak_tc.mvp.validity import patch_validity_violations
+
+    text = "외국인 노동자들에 대한 차별 문제가 심각하다. 그들에 대한 차별이 만연하다."
+    candidate = Candidate(
+        action_type="ADD_DETAIL",
+        target_rubric="content_3",
+        target_span="외국인 노동자들에 대한 차별 문제가 심각하다.",
+        instruction="통계를 추가한다.",
+    )
+    candidate.patch = Patch(
+        operation="insert_after",
+        target_span=candidate.target_span,
+        before=candidate.target_span,
+        after="최근 조사에 따르면 외국인 노동자의 60%가 임금 체불을 경험했다고 한다.",
+        reason="통계 추가",
+    )
+    candidate.new_text = text.replace(
+        candidate.patch.before, f"{candidate.patch.before} {candidate.patch.after}", 1
+    )
+
+    violations = patch_validity_violations(text, candidate)
+
+    assert "validity:fabricated_numbers" in violations
+    assert "validity:fabricated_claim_marker" in violations
+
+
+def test_validity_allows_numbers_already_in_essay():
+    from feak_tc.mvp.schemas import Patch
+    from feak_tc.mvp.validity import patch_validity_violations
+
+    text = "프랑스는 1946년에 여성 투표권을 도입했다. 이는 프랑스 혁명보다 굉장히 늦은 시기이다."
+    candidate = Candidate(
+        action_type="STYLE_REFINE",
+        target_rubric="expression_1",
+        target_span="이는 프랑스 혁명보다 굉장히 늦은 시기이다.",
+        instruction="표현을 다듬는다.",
+    )
+    candidate.patch = Patch(
+        operation="replace",
+        target_span=candidate.target_span,
+        before=candidate.target_span,
+        after="1946년은 프랑스 혁명 시기에 비하면 매우 늦은 때이다.",
+        reason="표현 개선",
+    )
+    candidate.new_text = text.replace(candidate.patch.before, candidate.patch.after, 1)
+
+    assert "validity:fabricated_numbers" not in patch_validity_violations(text, candidate)
+
+
+def test_validity_rejects_introduced_near_duplicate_sentence():
+    from feak_tc.mvp.schemas import Patch
+    from feak_tc.mvp.validity import patch_validity_violations
+
+    text = (
+        "법은 공동체 구성원이 지켜야 할 규칙이다. "
+        "법이 존재하는 이유는 사회에 정해진 법이 없으면 사회가 혼란스러워지고 "
+        "인간이 누려야 할 기본적인 권리조차 보장되지 않게 된다. "
+        "우리가 법을 잘 지킨다면 사회는 더욱 발전할 수 있을 것이다."
+    )
+    compressed = "법이 존재하는 이유는 사회에 법이 없으면 혼란스러워지고 기본적인 권리가 보장되지 않게 된다."
+    candidate = Candidate(
+        action_type="COMPRESS",
+        target_rubric="content_1",
+        target_span="법이 존재하는 이유는 사회에 정해진 법이 없으면 사회가 혼란스러워지고 "
+        "인간이 누려야 할 기본적인 권리조차 보장되지 않게 된다.",
+        instruction="압축한다.",
+    )
+    candidate.patch = Patch(
+        operation="insert_after",
+        target_span=candidate.target_span,
+        before="법은 공동체 구성원이 지켜야 할 규칙이다.",
+        after=compressed,
+        reason="압축",
+    )
+    # Simulates the observed failure: compressed copy inserted, original kept.
+    candidate.new_text = text.replace(
+        candidate.patch.before, f"{candidate.patch.before} {compressed}", 1
+    )
+
+    violations = patch_validity_violations(text, candidate)
+
+    assert "validity:near_duplicate_sentence" in violations
+
+
+def test_validity_ignores_preexisting_repetition():
+    from feak_tc.mvp.schemas import Patch
+    from feak_tc.mvp.validity import patch_validity_violations
+
+    text = (
+        "법이 없다면 나라가 망하는 것이 된다. "
+        "그래서 법이 없다면 나라가 망하게 되는 것이 된다. "
+        "나라가 망하지 않으려면 법을 지켜야 한다."
+    )
+    candidate = Candidate(
+        action_type="STYLE_REFINE",
+        target_rubric="expression_1",
+        target_span="나라가 망하지 않으려면 법을 지켜야 한다.",
+        instruction="표현을 다듬는다.",
+    )
+    candidate.patch = Patch(
+        operation="replace",
+        target_span=candidate.target_span,
+        before="나라가 망하지 않으려면 법을 지켜야 한다.",
+        after="나라를 지키려면 국민 모두가 법을 지켜야 한다.",
+        reason="표현 개선",
+    )
+    candidate.new_text = text.replace(candidate.patch.before, candidate.patch.after, 1)
+
+    assert "validity:near_duplicate_sentence" not in patch_validity_violations(text, candidate)
+
+
 def test_target_gain_min_hard_constraint():
     candidate = Candidate(
         action_type="COMPRESS",

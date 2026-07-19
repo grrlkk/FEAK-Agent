@@ -54,3 +54,10 @@ validity:
   replace_min_ratio: 0.3
   essay_min_ratio: 0.6
   require_sentence_ending: true
+  # Guards from the 2026-07-17 qualitative review: patches that invent
+  # numbers/citations or duplicate an existing sentence slip past every
+  # transition metric (the fabrication cases scored goal_preservation=1.0).
+  reject_new_numbers: true
+  reject_new_claim_markers: true
+  near_dup_overlap: 0.6
+  near_dup_jaccard: 0.35
