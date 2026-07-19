@@ -39,7 +39,12 @@ hard_constraints:
   # main decision bottleneck compared with target_gain_min.
   non_target_drop_max: 1.0
   edit_ratio_max: 0.5
-  goal_preservation_min: 0.7
+  # Calibrated for BAAI/bge-m3 cosine similarity on the 2026-07-19 labeled
+  # set: all 47 known-good edits scored >= 0.9637, half of the known-bad
+  # scored below 0.95. If similarity falls back to token retention (no local
+  # embedding model), lower this back to 0.7 — token retention runs ~0.9 for
+  # legitimate paraphrases and 0.95 would mass-reject them.
+  goal_preservation_min: 0.95
   evidence_match_min: 0.3
 weights:
   target_gain: 2.0

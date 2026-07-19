@@ -16,9 +16,13 @@ from .schemas import Candidate, Transition
 
 
 ELITE_STATS_PATH = Path(__file__).resolve().parents[2] / "configs" / "elite_features.yaml"
+# Ordered by measured separation of known-good vs known-bad edits on the
+# 2026-07-19 labeled stage A set (AUC): bge-m3 0.82, KURE 0.80. Classic
+# 128-token Korean SBERTs scored below the token fallback (0.65 vs 0.76)
+# because they truncate essay tails, so they are no longer candidates.
 EMBEDDING_MODEL_CANDIDATES = (
-    "jhgan/ko-sbert-sts",
-    "snunlp/KR-SBERT-V40K-klueNLI-augSTS",
+    "BAAI/bge-m3",
+    "nlpai-lab/KURE-v1",
 )
 
 
@@ -166,12 +170,14 @@ def _embedding_model() -> tuple[Any, dict[str, Any]]:
 
     errors = []
     model_names = _embedding_model_candidates()
+    device = os.getenv("FEAK_EMBEDDING_DEVICE") or None
     for model_name in model_names:
         try:
             try:
-                return SentenceTransformer(model_name, local_files_only=True), {"model": model_name}
+                model = SentenceTransformer(model_name, device=device, local_files_only=True)
             except TypeError:
-                return SentenceTransformer(model_name), {"model": model_name}
+                model = SentenceTransformer(model_name, device=device)
+            return model, {"model": model_name, "device": device or "auto"}
         except Exception as exc:  # pragma: no cover - optional model/cache/network dependent
             errors.append(f"{model_name}: {exc.__class__.__name__}: {exc}")
     return None, {"error": "; ".join(errors), "candidates": list(model_names)}
