@@ -9,6 +9,7 @@ from feak_tc.diagnose.constants import FEAK_FEATURE_NAMES
 from feak_tc.diagnose.kanana import KananaDiagnoser
 from feak_tc.mvp.batch import iter_text_records, run_batch
 from feak_tc.mvp.heuristic import build_result, select
+from feak_tc.mvp.llm import LLMResponseError
 from feak_tc.mvp.patch import apply_patch
 from feak_tc.mvp.propose import propose
 from feak_tc.mvp.schemas import Candidate, Transition
@@ -322,6 +323,122 @@ def test_llm_patcher_applies_structured_patch(monkeypatch):
 
     assert "자유롭게 의견을 말할 권리" in patched.new_text
     assert patched.patch.operation == "insert_after"
+
+
+def test_llm_patcher_delete_removes_target_span_without_llm(monkeypatch):
+    text = (
+        "인권은 기본적인 권리이다. "
+        "어제는 날씨가 좋아서 소풍을 갔다. "
+        "모든 사람은 차별받지 않을 권리가 있다."
+    )
+    candidate = Candidate(
+        action_type="DELETE_OR_FOCUS",
+        target_rubric="task_1",
+        target_span="어제는 날씨가 좋아서 소풍을 갔다.",
+        instruction="주제와 무관한 문장을 삭제한다.",
+    )
+
+    def fail_request_json(**kwargs):
+        raise AssertionError("mechanical delete must not call the LLM")
+
+    monkeypatch.setattr("feak_tc.mvp.patch.request_json", fail_request_json)
+
+    patched = apply_patch(text, candidate, cfg={"patcher": {"mode": "llm"}})
+
+    assert "소풍" not in patched.new_text
+    assert "인권은 기본적인 권리이다." in patched.new_text
+    assert "모든 사람은 차별받지 않을 권리가 있다." in patched.new_text
+    assert patched.patch.operation == "delete"
+
+
+def test_llm_patcher_delete_repairs_dangling_connective(monkeypatch):
+    text = (
+        "왕은 절대 권력을 주장했다. "
+        "이에 시민들은 혁명을 일으켰다. "
+        "투표권은 그렇게 쟁취한 권리이다."
+    )
+    candidate = Candidate(
+        action_type="DELETE_OR_FOCUS",
+        target_rubric="task_1",
+        target_span="왕은 절대 권력을 주장했다.",
+        instruction="주제와 관련이 약한 문장을 삭제한다.",
+    )
+
+    def fake_request_json(**kwargs):
+        return {"after": "시민들은 권리를 찾기 위해 혁명을 일으켰다."}
+
+    monkeypatch.setattr("feak_tc.mvp.patch.request_json", fake_request_json)
+
+    patched = apply_patch(text, candidate, cfg={"patcher": {"mode": "llm"}})
+
+    assert "왕은" not in patched.new_text
+    assert patched.new_text.startswith("시민들은 권리를 찾기 위해")
+    assert "투표권은 그렇게 쟁취한 권리이다." in patched.new_text
+    assert patched.patch.operation == "replace"
+    assert patched.metadata["connective_repair"] is True
+
+
+def test_llm_patcher_replace_is_anchored_to_target_span(monkeypatch):
+    text = (
+        "법은 공동체의 규칙이다. "
+        "법이 존재하는 이유는 법이 없으면 사회가 혼란스러워지고 권리가 보장되지 않기 때문이다. "
+        "우리는 법을 지켜야 한다."
+    )
+    candidate = Candidate(
+        action_type="COMPRESS",
+        target_rubric="content_1",
+        target_span="법이 존재하는 이유는 법이 없으면 사회가 혼란스러워지고 권리가 보장되지 않기 때문이다.",
+        instruction="장황한 표현을 압축한다.",
+    )
+
+    def fake_request_json(**kwargs):
+        return {"after": "법이 없으면 사회가 혼란스러워지기 때문이다."}
+
+    monkeypatch.setattr("feak_tc.mvp.patch.request_json", fake_request_json)
+
+    patched = apply_patch(text, candidate, cfg={"patcher": {"mode": "llm"}})
+
+    assert candidate.target_span not in patched.new_text
+    assert patched.new_text == (
+        "법은 공동체의 규칙이다. "
+        "법이 없으면 사회가 혼란스러워지기 때문이다. "
+        "우리는 법을 지켜야 한다."
+    )
+    assert patched.patch.before == candidate.target_span
+
+
+def test_llm_patcher_rejects_overlong_local_edit(monkeypatch):
+    text = "인권은 기본적인 권리이다. 우리는 서로를 존중해야 한다."
+    candidate = Candidate(
+        action_type="STYLE_REFINE",
+        target_rubric="expression_1",
+        target_span="인권은 기본적인 권리이다.",
+        instruction="표현을 다듬는다.",
+    )
+
+    def fake_request_json(**kwargs):
+        return {"after": "인권은 기본적인 권리이다. " * 30}
+
+    monkeypatch.setattr("feak_tc.mvp.patch.request_json", fake_request_json)
+
+    with pytest.raises(LLMResponseError):
+        apply_patch(text, candidate, cfg={"patcher": {"mode": "llm"}})
+
+
+def test_llm_patcher_requires_target_span_in_text():
+    candidate = Candidate(
+        action_type="COMPRESS",
+        target_rubric="content_1",
+        target_span="원문에 존재하지 않는 문장이다.",
+        instruction="압축한다.",
+    )
+
+    with pytest.raises(ValueError):
+        apply_patch(
+            "인권은 기본적인 권리이다.",
+            candidate,
+            cfg={"patcher": {"mode": "llm"}},
+        )
 
 
 def test_targeter_prefers_rubric_relevant_sentence_over_shortest():

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Mapping, Optional
 
@@ -73,92 +72,216 @@ def _apply_deterministic_patch(text: str, cand: Candidate) -> Candidate:
     return cand
 
 
+# The LLM patcher is span-anchored: the edit location is fixed by the
+# candidate's target_span and applied by offset, so the model can only
+# produce local content, never choose where the edit lands.
+
+_ACTION_TASKS = {
+    "ADD_DETAIL": "대상 문장 바로 뒤에 이어질 뒷받침 문장 1개를 새로 작성한다.",
+    "COMPRESS": "대상 문장을 의미 손실 없이 더 간결하게 압축한 문장으로 다시 쓴다.",
+    "RESTRUCTURE": "대상 문장의 어순이나 연결 표현을 조정해 흐름이 분명한 문장으로 다시 쓴다.",
+    "STYLE_REFINE": "대상 문장의 어색한 어휘, 맞춤법, 표현을 자연스럽게 다듬어 다시 쓴다.",
+}
+
+_DANGLING_OPENERS = (
+    "그래서",
+    "그러므로",
+    "따라서",
+    "이에",
+    "이는",
+    "이를",
+    "이러한",
+    "이처럼",
+    "이와 같이",
+    "그 중",
+    "그중",
+    "또한",
+    "하지만",
+    "그러나",
+    "그리고",
+    "그런데",
+    "그렇기",
+    "그로 인해",
+    "예를 들",
+    "즉",
+    "결국",
+    "왜냐하면",
+    "때문에",
+)
+
+_CONTEXT_CHARS = 160
+
+
 def _apply_llm_patch(text: str, cand: Candidate, cfg: Mapping[str, Any]) -> Candidate:
-    payload = request_json(
+    start, end = _locate_span(text, cand.target_span)
+    span = text[start:end]
+
+    if cand.action_type == "DELETE_OR_FOCUS":
+        return _apply_span_delete(text, cand, cfg, start, end)
+
+    after = _request_generated_text(
+        cfg,
         system=(
-            "You are a Korean essay patch simulator. Return only JSON. "
-            "Apply one minimal, reversible local edit. Never rewrite the whole essay."
+            "You are a Korean essay editor. Return only a JSON object with the "
+            'single key "after". Write only the requested local text; never '
+            "return the whole essay or surrounding sentences."
         ),
-        user=_build_patch_prompt(text, cand),
-        model=str(cfg.get("model", "gpt-4o-mini")),
-        temperature=float(cfg.get("temperature", 0.1)),
-        env_file=cfg.get("env_file"),
-        timeout=float(cfg["timeout"]) if cfg.get("timeout") is not None else None,
+        user=_build_span_prompt(text, cand, start, end),
+        max_len=_local_edit_limit(span),
     )
-    patch = _parse_patch_payload(text, cand, payload)
-    cand.new_text = _clean_spacing(_materialize_patch(text, patch))
+
+    if cand.action_type == "ADD_DETAIL":
+        new_text = f"{text[:end]} {after}{text[end:]}"
+        patch = Patch("insert_after", span, span, after, cand.instruction)
+    else:
+        new_text = text[:start] + after + text[end:]
+        patch = Patch("replace", span, span, after, cand.instruction)
+
+    cand.new_text = _clean_spacing(new_text)
     cand.patch = patch
     cand.metadata["patcher"] = "llm"
     return cand
 
 
-def _build_patch_prompt(text: str, cand: Candidate) -> str:
-    schema = {
-        "operation": "replace | insert_after | delete | noop",
-        "target_span": "exact substring from essay",
-        "before": "exact text to replace/delete or anchor for insert_after",
-        "after": "new local text, empty only for delete/noop",
-        "reason": "short Korean reason",
-    }
+def _apply_span_delete(
+    text: str, cand: Candidate, cfg: Mapping[str, Any], start: int, end: int
+) -> Candidate:
+    span = text[start:end]
+    if not text[:start].strip() and not text[end:].strip():
+        raise ValueError("Deleting the whole essay is not allowed.")
+
+    repaired = None
+    bounds = _next_sentence_bounds(text, end)
+    if bounds is not None:
+        next_start, next_end = bounds
+        next_sentence = text[next_start:next_end]
+        if next_sentence.startswith(_DANGLING_OPENERS):
+            try:
+                repaired = _request_generated_text(
+                    cfg,
+                    system=(
+                        "You are a Korean essay editor. Return only a JSON object "
+                        'with the single key "after" containing exactly one sentence.'
+                    ),
+                    user=_build_repair_prompt(text, span, start, next_sentence),
+                    max_len=_local_edit_limit(next_sentence),
+                )
+            except (LLMUnavailable, LLMResponseError) as exc:
+                cand.metadata["connective_repair_error"] = str(exc)
+
+    if repaired is not None:
+        new_text = text[:start] + repaired + text[next_end:]
+        patch = Patch("replace", span, text[start:next_end], repaired, cand.instruction)
+        cand.metadata["connective_repair"] = True
+    else:
+        new_text = text[:start] + text[end:]
+        patch = Patch("delete", span, span, "", cand.instruction)
+
+    cand.new_text = _clean_spacing(new_text)
+    cand.patch = patch
+    cand.metadata["patcher"] = "llm"
+    return cand
+
+
+def _build_span_prompt(text: str, cand: Candidate, start: int, end: int) -> str:
+    span = text[start:end]
+    if cand.action_type == "ADD_DETAIL":
+        output_desc = "대상 문장 바로 뒤에 삽입할 새 문장 1개"
+    else:
+        output_desc = "대상 문장을 대신할 수정된 문장"
     return "\n".join(
         [
-            "Return JSON matching this schema:",
-            json.dumps(schema, ensure_ascii=False),
+            'Return JSON: {"after": "<' + output_desc + '>"}',
+            "",
+            f"Task: {_ACTION_TASKS[cand.action_type]}",
+            f"Instruction: {cand.instruction}",
             "",
             "Rules:",
-            "- Use one local edit only.",
-            "- before and target_span must be exact substrings from the essay unless operation is noop.",
-            "- Do not rewrite the whole essay.",
-            "- Preserve the writer's original intent.",
+            f'- "after"에는 {output_desc}만 담는다. 글 전체나 앞뒤 문맥을 포함하지 않는다.',
+            "- 원문에 없는 수치, 통계, 연도, 기관명, 조사 결과를 만들어 내지 않는다.",
+            "- 글쓴이의 의도와 어조를 유지한다.",
             "",
-            "[Essay]",
-            text,
+            "[앞 문맥]",
+            text[max(0, start - _CONTEXT_CHARS) : start].strip(),
             "",
-            "[Candidate]",
-            json.dumps(cand.to_dict(), ensure_ascii=False),
+            "[대상 문장]",
+            span,
+            "",
+            "[뒤 문맥]",
+            text[end : end + _CONTEXT_CHARS].strip(),
         ]
     )
 
 
-def _parse_patch_payload(text: str, cand: Candidate, payload: Mapping[str, Any]) -> Patch:
-    operation = str(payload.get("operation", "")).strip()
-    if operation not in {"replace", "insert_after", "delete", "noop"}:
-        raise LLMResponseError(f"Invalid patch operation: {operation}")
+def _build_repair_prompt(text: str, deleted_span: str, start: int, next_sentence: str) -> str:
+    return "\n".join(
+        [
+            'Return JSON: {"after": "<수정된 문장>"}',
+            "",
+            "에세이에서 한 문장이 삭제되었다. 삭제 직후에 오는 문장이 삭제된 문장을",
+            "가리키는 접속어나 지시어로 시작해 어색해졌다. 이 문장이 남은 앞 문맥에",
+            "자연스럽게 이어지도록 최소한으로만 고쳐라.",
+            "",
+            "Rules:",
+            "- 문장의 내용은 유지하고 접속어와 지시어만 조정한다.",
+            "- 새로운 정보를 추가하지 않는다.",
+            "- 문장 1개만 반환한다.",
+            "",
+            "[삭제된 문장]",
+            deleted_span,
+            "",
+            "[삭제 후 남은 앞 문맥]",
+            text[max(0, start - _CONTEXT_CHARS) : start].strip(),
+            "",
+            "[고칠 문장]",
+            next_sentence,
+        ]
+    )
 
-    target_span = str(payload.get("target_span") or cand.target_span or "").strip()
-    before = str(payload.get("before") or target_span).strip()
+
+def _request_generated_text(
+    cfg: Mapping[str, Any], *, system: str, user: str, max_len: int
+) -> str:
+    payload = request_json(
+        system=system,
+        user=user,
+        model=str(cfg.get("model", "gpt-4o-mini")),
+        temperature=float(cfg.get("temperature", 0.1)),
+        env_file=cfg.get("env_file"),
+        timeout=float(cfg["timeout"]) if cfg.get("timeout") is not None else None,
+    )
     after = str(payload.get("after") or "").strip()
-    reason = str(payload.get("reason") or cand.instruction).strip()
-
-    if operation == "noop":
-        return Patch("noop", target_span, "", "", reason)
-
-    if not before:
-        raise LLMResponseError("Patch `before` cannot be empty.")
-    if before not in text:
-        if cand.target_span and cand.target_span in text:
-            before = cand.target_span
-            target_span = cand.target_span
-        else:
-            raise LLMResponseError("Patch `before` is not an exact substring.")
-    if operation in {"replace", "insert_after"} and not after:
-        raise LLMResponseError("Patch `after` cannot be empty for replace/insert_after.")
-    if operation == "delete" and before.strip() == text.strip():
-        raise LLMResponseError("Deleting the whole essay is not allowed.")
-
-    return Patch(operation, target_span or before, before, after, reason)
+    if not after:
+        raise LLMResponseError("Patch `after` cannot be empty.")
+    if len(after) > max_len:
+        raise LLMResponseError(
+            f"Patch `after` is too long ({len(after)} chars); must stay a local edit."
+        )
+    return after
 
 
-def _materialize_patch(text: str, patch: Patch) -> str:
-    if patch.operation == "noop":
-        return text
-    if patch.operation == "replace":
-        return text.replace(patch.before, patch.after, 1)
-    if patch.operation == "insert_after":
-        return text.replace(patch.before, f"{patch.before} {patch.after}", 1)
-    if patch.operation == "delete":
-        return text.replace(patch.before, "", 1)
-    raise ValueError(patch.operation)
+def _locate_span(text: str, target_span: Optional[str]) -> tuple[int, int]:
+    span = (target_span or "").strip()
+    if not span:
+        raise ValueError("Candidate target_span is empty.")
+    start = text.find(span)
+    if start < 0:
+        raise ValueError("Candidate target_span is not an exact substring of the essay.")
+    return start, start + len(span)
+
+
+def _next_sentence_bounds(text: str, pos: int) -> Optional[tuple[int, int]]:
+    match = re.search(r"\S", text[pos:])
+    if match is None:
+        return None
+    start = pos + match.start()
+    end_match = re.search(r"[.!?。？！]", text[start:])
+    end = start + end_match.end() if end_match else len(text)
+    return start, end
+
+
+def _local_edit_limit(span: str) -> int:
+    return max(2 * len(span) + 120, 200)
 
 
 def _first_sentence(text: str) -> str:
