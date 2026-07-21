@@ -43,6 +43,13 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 - 설정값(임계·가중치)은 configs/*.yaml 상수로, 코드에 하드코딩 금지
 - 함수 시그니처가 불명확하면 추측하지 말고 사용자에게 확인
 
+## Git/GitHub 작업 흐름
+
+- 사용자가 명시적으로 요청하지 않는 한 `main`에 직접 push하지 않는다.
+- 작업마다 topic branch를 만들고, 검증 후 해당 브랜치만 원격에 push한다.
+- `main` 반영은 GitHub Pull Request를 통해 진행하며, 최종 Merge는 사용자가 한다.
+- PR 병합이 확인된 뒤에만 로컬 `main`을 동기화하고 작업 브랜치를 정리한다.
+
 ## 사용자 환경
 
 - VSCode, 연구실 GPU (A6000 x6)
