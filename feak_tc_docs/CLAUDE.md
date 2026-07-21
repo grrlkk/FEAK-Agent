@@ -20,11 +20,12 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 ## 현재 단계와 우선순위
 
 1. [완료] MVP 루프 (`docs/IMPLEMENTATION_MVP.md`) + validity/heuristic 수리
-2. [완료] m-sweep 노이즈 측정, SBERT 교체, targeting 일반화
-   (`중간정리/CODEX_TASK_PROGRESS_2026-07-11.md`)
-3. **지금: transition을 연속 점수(soft score) 기반으로 전환**
-   — 정수 rubric ±1 양자화 노이즈 해소 (`중간정리/CODEX_TASK_SOFT_SCORE.md`)
-4. 다음: corruption 데이터 생성 (`docs/SPEC_CORRUPTION_TVM.md`)
+2. [완료] 연속 점수(soft score) 전환과 threshold 검토
+   (`중간정리/SCORER_NOISE_M_SWEEP.md`, `중간정리/SOFT_THRESHOLD_SWEEP_20.md`)
+3. [완료] span 고정 patcher, validity guard, BGE-M3 기반 의미 보존 검증
+   (`중간정리/STAGE_A_BGE_100_RESULTS_2026-07-20.md`)
+4. **지금: proposer targeting 개선 후 corruption 데이터 생성**
+   (`docs/SPEC_CORRUPTION_TVM.md`)
 5. 그 다음: TVM 학습 → controller 통합 → 평가
 
 ## 절대 규칙 (No Feature Creep)

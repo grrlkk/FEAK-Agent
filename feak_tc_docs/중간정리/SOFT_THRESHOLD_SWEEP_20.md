@@ -1,7 +1,7 @@
 # 중간정리 — soft score threshold sweep 20건
 
-> 작성일: 2026-07-13  
-> 입력 로그: `experiments/results/mvp_stage_a_20_v3.jsonl`  
+> 작성일: 2026-07-13
+> 입력 로그: `experiments/results/mvp_stage_a_20_v3.jsonl`
 > 목적: Kanana/LLM 재실행 없이, 기존 soft score transition 로그에서 threshold만 바꿔 가상 재판정
 
 ## 1. 왜 이 작업을 했나
@@ -102,22 +102,22 @@ accept 수만 표시했다.
 
 ### target_gain_min = 0.1
 
-accept가 16/20으로 많다.  
+accept가 16/20으로 많다.
 하지만 m=10 기준 rerun mean noise가 약 0.080이므로, 0.1은 noise와 너무 가까워 보인다.
 
 ### target_gain_min = 0.2
 
-accept가 12/20이다.  
+accept가 12/20이다.
 후보를 넉넉하게 살리지만, 약한 개선도 많이 통과할 가능성이 있다.
 
 ### target_gain_min = 0.3
 
-accept가 7/20이다.  
+accept가 7/20이다.
 m=10 rerun max noise가 약 0.225였으므로, 0.3은 noise 상한보다 약간 높은 보수적 시작점이다.
 
 ### target_gain_min = 0.5
 
-accept가 5/20이다.  
+accept가 5/20이다.
 조금 더 보수적이며, 명확한 후보만 남긴다. 다만 좋은 약한 수정까지 버릴 위험이 있다.
 
 ## 8. 현재 결론

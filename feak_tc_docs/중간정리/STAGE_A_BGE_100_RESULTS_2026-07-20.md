@@ -14,7 +14,7 @@ spanfix(07-19)와 동일 + BGE-M3 유사도(`FEAK_EMBEDDING_DEVICE=cpu`) +
 | | baseline 07-16 | spanfix 07-19 | **bge 07-20** |
 |---|---:|---:|---:|
 | accept | 52 | 48 | **56** |
-| accept 중 스캔 결함 | 21 (환각3·중복1 포함) | 0 | **0** |
+| accept 중 자동 스캔 플래그 | 21 (환각3·중복1 포함) | 0 | **0** |
 | 채택 gp 최소 | 0.733 | 0.733 | **0.960** |
 | similarity | token_fallback | token_fallback | **bge-m3** |
 
@@ -40,8 +40,8 @@ STYLE_REFINE 6, RESTRUCTURE 4.
 ## 결론
 
 patcher span 고정 + validity guard + BGE-M3 유사도 조합으로,
-같은 입력에서 **accept가 baseline보다 많으면서(52→56) 검출 가능한
-결함은 21→0**이 됐다. Stage A 파이프라인 신뢰성 작업은 여기서 일단락.
+같은 입력에서 **accept가 baseline보다 많으면서(52→56) 자동 스캔
+플래그는 21→0**이 됐다. Stage A 파이프라인 신뢰성 작업은 여기서 일단락.
 
 ## 다음 작업
 

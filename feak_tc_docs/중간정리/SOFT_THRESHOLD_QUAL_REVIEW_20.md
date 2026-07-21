@@ -1,7 +1,7 @@
 # 중간정리 — soft threshold 후보 직접 질적 검토
 
-> 작성일: 2026-07-13  
-> 기준 로그: `experiments/results/mvp_stage_a_20_v3.jsonl`  
+> 작성일: 2026-07-13
+> 기준 로그: `experiments/results/mvp_stage_a_20_v3.jsonl`
 > 검토 대상: `target_gain_min=0.3`, `non_target_drop_max=1.0`에서 accept된 7개 후보 + 0.3 근처 near-miss 후보
 
 ## 1. 결론 요약
@@ -18,7 +18,7 @@
 2. **반대로 안전한 작은 수정은 0.3 아래에서 막혔다.**
    - 띄어쓰기 수정처럼 실제로 좋은 style fix는 `target_gain=0.244`라 reject된다.
 
-따라서 현재 상태에서는 threshold만 정하면 안 된다.  
+따라서 현재 상태에서는 threshold만 정하면 안 된다.
 먼저 patch validity와 factuality guard를 강화한 뒤 threshold를 다시 봐야 한다.
 
 ## 2. target_gain_min = 0.3 accept 후보 7개 검토
@@ -58,7 +58,7 @@ reject: train_59, train_70, train_85
 | train_99 | ADD_DETAIL | 0.234 | 보류 | 히잡 설명을 조금 명확히 하지만, 마지막 문장 반복 같은 더 큰 문제는 그대로 남는다. |
 | train_117 | ADD_DETAIL | 0.290 | 보류 | “많은 사람들이 고통받았다”는 너무 일반적이다. 원문에 이미 삼각무역 설명이 있어 정보 추가 효과가 약하다. |
 
-near-miss 중에는 오히려 `train_91`처럼 명확하게 좋은 작은 수정이 있다.  
+near-miss 중에는 오히려 `train_91`처럼 명확하게 좋은 작은 수정이 있다.
 따라서 단일 `target_gain_min`만으로 모든 action을 처리하면 style fix가 과도하게 불리해진다.
 
 ## 5. 발견된 구조적 문제
@@ -183,4 +183,3 @@ DELETE_OR_FOCUS: 삭제 후 문맥 보존 guard 필수
 4. 같은 v3 로그로 다시 virtual sweep
 5. 그 다음 50건 확장
 ```
-
