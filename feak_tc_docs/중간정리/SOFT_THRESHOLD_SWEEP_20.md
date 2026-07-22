@@ -134,11 +134,8 @@ non_target_drop_max = 1.0 유지
 잘못된 patch와 근거 없는 detail 추가가 통과했다. 따라서 threshold 확정보다 먼저
 patch validity와 factuality guard를 강화해야 한다.
 
-관련 문서:
-
-```text
-feak_tc_docs/중간정리/SOFT_THRESHOLD_QUAL_REVIEW_20.md
-```
+관련 문서: SOFT_THRESHOLD_QUAL_REVIEW_20.md (정리됨 — git 이력에서 확인 가능).
+여기서 제기된 validity/factuality guard는 이후 `feak_tc/mvp/validity.py`로 구현 완료.
 
 ## 9. 다음 해야 할 일
 
