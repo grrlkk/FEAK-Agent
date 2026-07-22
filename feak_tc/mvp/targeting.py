@@ -15,6 +15,19 @@ TARGETING_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "targe
 _DEFAULT_CONNECTORS = ("그리고", "그러나", "따라서", "또한", "즉", "그래서", "반면", "하지만", "그러므로")
 _DEFAULT_EXAMPLE_MARKERS = ("예를 들어", "예컨대", "가령", "사례", "예시", "구체적으로")
 _DEFAULT_STYLE_RED_FLAGS = ("  ", ",,", "??", "!!", "것이다 것이다")
+_DEFAULT_DEFINITION_MARKERS = (
+    "의미한다",
+    "의미하는",
+    "뜻한다",
+    "뜻하는",
+    "말한다",
+    "가리킨다",
+    "정의",
+    "개념이",
+    "개념으로",
+)
+_DEFAULT_DEFINITION_PENALTY = 4.0
+_DEFAULT_DEFINITION_MIN_REPEATS = 2
 _DEFAULT_STOPWORDS = (
     "다음",
     "대해",
@@ -82,6 +95,7 @@ def rank_target_spans(
     action = action_type or _RUBRIC_TO_DEFAULT_ACTION.get(target_rubric, "ADD_DETAIL")
     cfg = _targeting_config()
     context = _targeting_context(text, question, cfg)
+    context["protected_indices"] = _protected_definition_indices(sentences, question, cfg)
     scored = [
         {
             "span": sentence,
@@ -128,6 +142,9 @@ def _score_sentence(
         score += 2.0 if style_hits or repetition_hits else 0.3
         score += 0.5 if word_count >= 10 else 0.0
 
+    if action_type == "DELETE_OR_FOCUS" and index in context.get("protected_indices", set()):
+        score -= float(context.get("definition_penalty", _DEFAULT_DEFINITION_PENALTY))
+
     if target_rubric in {"task_1", "content_1", "content_2"}:
         score += 0.8 * topic_overlap
         score += 0.5 if example_hits == 0 else -0.2
@@ -139,6 +156,74 @@ def _score_sentence(
         score += 1.0 if style_hits else 0.0
 
     return score
+
+
+def is_protected_deletion_span(text: str, span: str, question: Optional[str] = None) -> bool:
+    """Check whether a deletion span overlaps a core-term definition sentence.
+
+    Used to reject DELETE_OR_FOCUS candidates that would remove the sentence
+    defining a term central to the question or the essay itself.
+    """
+
+    span = span.strip()
+    if not span:
+        return False
+    sentences = split_sentences(text)
+    protected = _protected_definition_indices(sentences, question, _targeting_config())
+    return any(sentences[idx] in span or span in sentences[idx] for idx in protected)
+
+
+def _protected_definition_indices(
+    sentences: list[str],
+    question: Optional[str],
+    cfg: Mapping[str, Any],
+) -> set[int]:
+    """Indices of sentences that define a core term of the question or essay.
+
+    A sentence is protected when it introduces a term with the Korean
+    definition pattern "X(이)란 …" or a definition marker, and that term is a
+    core term: it appears in the question, or recurs across enough other
+    sentences of the essay.
+    """
+
+    markers = cfg.get("definition_markers", _DEFAULT_DEFINITION_MARKERS)
+    min_repeats = int(cfg.get("definition_min_repeats", _DEFAULT_DEFINITION_MIN_REPEATS))
+    question_text = question or ""
+    protected: set[int] = set()
+    for idx, sentence in enumerate(sentences):
+        heads = _definition_heads(sentence, markers)
+        if not heads:
+            continue
+        for head in heads:
+            if question_text and head in question_text:
+                protected.add(idx)
+                break
+            other_hits = sum(1 for j, other in enumerate(sentences) if j != idx and head in other)
+            if other_hits >= min_repeats:
+                protected.add(idx)
+                break
+    return protected
+
+
+def _definition_heads(sentence: str, markers: tuple[str, ...]) -> list[str]:
+    """Terms this sentence defines via "X(이)란" or "X는 …<definition marker>"."""
+
+    heads: list[str] = []
+    tokens = tokenize(sentence)
+    for token in tokens:
+        for suffix in ("이란", "란"):
+            stem = token[: -len(suffix)] if token.endswith(suffix) else ""
+            if len(stem) >= 2:
+                heads.append(stem)
+                break
+    if not heads and any(marker in sentence for marker in markers):
+        for token in tokens:
+            for suffix in ("이라는", "라는", "은", "는"):
+                stem = token[: -len(suffix)] if token.endswith(suffix) else ""
+                if len(stem) >= 2:
+                    heads.append(stem)
+                    break
+    return heads
 
 
 def _count_markers(text: str, markers: tuple[str, ...]) -> int:
@@ -158,6 +243,7 @@ def _targeting_context(text: str, question: Optional[str], cfg: Mapping[str, tup
         "connectors": cfg["connectors"],
         "example_markers": cfg["example_markers"],
         "style_red_flags": cfg["style_red_flags"],
+        "definition_penalty": cfg["definition_penalty"],
         "topic_terms": _topic_terms(text, question, set(cfg["stopwords"])),
     }
 
@@ -211,7 +297,20 @@ def _targeting_config() -> dict[str, tuple[str, ...]]:
         "example_markers": _tuple_config(payload, "example_markers", _DEFAULT_EXAMPLE_MARKERS),
         "style_red_flags": _tuple_config(payload, "style_red_flags", _DEFAULT_STYLE_RED_FLAGS),
         "stopwords": _tuple_config(payload, "stopwords", _DEFAULT_STOPWORDS),
+        "definition_markers": _tuple_config(payload, "definition_markers", _DEFAULT_DEFINITION_MARKERS),
+        "definition_penalty": _float_config(payload, "definition_penalty", _DEFAULT_DEFINITION_PENALTY),
+        "definition_min_repeats": _float_config(
+            payload, "definition_min_repeats", _DEFAULT_DEFINITION_MIN_REPEATS
+        ),
     }
+
+
+def _float_config(payload: Mapping[str, Any], key: str, default: float) -> float:
+    value = payload.get(key)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _tuple_config(payload: Mapping[str, Any], key: str, default: tuple[str, ...]) -> tuple[str, ...]:

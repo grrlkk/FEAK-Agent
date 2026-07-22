@@ -10,7 +10,7 @@ from feak_tc.diagnose.constants import ACTION_TYPES, RUBRIC_KEYS, RUBRIC_NAMES_K
 
 from .llm import LLMResponseError, LLMUnavailable, request_json
 from .schemas import Candidate
-from .targeting import rank_target_spans, select_target_span
+from .targeting import is_protected_deletion_span, rank_target_spans, select_target_span
 
 
 _ACTION_INSTRUCTIONS = {
@@ -167,6 +167,8 @@ def _build_llm_prompt(diag: Diagnosis, n_per_action: int) -> str:
             "- target_span must be an exact contiguous substring from the essay.",
             "- instruction must be local and reversible; do not request a full rewrite.",
             "- Prefer weak rubrics and the related diagnostic features.",
+            "- For DELETE_OR_FOCUS, never target a sentence that defines a key term "
+            "of the question or essay (e.g. \"X란 …이다\"); such candidates are rejected.",
             "- Follow the Korean action definition for each action_type.",
             "",
             "[Action definitions]",
@@ -225,6 +227,13 @@ def _parse_candidate_payload(
                     action_type=action_type,
                     question=_diagnosis_question(diag),
                 )
+            if action_type == "DELETE_OR_FOCUS" and is_protected_deletion_span(
+                diag.text, target_span, question=_diagnosis_question(diag)
+            ):
+                # Deleting the sentence that defines a core term loses content
+                # even when the patch itself is clean; the deterministic fill
+                # below supplies a safe DELETE_OR_FOCUS slate entry instead.
+                continue
             cand = Candidate(
                 action_type=action_type,
                 target_rubric=target_rubric,

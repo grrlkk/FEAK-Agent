@@ -14,7 +14,7 @@ from feak_tc.mvp.patch import apply_patch
 from feak_tc.mvp.propose import propose
 from feak_tc.mvp.schemas import Candidate, Transition
 from feak_tc.mvp.surface import normalize_surface_text
-from feak_tc.mvp.targeting import select_target_span
+from feak_tc.mvp.targeting import is_protected_deletion_span, rank_target_spans, select_target_span
 from feak_tc.mvp.transition import compute_transition, edit_ratio, source_token_retention
 from feak_tc.mvp import serializable_one_step
 
@@ -464,6 +464,66 @@ def test_targeter_uses_question_overlap_without_topic_markers():
     target = select_target_span(text, "content_2", action_type="ADD_DETAIL", question=question)
 
     assert target == "도시의 쓰레기 문제는 주민의 생활 환경을 악화시킨다."
+
+
+_DEFINITION_ESSAY = (
+    "인권이란 보편적이고 절대적인 인간의 권리를 의미하는 개념이라고 할 수 있다. "
+    "존엄성을 가진 인간이라면 누구나 인권을 가지고 있다. "
+    "이런 인권에는 생명권과 자유권이 있다. "
+    "요즘 날씨가 좋아서 산책을 자주 다닌다."
+)
+_DEFINITION_SENTENCE = "인권이란 보편적이고 절대적인 인간의 권리를 의미하는 개념이라고 할 수 있다."
+
+
+def test_protected_deletion_span_detects_core_term_definition():
+    assert is_protected_deletion_span(_DEFINITION_ESSAY, _DEFINITION_SENTENCE)
+    assert not is_protected_deletion_span(_DEFINITION_ESSAY, "요즘 날씨가 좋아서 산책을 자주 다닌다.")
+
+
+def test_protected_deletion_span_uses_question_terms():
+    text = "생명권이란 생존에 관한 권리이다. 국가는 이를 보장해야 한다."
+    question = "생명권의 의미를 서술하세요."
+
+    assert is_protected_deletion_span(text, "생명권이란 생존에 관한 권리이다.", question=question)
+
+
+def test_dof_targeting_ranks_core_term_definition_last():
+    ranked = rank_target_spans(_DEFINITION_ESSAY, "content_3", action_type="DELETE_OR_FOCUS", limit=4)
+
+    assert ranked[0]["span"] != _DEFINITION_SENTENCE
+    assert ranked[-1]["span"] == _DEFINITION_SENTENCE
+    assert float(ranked[-1]["score"]) < 0
+
+
+def test_llm_dof_candidate_on_definition_sentence_is_replaced(monkeypatch):
+    diag = StubDiagnoser().diagnose(_DEFINITION_ESSAY)
+
+    def fake_request_json(**kwargs):
+        return {
+            "candidates": [
+                {
+                    "action_type": "DELETE_OR_FOCUS",
+                    "target_rubric": "content_3",
+                    "target_span": _DEFINITION_SENTENCE,
+                    "instruction": "주제와 직접 관련이 약한 문장을 삭제한다.",
+                },
+                {
+                    "action_type": "ADD_DETAIL",
+                    "target_rubric": "content_2",
+                    "target_span": "이런 인권에는 생명권과 자유권이 있다.",
+                    "instruction": "자유권의 구체적 사례를 한 문장 덧붙인다.",
+                },
+            ]
+        }
+
+    monkeypatch.setattr("feak_tc.mvp.propose.request_json", fake_request_json)
+
+    candidates = propose(diag, cfg={"proposer": {"mode": "llm"}})
+
+    dof = [cand for cand in candidates if cand.action_type == "DELETE_OR_FOCUS"]
+    assert len(dof) == 1
+    assert dof[0].metadata["source"] == "deterministic_fill"
+    assert dof[0].target_span != _DEFINITION_SENTENCE
 
 
 def test_deterministic_add_detail_uses_small_topic_specific_insert():

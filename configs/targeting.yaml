@@ -21,6 +21,21 @@ style_red_flags:
   - "??"
   - "!!"
   - "것이다 것이다"
+# Sentences that define a core term (question keyword or a term recurring in
+# definition_min_repeats+ other sentences) are penalized as DELETE_OR_FOCUS
+# targets and rejected when the LLM proposer picks them for deletion.
+definition_markers:
+  - 의미한다
+  - 의미하는
+  - 뜻한다
+  - 뜻하는
+  - 말한다
+  - 가리킨다
+  - 정의
+  - 개념이
+  - 개념으로
+definition_penalty: 4.0
+definition_min_repeats: 2
 stopwords:
   - 다음
   - 대해
