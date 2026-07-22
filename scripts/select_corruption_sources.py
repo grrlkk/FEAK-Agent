@@ -5,11 +5,17 @@ feak_tc_docs/중간정리/CORRUPTION_GEN_DECISIONS_2026-07-22.md:
 top ~25% by two-grader average, question-stratified, length-filtered,
 with a held-out evaluation pool split off before any generation.
 
+The kanana scorer was trained on train.jsonl, so pilot/main pools come
+from train.jsonl (in-distribution for the scorer; per-step discard
+checks guard measurement validity) while the held-out evaluation pool
+comes from test.jsonl — essays the scorer never saw — so the TVM
+generalization claim stays clean.
+
 Outputs (data/corruption/, gitignored — rerun with the fixed seed to
 reproduce):
-  heldout_200.jsonl  essays reserved for TVM evaluation, never corrupted
-  pilot_50.jsonl     pilot chain generation
-  main_1000.jsonl    main run pool
+  heldout_200.jsonl  scorer-unseen essays reserved for TVM evaluation
+  pilot_50.jsonl     pilot chain generation (train.jsonl)
+  main_1000.jsonl    main run pool (train.jsonl)
 """
 
 import json
@@ -23,12 +29,14 @@ from feak_tc.diagnose.stub import split_sentences
 
 SEED = 20260722
 TRAIN_PATH = Path("data/data_jsonl/train.jsonl")
+TEST_PATH = Path("data/data_jsonl/test.jsonl")
 STAGE_A_LOG = Path("experiments/results/mvp_stage_a_100_bge_m10.jsonl")
 OUT_DIR = Path("data/corruption")
 TOP_QUANTILE = 0.25
 MIN_SENTENCES = 6
 MIN_CHARS, MAX_CHARS = 300, 2500
-QUOTAS = {"heldout_200": 200, "pilot_50": 50, "main_1000": 1000}
+TRAIN_QUOTAS = {"pilot_50": 50, "main_1000": 1000}
+HELDOUT_QUOTA = 200
 
 
 def load_stage_a_ids() -> set[str]:
@@ -47,9 +55,9 @@ def _scores(value) -> list[float]:
     return [float(v) for v in scores]
 
 
-def load_candidates() -> list[dict]:
+def load_candidates(path: Path, id_prefix: str) -> list[dict]:
     rows, seen = [], set()
-    with TRAIN_PATH.open() as f:
+    with path.open() as f:
         for idx, line in enumerate(f):
             raw = json.loads(line)
             user = raw.get("user", "")
@@ -71,7 +79,7 @@ def load_candidates() -> list[dict]:
                 continue
             rows.append(
                 {
-                    "record_id": f"train_{idx}",
+                    "record_id": f"{id_prefix}_{idx}",
                     "question": question,
                     "text": essay,
                     "grader_avg": round((sum(g1) / len(g1) + sum(g2) / len(g2)) / 2, 3),
@@ -107,32 +115,41 @@ def stratified_draw(pool: list[dict], quota: int, rng: random.Random) -> list[di
     return drawn
 
 
+def write_pool(name: str, drawn: list[dict]) -> None:
+    path = OUT_DIR / f"{name}.jsonl"
+    with path.open("w") as f:
+        for row in drawn:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    questions = len({r["question"] for r in drawn})
+    avg = sum(r["grader_avg"] for r in drawn) / len(drawn)
+    print(f"{path}: {len(drawn)} essays, {questions} questions, grader_avg mean {avg:.2f}")
+
+
 def main() -> None:
     rng = random.Random(SEED)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Held-out evaluation pool: scorer-unseen essays from test.jsonl.
+    test_pool = top_quantile_per_question(load_candidates(TEST_PATH, "test"))
+    rng.shuffle(test_pool)
+    print(f"test top-{TOP_QUANTILE:.0%} pool: {len(test_pool)}")
+    write_pool("heldout_200", stratified_draw(test_pool, HELDOUT_QUOTA, rng))
+
+    # Pilot/main pools: train.jsonl (scorer in-distribution).
     stage_a = load_stage_a_ids()
-    candidates = load_candidates()
-    pool = top_quantile_per_question(candidates)
+    pool = top_quantile_per_question(load_candidates(TRAIN_PATH, "train"))
     overlap = {r["record_id"] for r in pool} & stage_a
     # Stage A essays feed data source ② (real LLM edit pairs); keeping them
     # out of every corruption pool avoids any train/eval entanglement later.
     pool = [r for r in pool if r["record_id"] not in stage_a]
     rng.shuffle(pool)
-
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"train top-{TOP_QUANTILE:.0%} pool: {len(pool)} (Stage A overlap excluded: {len(overlap)})")
     remaining = pool
-    print(f"candidates after filters: {len(candidates)}")
-    print(f"top-{TOP_QUANTILE:.0%} pool: {len(pool)} (Stage A overlap excluded: {len(overlap)})")
-    for name, quota in QUOTAS.items():
+    for name, quota in TRAIN_QUOTAS.items():
         drawn = stratified_draw(remaining, quota, rng)
         drawn_ids = {r["record_id"] for r in drawn}
         remaining = [r for r in remaining if r["record_id"] not in drawn_ids]
-        path = OUT_DIR / f"{name}.jsonl"
-        with path.open("w") as f:
-            for row in drawn:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        questions = len({r["question"] for r in drawn})
-        avg = sum(r["grader_avg"] for r in drawn) / len(drawn)
-        print(f"{path}: {len(drawn)} essays, {questions} questions, grader_avg mean {avg:.2f}")
+        write_pool(name, drawn)
 
 
 if __name__ == "__main__":
