@@ -119,10 +119,21 @@
 ## 2.2 문제 정의 (MDP)
 ```text
 State   s_t : 원본 과제 + 원본 글 + 현재 글 + FEAK 관측 + accepted checkpoint 이력
-Action  a_t : ADD_DETAIL / DELETE_OR_FOCUS / COMPRESS / RESTRUCTURE / STYLE_REFINE / STOP
+Action  a_t : (action_type, target_span, instruction)
+              action_type ∈ { ADD_DETAIL / DELETE_OR_FOCUS / COMPRESS / RESTRUCTURE / STYLE_REFINE / STOP }
 Transition  : s_t --a_t--> s_{t+1}   (평가의 단위)
 Value       : V_θ(s_t, a_t, s_{t+1}) — 이 transition이 더 나은 상태로 가는가
 ```
+- action은 이산 타입이 아니라 **parameterized action** (type, target_span, instruction)이다.
+  같은 타입이라도 무엇을 어디에 실행했는지에 따라 transition 가치가 달라지며, 이것이
+  hard negative 학습("주제 무관 문장을 삽입한 ADD는 나쁜 ADD")이 성립하는 전제다.
+- **reward 함수는 명시하지 않는다** (reward 없는 MDP 정식화, MDP\R; Wirth et al., 2017).
+  글쓰기 품질은 수치 reward로 명세하기 어렵고, 채점기의 즉시 score gain은 채점 노이즈와
+  과수정 불일치(RQ1)를 포함하므로, transition 선호쌍으로 V_θ를 직접 학습한다
+  — preference-based RL(Christiano et al., 2017), BT reward model(Stiennon et al., 2020;
+  Ouyang et al., 2022), 확신도 기반 margin(Llama 2, Touvron et al., 2023; 우리는 확신도를
+  사람 라벨 대신 corruption 단계차로 획득), step 단위 가치 평가(Lightman et al., 2023)와
+  같은 계열이다.
 - action-generation policy를 직접 학습하지 않는다. 같은 state에서 후보를 펼치고 TVM argmax로 **state-conditioned action selection**을 유도한다: `π(a|s) = argmax_a V_θ(φ)`.
 
 ## 2.3 전체 루프
