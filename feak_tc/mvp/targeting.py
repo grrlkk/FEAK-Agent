@@ -22,8 +22,10 @@ _DEFAULT_DEFINITION_MARKERS = (
     "뜻하는",
     "말한다",
     "가리킨다",
-    "정의",
-    "개념이",
+    "정의한다",
+    "정의된다",
+    "개념이다",
+    "개념이라",
     "개념으로",
 )
 _DEFAULT_DEFINITION_PENALTY = 4.0
@@ -206,17 +208,27 @@ def _protected_definition_indices(
 
 
 def _definition_heads(sentence: str, markers: tuple[str, ...]) -> list[str]:
-    """Terms this sentence defines via "X(이)란" or "X는 …<definition marker>"."""
+    """Terms this sentence defines via "X(이)란" or "X는 …<definition marker>".
 
+    An "X(이)란" head alone is not enough: the sentence must also look like a
+    definition (marker or copular shape), so noun-internal "란" (수정란) and
+    idioms ("…이란 이유로/말은") do not count. The particle fallback
+    ("X는 …") requires a lexical marker: copular shape alone would match
+    nearly every declarative sentence, and "…라고 할 수 있다" alone marks
+    conclusions, not definitions.
+    """
+
+    has_marker = any(marker in sentence for marker in markers)
     heads: list[str] = []
     tokens = tokenize(sentence)
-    for token in tokens:
-        for suffix in ("이란", "란"):
-            stem = token[: -len(suffix)] if token.endswith(suffix) else ""
-            if len(stem) >= 2:
-                heads.append(stem)
-                break
-    if not heads and any(marker in sentence for marker in markers):
+    if has_marker or _has_copular_shape(sentence):
+        for token in tokens:
+            for suffix in ("이란", "란"):
+                stem = token[: -len(suffix)] if token.endswith(suffix) else ""
+                if len(stem) >= 2:
+                    heads.append(stem)
+                    break
+    if not heads and has_marker:
         for token in tokens:
             for suffix in ("이라는", "라는", "은", "는"):
                 stem = token[: -len(suffix)] if token.endswith(suffix) else ""
@@ -224,6 +236,13 @@ def _definition_heads(sentence: str, markers: tuple[str, ...]) -> list[str]:
                     heads.append(stem)
                     break
     return heads
+
+
+def _has_copular_shape(sentence: str) -> bool:
+    if "라고 할 수" in sentence or "라고 할수" in sentence:
+        return True
+    core = sentence.strip().rstrip(".!?。？！…\"'”’」』)").rstrip()
+    return core.endswith("이다")
 
 
 def _count_markers(text: str, markers: tuple[str, ...]) -> int:
