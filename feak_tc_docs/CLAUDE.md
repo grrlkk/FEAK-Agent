@@ -47,7 +47,10 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 
 - 사용자가 명시적으로 요청하지 않는 한 `main`에 직접 push하지 않는다.
 - 작업마다 topic branch를 만들고, 검증 후 해당 브랜치만 원격에 push한다.
-- `main` 반영은 GitHub Pull Request를 통해 진행하며, 최종 Merge는 사용자가 한다.
+- `main` 반영은 GitHub Pull Request를 통해 진행한다. PR 생성은 에이전트가 `gh pr create`로
+  직접 한다 (GitHub 웹 불필요). 최종 Merge는 사용자가 한다.
+- 커밋 author는 사용자 계정을 유지하고, 커밋 메시지·PR 본문에 Claude/Codex 언급이나
+  Co-Authored-By 트레일러를 넣지 않는다.
 - PR 병합이 확인된 뒤에만 로컬 `main`을 동기화하고 작업 브랜치를 정리한다.
 
 ## 사용자 환경
