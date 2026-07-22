@@ -24,9 +24,10 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
    (`중간정리/SCORER_NOISE_M_SWEEP.md`, `중간정리/SOFT_THRESHOLD_SWEEP_20.md`)
 3. [완료] span 고정 patcher, validity guard, BGE-M3 기반 의미 보존 검증
    (`중간정리/STAGE_A_BGE_100_RESULTS_2026-07-20.md`)
-4. **지금: proposer targeting 개선 후 corruption 데이터 생성**
-   (`docs/SPEC_CORRUPTION_TVM.md`)
-5. 그 다음: TVM 학습 → controller 통합 → 평가
+4. [완료] proposer targeting 개선 — DELETE_OR_FOCUS 핵심어 정의 문장 보호 가드,
+   in/out-of-sample 검증 (`중간정리/DOF_DEFINITION_GUARD_2026-07-22.md`)
+5. **지금: corruption 데이터 생성** (`docs/SPEC_CORRUPTION_TVM.md`)
+6. 그 다음: TVM 학습 → controller 통합 → 평가
 
 ## 절대 규칙 (No Feature Creep)
 
