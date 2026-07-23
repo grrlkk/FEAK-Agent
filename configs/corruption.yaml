@@ -12,3 +12,13 @@ validity:
   max_ratio_vs_source: 1.8
   insertion_min_chars: 10
   insertion_max_chars: 250
+# Edits per step. Pilot v1 (one sentence per step) moved rubric scores by
+# only ~+0.06 — below the m=10 rerun noise ceiling (0.225) — on both
+# scorer-seen and scorer-unseen essays, so single-sentence corruption is
+# too weak for essay-level scoring. v2 degrades several sentences per step.
+intensity:
+  drop_detail_spans: 2
+  insert_offtopic_count: 2
+  verbose_spans: 2
+  shuffle_moves: 2
+  flatten_spans: 4
