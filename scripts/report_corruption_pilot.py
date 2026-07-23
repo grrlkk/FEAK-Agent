@@ -22,9 +22,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from feak_tc.diagnose.constants import RUBRIC_KEYS
 
-# Just above the observed m=10 rerun noise ceiling (|diff| max 0.225 on the
-# 5-row sweep; see configs/heuristic_stage_a_soft.yaml target_gain_min note).
-DROP_THRESHOLD = 0.3
+# m=10 rerun noise ceiling (|diff| max 0.225 on the 5-row sweep; see
+# configs/heuristic_stage_a_soft.yaml target_gain_min note).
+#
+# Labeling policy (2026-07-23): preference labels come from chain
+# construction order (monotone degradation), NOT from proving a measured
+# drop. The scorer only vetoes steps where corruption backfired — the
+# overall score IMPROVED beyond rerun noise — since those would teach the
+# TVM inverted labels. Requiring a proven drop discarded 74-88% of steps
+# whose perturbations sit below scorer noise by design (hard pairs).
+NOISE_CEILING = 0.225
 
 
 def rubric_scores(row: dict) -> dict[str, float]:
@@ -64,11 +71,12 @@ def main() -> int:
             grader.append(float(chain["grader_avg"]))
     corr = _pearson(kanana_x0, grader) if len(kanana_x0) >= 3 else float("nan")
 
-    # --- per-step drop / discard -------------------------------------------
+    # --- per-step backfire veto ---------------------------------------------
     step_stats: dict[str, Counter] = defaultdict(Counter)
     step_drops: dict[str, list[float]] = defaultdict(list)
-    verbose_rubric_deltas: dict[str, list[float]] = defaultdict(list)
+    intended_drops: dict[str, list[float]] = defaultdict(list)
     valid_steps: dict[str, set[int]] = defaultdict(set)
+    overall = {}
     seconds = []
 
     for rid, chain in chains.items():
@@ -79,30 +87,43 @@ def main() -> int:
                 continue
             seconds.extend(r.get("seconds", 0) for r in (before, after))
             b, a = rubric_scores(before), rubric_scores(after)
+            overall[(rid, k)] = statistics.mean(b.values())
+            overall[(rid, k + 1)] = statistics.mean(a.values())
+            ov_drop = statistics.mean(b.values()) - statistics.mean(a.values())
+            backfired = ov_drop <= -NOISE_CEILING
+            ok = not backfired
             if step["operator"] == "VERBOSE_REPEAT":
-                # Empirical axis discovery + feature sanity (length must grow).
-                for key in RUBRIC_KEYS:
-                    verbose_rubric_deltas[key].append(b[key] - a[key])
-                grew = after["features"].get("word_Cnt", 0) > before["features"].get("word_Cnt", 0)
-                ok = grew
-                drop = max(b[key] - a[key] for key in RUBRIC_KEYS)
-            else:
-                drop = max(b[key] - a[key] for key in step["intended_rubrics"])
-                ok = drop >= DROP_THRESHOLD
-            step_drops[step["operator"]].append(drop)
+                # Bloat must at least grow the text or the operator failed.
+                ok = ok and after["features"].get("word_Cnt", 0) > before["features"].get("word_Cnt", 0)
+            step_drops[step["operator"]].append(ov_drop)
+            if step["intended_rubrics"]:
+                intended_drops[step["operator"]].append(
+                    max(b[key] - a[key] for key in step["intended_rubrics"])
+                )
             step_stats[step["operator"]]["kept" if ok else "discarded"] += 1
             if ok:
                 valid_steps[rid].add(k)
 
-    # --- pair extraction (all steps between i and j must be kept) ----------
+    # --- pair extraction: construction-order labels -------------------------
+    # A pair (i, j) is valid when no step between them backfired; the label is
+    # the construction order. The measured cumulative drop is recorded as a
+    # per-pair confidence signal for margin/weighting at training time.
     pair_count, pairs_by_gap = 0, Counter()
+    confirmed = 0
+    cum_drops = []
     for rid, chain in chains.items():
         n = len(chain["states"])
         for i in range(n):
             for j in range(i + 1, n):
-                if all(k in valid_steps[rid] for k in range(i, j)):
-                    pair_count += 1
-                    pairs_by_gap[j - i] += 1
+                if not all(k in valid_steps[rid] for k in range(i, j)):
+                    continue
+                pair_count += 1
+                pairs_by_gap[j - i] += 1
+                if (rid, i) in overall and (rid, j) in overall:
+                    gap = overall[(rid, i)] - overall[(rid, j)]
+                    cum_drops.append(gap)
+                    if gap >= NOISE_CEILING:
+                        confirmed += 1
 
     # --- report -------------------------------------------------------------
     statuses = Counter(c["status"] for c in chains.values())
@@ -113,19 +134,19 @@ def main() -> int:
     print(f"\nmemorization check (n={len(kanana_x0)}): "
           f"kanana x0 mean {statistics.mean(kanana_x0):.2f} (1-9) vs grader {statistics.mean(grader):.2f} (1-5), "
           f"pearson r={corr:.3f}")
-    print(f"\nper-operator (drop threshold {DROP_THRESHOLD} on intended rubrics):")
+    print(f"\nper-operator (backfire veto: overall improvement > {NOISE_CEILING}):")
     for op in sorted(step_stats):
         st, drops = step_stats[op], step_drops[op]
         total = st["kept"] + st["discarded"]
         rate = st["discarded"] / total if total else float("nan")
         mean_drop = statistics.mean(drops) if drops else float("nan")
+        mean_int = statistics.mean(intended_drops[op]) if intended_drops[op] else float("nan")
         print(f"  {op:16s} kept {st['kept']:3d} / discarded {st['discarded']:3d} "
-              f"(discard {rate:.0%}), mean max-drop {mean_drop:+.2f}")
-    if verbose_rubric_deltas:
-        top = sorted(verbose_rubric_deltas, key=lambda k: -statistics.mean(verbose_rubric_deltas[k]))[:3]
-        print("  VERBOSE_REPEAT empirical top-drop rubrics: "
-              + ", ".join(f"{k} {statistics.mean(verbose_rubric_deltas[k]):+.2f}" for k in top))
+              f"(discard {rate:.0%}), overall drop {mean_drop:+.2f}, intended {mean_int:+.2f}")
     print(f"\npreference pairs: {pair_count} (by stage gap: {dict(sorted(pairs_by_gap.items()))})")
+    if cum_drops:
+        print(f"  scorer-confirmed pairs (cum drop >= {NOISE_CEILING}): {confirmed}/{pair_count} "
+              f"({confirmed / pair_count:.0%}); mean cum drop {statistics.mean(cum_drops):+.3f}")
 
     if args.summary_out:
         summary = {
@@ -135,6 +156,7 @@ def main() -> int:
             "per_operator": {op: dict(st) for op, st in step_stats.items()},
             "pairs": pair_count,
             "pairs_by_gap": dict(pairs_by_gap),
+            "scorer_confirmed_pairs": confirmed,
         }
         Path(args.summary_out).write_text(json.dumps(summary, ensure_ascii=False, indent=2))
         print(f"summary -> {args.summary_out}")
