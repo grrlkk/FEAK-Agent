@@ -1,0 +1,14 @@
+# Corruption chain generation (see 중간정리/CORRUPTION_GEN_DECISIONS_2026-07-22.md)
+seed: 20260722
+depth: 3
+llm:
+  model: gpt-4o-mini
+  temperature: 0.5
+  timeout: 60
+  max_attempts: 3
+validity:
+  # State length bounds relative to the source essay x0.
+  min_ratio_vs_source: 0.6
+  max_ratio_vs_source: 1.8
+  insertion_min_chars: 10
+  insertion_max_chars: 250
