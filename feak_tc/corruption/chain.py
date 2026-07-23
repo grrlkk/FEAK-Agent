@@ -7,7 +7,7 @@ from typing import Any, Mapping, Optional
 
 from feak_tc.mvp.llm import LLMResponseError, LLMUnavailable, request_json
 
-from .operators import OPERATOR_SPECS, build_prompt, parse_and_apply
+from .operators import DEFAULT_INTENSITY, OPERATOR_SPECS, build_prompt, parse_and_apply
 
 _SYSTEM_PROMPT = (
     "You degrade Korean essays in controlled ways to build research training data. "
@@ -31,6 +31,7 @@ def generate_chain(
     depth = int(cfg.get("depth", 3))
     llm_cfg = dict(cfg.get("llm", {}))
     validity_cfg = dict(cfg.get("validity", {}))
+    intensity = {**DEFAULT_INTENSITY, **dict(cfg.get("intensity", {}))}
     operators = rng.sample(sorted(OPERATOR_SPECS), min(depth, len(OPERATOR_SPECS)))
 
     source_text = " ".join(str(record["text"]).split())
@@ -40,7 +41,9 @@ def generate_chain(
 
     failure: Optional[list[str]] = None
     for operator in operators:
-        step, errors = _generate_step(operator, states[-1], source_text, question, llm_cfg, validity_cfg)
+        step, errors = _generate_step(
+            operator, states[-1], source_text, question, llm_cfg, validity_cfg, intensity
+        )
         if step is None:
             failure = errors
             break
@@ -67,6 +70,7 @@ def _generate_step(
     question: str,
     llm_cfg: Mapping[str, Any],
     validity_cfg: Mapping[str, Any],
+    intensity: Mapping[str, Any],
 ) -> tuple[Optional[dict[str, Any]], list[str]]:
     max_attempts = int(llm_cfg.get("max_attempts", 3))
     errors: list[str] = []
@@ -74,12 +78,12 @@ def _generate_step(
         try:
             payload = request_json(
                 system=_SYSTEM_PROMPT,
-                user=build_prompt(operator, text, question),
+                user=build_prompt(operator, text, question, intensity),
                 model=str(llm_cfg.get("model", "gpt-4o-mini")),
                 temperature=float(llm_cfg.get("temperature", 0.5)),
                 timeout=float(llm_cfg["timeout"]) if llm_cfg.get("timeout") is not None else None,
             )
-            new_text, edits = parse_and_apply(operator, payload, text, source_text, validity_cfg)
+            new_text, edits = parse_and_apply(operator, payload, text, source_text, validity_cfg, intensity)
         except (LLMUnavailable, LLMResponseError, ValueError, RuntimeError) as exc:
             errors.append(f"{operator} attempt{attempt}: {exc}")
             continue
