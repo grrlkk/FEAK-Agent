@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from dotenv import load_dotenv
 
@@ -27,11 +27,20 @@ def request_json(
     system: str,
     user: str,
     model: str = "gpt-4o-mini",
-    temperature: float = 0.2,
+    temperature: Optional[float] = 0.2,
+    reasoning_effort: Optional[str] = None,
+    verbosity: Optional[str] = None,
+    json_schema: Optional[Mapping[str, Any]] = None,
+    response_format_name: str = "json_response",
     env_file: Optional[str] = None,
     timeout: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Call an OpenAI-compatible chat model and parse a JSON object response."""
+    """Call an OpenAI model and parse a JSON object response.
+
+    Existing GPT-4o callers keep the Chat Completions path. GPT-5 callers use
+    the Responses API so reasoning effort, verbosity, and strict JSON Schema
+    can be configured without changing the MVP proposer/patcher behavior.
+    """
 
     _load_env(env_file)
     api_key = os.getenv("OPENAI_API_KEY")
@@ -52,18 +61,44 @@ def request_json(
 
     client = OpenAI(**client_kwargs)
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=temperature,
-            response_format={"type": "json_object"},
-        )
+        if _use_responses_api(model, reasoning_effort, verbosity, json_schema):
+            text: dict[str, Any] = {
+                "format": (
+                    {
+                        "type": "json_schema",
+                        "name": response_format_name,
+                        "schema": dict(json_schema),
+                        "strict": True,
+                    }
+                    if json_schema is not None
+                    else {"type": "json_object"}
+                )
+            }
+            if verbosity is not None:
+                text["verbosity"] = verbosity
+            response_kwargs: dict[str, Any] = {
+                "model": model,
+                "instructions": system,
+                "input": user,
+                "text": text,
+            }
+            if reasoning_effort is not None:
+                response_kwargs["reasoning"] = {"effort": reasoning_effort}
+            response = client.responses.create(**response_kwargs)
+            content = response.output_text
+        else:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=temperature,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content
     except OpenAIError as exc:
         raise LLMUnavailable(f"OpenAI request failed: {exc}") from exc
-    content = response.choices[0].message.content
     if not content:
         raise LLMResponseError("LLM returned an empty response.")
     try:
@@ -73,6 +108,20 @@ def request_json(
     if not isinstance(parsed, dict):
         raise LLMResponseError("LLM JSON response must be an object.")
     return parsed
+
+
+def _use_responses_api(
+    model: str,
+    reasoning_effort: Optional[str],
+    verbosity: Optional[str],
+    json_schema: Optional[Mapping[str, Any]],
+) -> bool:
+    return (
+        model.startswith("gpt-5")
+        or reasoning_effort is not None
+        or verbosity is not None
+        or json_schema is not None
+    )
 
 
 def _load_env(env_file: Optional[str]) -> None:

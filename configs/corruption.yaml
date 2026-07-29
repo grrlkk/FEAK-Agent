@@ -1,24 +1,112 @@
-# Corruption chain generation (see 중간정리/CORRUPTION_GEN_DECISIONS_2026-07-22.md)
+# FEAK-TC v2 G1 corruption configuration.
+#
+# Corruption is action-grounded and rubric-conditioned. Feature values are
+# never generation targets; the 29 features are recorded only after diagnosis
+# for audit. Every operator prompt is expressed as a concrete textual edit plus
+# preservation constraints, never as "lower rubric X".
 seed: 20260722
+schema: configs/schema.yaml
 depth: 3
+
 llm:
-  model: gpt-4o-mini
-  temperature: 0.5
+  model: gpt-5-mini-2025-08-07
+  reasoning:
+    effort: minimal
+  text:
+    verbosity: low
   timeout: 60
   max_attempts: 3
+  # Invalid LLM edit payloads fall back to the same operator's deterministic
+  # rule implementation. The requested and applied generators are both logged.
+  fallback_to_rule: true
+  prompt_variants:
+    - conservative
+    - student_natural
+
+normalization:
+  enabled: true
+  model: gpt-5-mini-2025-08-07
+  reasoning:
+    effort: minimal
+  text:
+    verbosity: low
+  timeout: 60
+  max_attempts: 3
+  # If every otherwise-valid normalization repairs the injected defect, keep
+  # the already-validated raw corruption instead of accepting the repair.
+  fallback_to_input_on_postcondition_failure: true
+  min_similarity: 0.75
+  min_length_ratio: 0.8
+  max_length_ratio: 1.2
+
+generation:
+  # Operators use rule plus two prompt variants unless an operator-level
+  # generation_modes override is declared (grammar is rule-only in G1).
+  modes:
+    - rule
+    - llm:conservative
+    - llm:student_natural
+
 validity:
-  # State length bounds relative to the source essay x0.
   min_ratio_vs_source: 0.6
   max_ratio_vs_source: 1.8
   insertion_min_chars: 10
   insertion_max_chars: 250
-# Edits per step. Pilot v1 (one sentence per step) moved rubric scores by
-# only ~+0.06 — below the m=10 rerun noise ceiling (0.225) — on both
-# scorer-seen and scorer-unseen essays, so single-sentence corruption is
-# too weak for essay-level scoring. v2 degrades several sentences per step.
-intensity:
-  drop_detail_spans: 2
-  insert_offtopic_count: 2
-  verbose_spans: 2
-  shuffle_moves: 2
-  flatten_spans: 4
+  grammar_min_token_retention: 0.6
+
+measurement:
+  score_basis: rf_corrected
+  # A step is accepted only when before[target] - after[target] is strictly
+  # greater than this value. Features are recorded but never gate acceptance.
+  target_drop_min: 0.3
+
+operators:
+  DELETE_SPECIFICS:
+    reverse_action: ADD_DETAIL
+    intent: ADD_SUPPORTING_EXPLANATION
+    target_rubric: content_2
+    preserve_constraints:
+      - 문장 문법을 바꾸지 않는다.
+      - 글의 전체 논지와 남은 문장은 바꾸지 않는다.
+    edits_per_step: 2
+
+  SHUFFLE_FLOW:
+    reverse_action: RESTRUCTURE
+    intent: RESTORE_LOGICAL_ORDER
+    target_rubric: organization_1
+    preserve_constraints:
+      - 문장의 내용과 문법을 바꾸지 않는다.
+      - 문장 자체는 그대로 두고 위치만 이동한다.
+    edits_per_step: 2
+
+  INSERT_OFFTOPIC:
+    reverse_action: DELETE_OR_FOCUS
+    intent: REMOVE_REDUNDANCY
+    target_rubric: organization_2
+    preserve_constraints:
+      - 기존 문장과 기존 문법을 바꾸지 않는다.
+      - 원래 글의 사실과 주장을 수정하지 않는다.
+    edits_per_step: 2
+
+  INJECT_LEX_REPEAT:
+    reverse_action: STYLE_REFINE
+    intent: REFINE_FORMAL_STYLE
+    target_rubric: expression_1
+    preserve_constraints:
+      - 핵심 주장과 사실을 바꾸지 않는다.
+      - 기존 문장은 그대로 보존하고 어휘 반복 표현만 추가한다.
+    edits_per_step: 2
+
+  INJECT_GRAMMAR_ERR:
+    reverse_action: STYLE_REFINE
+    intent: REFINE_FORMAL_STYLE
+    target_rubric: expression_2
+    preserve_constraints:
+      - 내용과 어휘 선택을 바꾸지 않는다.
+      - 문장 순서와 핵심 사실을 바꾸지 않는다.
+      - 어법·조사·맞춤법 오류만 주입한다.
+    # LLM generation and normalization repaired too many grammar errors in the
+    # first G1 audit. Use three explicit, locally verifiable rule interventions.
+    generation_modes:
+      - rule
+    edits_per_step: 3
