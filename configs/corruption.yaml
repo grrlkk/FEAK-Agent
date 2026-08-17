@@ -24,7 +24,10 @@ llm:
     - student_natural
 
 normalization:
-  enabled: true
+  # Rule v4 edits are applied locally and validated against the untouched
+  # source. An LLM whole-text normalization adds latency and can erase the
+  # intended defect, so every state now uses the same identity pass.
+  enabled: false
   model: gpt-5-mini-2025-08-07
   reasoning:
     effort: minimal
@@ -54,12 +57,44 @@ validity:
   insertion_min_chars: 10
   insertion_max_chars: 250
   grammar_min_token_retention: 0.6
+  # Reject DELETE_SPECIFICS spans that also remove obvious repetition. This
+  # prevents a content corruption from silently improving readability.
+  delete_repeated_ngram_size: 5
+  delete_repeated_ngram_occurrences: 2
+  delete_cross_text_ngram_size: 8
 
 measurement:
   score_basis: rf_corrected
-  # A step is accepted only when before[target] - after[target] is strictly
-  # greater than this value. Features are recorded but never gate acceptance.
-  target_drop_min: 0.3
+  # Strictly exceed the measured m=10 rerun-noise ceiling. LEX_REPEAT has a
+  # stronger scorer response, so its calibrated floor prevents it from
+  # dominating the accepted pool while retaining the largest balanced set.
+  target_drop_min: 0.225
+  target_drop_min_by_operator:
+    INJECT_LEX_REPEAT: 0.4
+  target_drop_sensitivity: [0.3, 0.4, 0.5, 0.6]
+  delete_confound_guard:
+    enabled: true
+    nn_rep_ratio_reduction_min: 0.01
+    lemma_mattr_gain_min: 0.02
+    max_non_target_rubric_gain: 0.3
+
+artifact_audit:
+  enabled: true
+  # Count recurring patterns across distinct source essays, inspecting only
+  # generated insert/replace spans rather than naturally repeated source text.
+  min_distinct_essays: 3
+  max_distinct_essay_fraction: 0.02
+  word_ngram_sizes: [5, 6, 7, 8]
+  char_ngram_size: 20
+  report_limit: 50
+  fail_pipeline: true
+
+balance:
+  enabled: true
+  max_operator_fraction: 0.4
+  # The pilot reports imbalance instead of deleting valid raw transitions.
+  # STEP4 uses the measured v4 acceptance rates for adaptive generation.
+  fail_pipeline: false
 
 operators:
   DELETE_SPECIFICS:
@@ -69,6 +104,7 @@ operators:
     preserve_constraints:
       - 문장 문법을 바꾸지 않는다.
       - 글의 전체 논지와 남은 문장은 바꾸지 않는다.
+    generation_modes: [rule]
     edits_per_step: 2
 
   SHUFFLE_FLOW:
@@ -78,9 +114,11 @@ operators:
     preserve_constraints:
       - 문장의 내용과 문법을 바꾸지 않는다.
       - 문장 자체는 그대로 두고 위치만 이동한다.
-    # One discourse-dependent move is stronger and easier to verify than two
-    # arbitrary moves that may leave the perceived flow unchanged.
-    edits_per_step: 1
+    generation_modes: [rule]
+    # The v4 full-shuffle ceiling lowered organization_1 by a median 0.685.
+    # Two discourse-dependent moves bridge the gap from the ineffective
+    # single-move v3 operator without replacing the whole sentence order.
+    edits_per_step: 2
 
   INSERT_OFFTOPIC:
     reverse_action: DELETE_OR_FOCUS
@@ -89,6 +127,10 @@ operators:
     preserve_constraints:
       - 기존 문장과 기존 문법을 바꾸지 않는다.
       - 원래 글의 사실과 주장을 수정하지 않는다.
+    generation_modes:
+      - llm:conservative
+      - llm:student_natural
+    fallback_to_rule: false
     edits_per_step: 2
 
   INJECT_LEX_REPEAT:
@@ -98,6 +140,10 @@ operators:
     preserve_constraints:
       - 핵심 주장과 사실을 바꾸지 않는다.
       - 기존 문장은 그대로 보존하고 어휘 반복 표현만 추가한다.
+    generation_modes:
+      - llm:conservative
+      - llm:student_natural
+    fallback_to_rule: false
     edits_per_step: 2
 
 surface_validation:

@@ -13,6 +13,12 @@ def main() -> int:
     parser.add_argument("--source", required=True)
     parser.add_argument("--shards", required=True, nargs="+")
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--status",
+        action="append",
+        choices=("ok", "partial", "failed"),
+        help="Keep only selected chain statuses; may be repeated.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -29,6 +35,9 @@ def main() -> int:
     for shard in args.shards:
         with open(shard, encoding="utf-8") as file:
             rows.extend(json.loads(line) for line in file if line.strip())
+    if args.status:
+        selected = set(args.status)
+        rows = [row for row in rows if str(row.get("status")) in selected]
     record_ids = [str(row["record_id"]) for row in rows]
     if len(record_ids) != len(set(record_ids)):
         raise SystemExit("duplicate record_id across shards")

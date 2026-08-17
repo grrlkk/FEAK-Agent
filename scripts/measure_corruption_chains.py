@@ -88,10 +88,12 @@ def main() -> int:
                 out.flush()
                 measured += 1
                 print(f"[shard {args.shard}] {measured}/{total} "
-                      f"{chain['record_id']} x{state_index} ({row['seconds']}s)")
+                      f"{chain['record_id']} x{state_index} ({row['seconds']}s)",
+                      flush=True)
 
     print(f"shard {args.shard} done: {measured}/{total} states, "
-          f"{(time.time() - started) / 60:.1f} min")
+          f"{(time.time() - started) / 60:.1f} min",
+          flush=True)
     return 0
 
 

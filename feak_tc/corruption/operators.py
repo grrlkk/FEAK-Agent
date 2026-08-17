@@ -10,7 +10,8 @@ from __future__ import annotations
 import random
 import re
 from collections import Counter
-from itertools import combinations
+from difflib import SequenceMatcher
+from itertools import combinations, permutations
 from typing import Any, Mapping
 
 from feak_tc.diagnose.stub import split_sentences
@@ -24,6 +25,7 @@ MAIN_CHAIN_OPERATORS = (
     "INJECT_LEX_REPEAT",
 )
 SURFACE_VALIDATION_OPERATOR = "INJECT_GRAMMAR_ERR"
+LLM_ONLY_OPERATORS = ("INSERT_OFFTOPIC", "INJECT_LEX_REPEAT")
 
 OPERATOR_SPECS: dict[str, dict[str, Any]] = {
     "DELETE_SPECIFICS": {
@@ -121,14 +123,6 @@ _FLOW_DEPENDENCY_PREFIXES = (
     "비록",
     "이때",
 )
-_RULE_OFFTOPIC = (
-    "한편 어제 본 영화의 배경 음악은 오래 기억에 남았다.",
-    "요즘에는 날씨가 좋아서 산책하는 사람이 많아 보인다.",
-    "주말에 먹은 음식의 맛도 개인적으로 인상적이었다.",
-    "최근에 본 운동 경기는 예상보다 흥미롭게 진행되었다.",
-)
-
-
 def build_prompt(
     operator: str,
     text: str,
@@ -170,7 +164,8 @@ def build_prompt(
     elif operator == "INSERT_OFFTOPIC":
         task = (
             f"글의 주제·과제와 무관한 여담 문장 {n}개를 서로 다른 위치에 삽입한다. "
-            "기존 내용을 반박하거나 수정하지 말고 통일성만 낮춘다.\n"
+            "각 여담은 15~80자의 간결한 한 문장으로 쓰고, 기존 내용을 반박하거나 "
+            "수정하지 말고 통일성만 낮춘다.\n"
             '반환: {"edits": [{"anchor_span": "<이 문장 뒤에 삽입>", '
             '"insertion": "<주제와 무관한 완결 문장>"}, ...]}'
         )
@@ -178,6 +173,7 @@ def build_prompt(
         task = (
             f"서로 다른 기존 문장 {n}개를 anchor로 고르고, 각 문장 뒤에 같은 핵심 어휘를 "
             "부자연스럽게 세 번 이상 정확히 같은 표기로 반복하는 한 문장을 추가한다. "
+            "단어만 나열하지 말고 서술어와 종결어미를 포함한 15~60자의 완결문으로 쓴다. "
             "숫자를 새로 쓰지 않고 반드시 온점·물음표·느낌표로 끝내며 새 사실은 만들지 않는다.\n"
             '반환: {"edits": [{"anchor_span": "<기존 문장>", '
             '"repetition": "<어휘 반복이 심한 완결 문장>"}, ...]}'
@@ -271,16 +267,20 @@ def generate_rule_payload(
     text: str,
     spec: Mapping[str, Any],
     rng: random.Random,
+    source_text: str | None = None,
 ) -> dict[str, Any]:
     """Generate a deterministic corruption payload without feature targets."""
 
     sentences = split_sentences(text)
+    source_text = source_text or text
     n = int(spec.get("edits_per_step", 1))
     if len(sentences) < max(4, n + 2):
         raise ValueError(f"not enough sentences for {operator}: {len(sentences)}")
 
     if operator == "DELETE_SPECIFICS":
-        candidates = sentences[1:-1]
+        candidates = [
+            sentence for sentence in sentences[1:-1] if sentence in source_text
+        ]
         max_removed = 0.35 * len(text)
         viable = [
             spans
@@ -299,58 +299,38 @@ def generate_rule_payload(
         return {"target_spans": list(selected)}
 
     if operator == "SHUFFLE_FLOW":
-        candidates = [
-            sentence
-            for index, sentence in enumerate(sentences)
-            if index > 0 and _flow_dependency_markers(sentence)
-        ]
-        if len(candidates) < n:
-            raise ValueError(
-                f"not enough discourse-dependent sentences for SHUFFLE_FLOW: "
-                f"{len(candidates)} < {n}"
-            )
-        moved = candidates[:n]
-        anchors = []
-        for moved_span in moved:
-            moved_index = sentences.index(moved_span)
-            original_predecessor = sentences[moved_index - 1]
-            viable_anchors = [
+        candidates = sorted(
+            [
                 sentence
                 for index, sentence in enumerate(sentences)
-                if sentence not in moved
-                and sentence != original_predecessor
+                if index > 0
+                and sentences.count(sentence) == 1
+                and sentence in source_text
                 and is_complete_sentence(sentence)
-                and index != moved_index
-                and abs(index - moved_index) >= 2
-            ]
-            if not viable_anchors:
-                raise ValueError("no anchor can break the original discourse dependency")
-            anchors.append(viable_anchors[-1])
-        return {
-            "moves": [
-                {"moved_span": moved_span, "anchor_span": anchor}
-                for moved_span, anchor in zip(moved, anchors)
-            ]
-        }
+            ],
+            key=lambda sentence: (
+                bool(_flow_dependency_markers(sentence)),
+                -sentences.index(sentence),
+            ),
+            reverse=True,
+        )
+        if len(candidates) < n:
+            raise ValueError(
+                f"not enough movable sentences for SHUFFLE_FLOW: "
+                f"{len(candidates)} < {n}"
+            )
+        payload = _find_effective_shuffle_payload(
+            sentences,
+            candidates,
+            n,
+            source_text,
+        )
+        if payload is None:
+            raise ValueError("no move set can break two source-order dependencies")
+        return payload
 
-    if operator == "INSERT_OFFTOPIC":
-        anchors = _spread(sentences, n)
-        insertions = rng.sample(_RULE_OFFTOPIC, k=n)
-        return {
-            "edits": [
-                {"anchor_span": anchor, "insertion": insertion}
-                for anchor, insertion in zip(anchors, insertions)
-            ]
-        }
-
-    if operator == "INJECT_LEX_REPEAT":
-        anchors = _spread(sentences, n)
-        edits = []
-        for anchor in anchors:
-            term = _content_term(anchor)
-            repetition = f"{term}, {term}, {term}을 계속 중요하게 생각해야 한다."
-            edits.append({"anchor_span": anchor, "repetition": repetition})
-        return {"edits": edits}
+    if operator in LLM_ONLY_OPERATORS:
+        raise ValueError(f"{operator} is LLM-only in corruption rule v4")
 
     if operator == "INJECT_GRAMMAR_ERR":
         if n > len(_GRAMMAR_ERROR_TYPES):
@@ -407,8 +387,16 @@ def parse_and_apply(
         spans = payload.get("target_spans")
         _require_count(spans, expected)
         _require_distinct(spans)
-        for raw_span in spans:
-            span = _require_span({"target_span": raw_span}, "target_span", new_text)
+        normalized_spans = [
+            _require_span({"target_span": raw_span}, "target_span", new_text)
+            for raw_span in spans
+        ]
+        if any(span not in source_text for span in normalized_spans):
+            raise ValueError(
+                "DELETE_SPECIFICS confound: target must originate in the source text"
+            )
+        _require_clean_delete_spans(new_text, normalized_spans, validity_cfg)
+        for span in normalized_spans:
             new_text = _replace_once(new_text, span, "")
             edits.append({"operation": "delete", "target_span": span, "text": ""})
 
@@ -419,6 +407,8 @@ def parse_and_apply(
         for raw in moves:
             moved = _require_span(raw, "moved_span", new_text)
             anchor = _require_span(raw, "anchor_span", new_text)
+            _require_source_origin(moved, source_text, operator, "moved_span")
+            _require_source_origin(anchor, source_text, operator, "anchor_span")
             if moved == anchor or moved in anchor or anchor in moved:
                 raise ValueError("moved_span and anchor_span must be distinct")
             without = _replace_once(new_text, moved, "")
@@ -433,26 +423,56 @@ def parse_and_apply(
     elif operator == "INSERT_OFFTOPIC":
         raw_edits = payload.get("edits")
         _require_count(raw_edits, expected)
-        _require_distinct([raw.get("anchor_span", "") for raw in raw_edits])
+        used_anchors: set[str] = set()
         for raw in raw_edits:
-            anchor = _require_span(raw, "anchor_span", new_text)
+            requested_anchor = str(raw.get("anchor_span", "")).strip()
+            anchor, repaired = _resolve_source_anchor(
+                requested_anchor,
+                new_text,
+                source_text,
+                used_anchors,
+            )
+            used_anchors.add(anchor)
             insertion = str(raw.get("insertion", "")).strip()
             _require_insertion(insertion, text, validity_cfg)
             new_text = _replace_once(new_text, anchor, anchor + " " + insertion)
-            edits.append({"operation": "insert_after", "target_span": anchor, "text": insertion})
+            edit = {"operation": "insert_after", "target_span": anchor, "text": insertion}
+            if repaired:
+                edit.update(
+                    {
+                        "anchor_repaired": True,
+                        "requested_target_span": requested_anchor,
+                    }
+                )
+            edits.append(edit)
 
     elif operator == "INJECT_LEX_REPEAT":
         raw_edits = payload.get("edits")
         _require_count(raw_edits, expected)
-        _require_distinct([raw.get("anchor_span", "") for raw in raw_edits])
+        used_anchors = set()
         for raw in raw_edits:
-            anchor = _require_span(raw, "anchor_span", new_text)
+            requested_anchor = str(raw.get("anchor_span", "")).strip()
+            anchor, repaired = _resolve_source_anchor(
+                requested_anchor,
+                new_text,
+                source_text,
+                used_anchors,
+            )
+            used_anchors.add(anchor)
             repetition = str(raw.get("repetition", "")).strip()
             _require_insertion(repetition, text, validity_cfg)
             if _max_word_frequency(repetition) < 3:
                 raise ValueError("lexical repetition must repeat a word at least three times")
             new_text = _replace_once(new_text, anchor, anchor + " " + repetition)
-            edits.append({"operation": "insert_after", "target_span": anchor, "text": repetition})
+            edit = {"operation": "insert_after", "target_span": anchor, "text": repetition}
+            if repaired:
+                edit.update(
+                    {
+                        "anchor_repaired": True,
+                        "requested_target_span": requested_anchor,
+                    }
+                )
+            edits.append(edit)
 
     elif operator == "INJECT_GRAMMAR_ERR":
         raw_edits = payload.get("edits")
@@ -527,11 +547,7 @@ def validate_operator_preservation(
             moved = str(edit.get("target_span", "")).strip()
             if moved not in before_sentences or moved not in after_sentences:
                 raise ValueError("SHUFFLE_FLOW moved sentence is missing")
-            markers = _flow_dependency_markers(moved)
-            if not markers:
-                raise ValueError(
-                    "SHUFFLE_FLOW ineffective: moved sentence has no discourse dependency marker"
-                )
+            markers = _flow_dependency_markers(moved) or ["implicit_adjacency"]
             before_index = before_sentences.index(moved)
             after_index = after_sentences.index(moved)
             if before_index == 0:
@@ -610,6 +626,51 @@ def _require_distinct(items: list[Any]) -> None:
         raise ValueError("edit spans must be non-empty and distinct")
 
 
+def _require_clean_delete_spans(
+    text: str,
+    spans: list[str],
+    validity_cfg: Mapping[str, Any],
+) -> None:
+    """Reject deletions that would also remove an obvious repetition defect."""
+
+    repeated_size = int(validity_cfg.get("delete_repeated_ngram_size", 5))
+    repeated_occurrences = int(
+        validity_cfg.get("delete_repeated_ngram_occurrences", 2)
+    )
+    for span in spans:
+        counts = Counter(_word_ngrams(span, repeated_size))
+        if counts and max(counts.values()) >= repeated_occurrences:
+            repeated = " ".join(counts.most_common(1)[0][0])
+            raise ValueError(
+                "DELETE_SPECIFICS confound: target contains repeated "
+                f"{repeated_size}-gram: {repeated}"
+            )
+
+    remaining = text
+    for span in spans:
+        remaining = _replace_once(remaining, span, "")
+    cross_size = int(validity_cfg.get("delete_cross_text_ngram_size", 8))
+    remaining_ngrams = set(_word_ngrams(remaining, cross_size))
+    for span in spans:
+        overlap = remaining_ngrams & set(_word_ngrams(span, cross_size))
+        if overlap:
+            repeated = " ".join(sorted(overlap)[0])
+            raise ValueError(
+                "DELETE_SPECIFICS confound: target duplicates retained text "
+                f"at {cross_size}-gram: {repeated}"
+            )
+
+
+def _word_ngrams(text: str, size: int) -> list[tuple[str, ...]]:
+    words = _WORD_RE.findall(text.lower())
+    if size <= 0:
+        return []
+    return [
+        tuple(words[index : index + size])
+        for index in range(max(0, len(words) - size + 1))
+    ]
+
+
 def _require_span(payload: Mapping[str, Any], key: str, text: str) -> str:
     span = str(payload.get(key, "")).strip()
     if not span:
@@ -617,6 +678,47 @@ def _require_span(payload: Mapping[str, Any], key: str, text: str) -> str:
     if span not in text:
         raise ValueError(f"{key} is not an exact substring")
     return span
+
+
+def _require_source_origin(
+    span: str,
+    source_text: str,
+    operator: str,
+    field: str,
+) -> None:
+    if span not in source_text:
+        raise ValueError(
+            f"{operator} confound: {field} must originate in the source text"
+        )
+
+
+def _resolve_source_anchor(
+    requested: str,
+    current_text: str,
+    source_text: str,
+    used: set[str],
+) -> tuple[str, bool]:
+    """Use an exact source anchor, repairing only the LLM's placement field."""
+
+    if requested and requested in current_text and requested in source_text and requested not in used:
+        return requested, False
+    candidates = [
+        sentence
+        for sentence in split_sentences(source_text)
+        if sentence in current_text and sentence not in used and is_complete_sentence(sentence)
+    ]
+    if not candidates:
+        raise ValueError("no unused source-origin insertion anchor remains")
+    if not requested:
+        return candidates[len(candidates) // 2], True
+    anchor = max(
+        candidates,
+        key=lambda candidate: (
+            SequenceMatcher(a=requested, b=candidate).ratio(),
+            len(candidate),
+        ),
+    )
+    return anchor, True
 
 
 def _require_insertion(
@@ -665,26 +767,70 @@ def _normalize_spaces(text: str) -> str:
     return " ".join(text.split())
 
 
-def _spread(sentences: list[str], n: int) -> list[str]:
-    if n <= 0 or len(sentences) < n:
-        raise ValueError("not enough sentences to spread edits")
-    positions = [round((idx + 1) * (len(sentences) - 1) / (n + 1)) for idx in range(n)]
-    selected = [sentences[pos] for pos in positions]
-    if len(set(selected)) != n:
-        selected = sentences[1 : 1 + n]
-    return selected
-
-
-def _content_term(sentence: str) -> str:
-    words = [word for word in _WORD_RE.findall(sentence) if len(word) >= 2]
-    if not words:
-        return "내용"
-    return max(words, key=len)
-
-
 def _specificity_score(sentence: str) -> int:
     marker_hits = sum(marker in sentence for marker in _DETAIL_MARKERS)
     return marker_hits * 2 + int(bool(_NUMBER_RE.search(sentence)))
+
+
+def _find_effective_shuffle_payload(
+    sentences: list[str],
+    candidates: list[str],
+    count: int,
+    source_text: str,
+) -> dict[str, Any] | None:
+    """Find sequential moves whose final order breaks every old adjacency."""
+
+    movable_sets = list(combinations(candidates[: min(len(candidates), 8)], count))
+    for moved in movable_sets:
+        original_predecessors = {
+            sentence: sentences[sentences.index(sentence) - 1] for sentence in moved
+        }
+        anchor_pool = [
+            sentence
+            for sentence in sentences
+            if sentence not in moved
+            and sentence in source_text
+            and sentences.count(sentence) == 1
+            and is_complete_sentence(sentence)
+        ]
+        ranked_assignments = sorted(
+            permutations(anchor_pool, count),
+            key=lambda anchors: sum(
+                abs(sentences.index(anchor) - sentences.index(sentence))
+                for sentence, anchor in zip(moved, anchors)
+            ),
+            reverse=True,
+        )
+        for anchors in ranked_assignments:
+            if any(
+                anchor == original_predecessors[sentence]
+                for sentence, anchor in zip(moved, anchors)
+            ):
+                continue
+            current = list(sentences)
+            effective = True
+            for sentence, anchor in zip(moved, anchors):
+                before = list(current)
+                current.remove(sentence)
+                current.insert(current.index(anchor) + 1, sentence)
+                if current == before:
+                    effective = False
+                    break
+            if not effective:
+                continue
+            if all(
+                current.index(sentence) > 0
+                and current[current.index(sentence) - 1]
+                != original_predecessors[sentence]
+                for sentence in moved
+            ):
+                return {
+                    "moves": [
+                        {"moved_span": sentence, "anchor_span": anchor}
+                        for sentence, anchor in zip(moved, anchors)
+                    ]
+                }
+    return None
 
 
 def _flow_dependency_markers(sentence: str) -> list[str]:

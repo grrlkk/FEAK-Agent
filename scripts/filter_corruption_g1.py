@@ -9,6 +9,7 @@ import json
 import statistics
 import sys
 from collections import Counter, defaultdict
+from itertools import product
 from pathlib import Path
 
 import yaml
@@ -17,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from feak_tc.corruption.measure import evaluate_chain
+from feak_tc.corruption.quality import audit_edit_artifacts, audit_operator_balance
 
 
 def main() -> int:
@@ -27,6 +29,10 @@ def main() -> int:
     parser.add_argument("--audit-out", required=True)
     parser.add_argument("--accepted-out", required=True)
     parser.add_argument("--summary-out", required=True)
+    parser.add_argument(
+        "--quality-report-out",
+        help="Defaults to <summary-out stem>_quality.json.",
+    )
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as file:
@@ -52,6 +58,14 @@ def main() -> int:
             evaluate_chain(chain, measurements, schema, cfg["measurement"])
         )
     accepted_rows = [row for row in audit_rows if row["accepted"]]
+    artifact_report = audit_edit_artifacts(
+        accepted_rows,
+        cfg.get("artifact_audit", {}),
+    )
+    balance_report = audit_operator_balance(
+        accepted_rows,
+        cfg.get("balance", {}),
+    )
 
     _write_jsonl(Path(args.audit_out), audit_rows)
     _write_jsonl(Path(args.accepted_out), accepted_rows)
@@ -87,15 +101,25 @@ def main() -> int:
         ),
         "score_basis": cfg["measurement"]["score_basis"],
         "target_drop_min": cfg["measurement"]["target_drop_min"],
+        "target_drop_min_by_operator": cfg["measurement"].get(
+            "target_drop_min_by_operator",
+            {},
+        ),
         "acceptance_gate_verified": all(
             row["accepted"]
             == (
                 row["target_drop"] is not None
-                and row["target_drop"] > cfg["measurement"]["target_drop_min"]
+                and row["target_drop"] > row["target_drop_min"]
+                and not any(
+                    bool(check.get("flagged"))
+                    for check in row.get("quality_checks", {}).values()
+                )
             )
             for row in audit_rows
         ),
         "feature_usage": schema["features"]["usage"],
+        "artifact_audit": artifact_report,
+        "operator_balance": balance_report,
         "fallback_steps": sum(row["fallback"] for row in audit_rows),
         "by_operator": {key: dict(value) for key, value in sorted(by_operator.items())},
         "by_generator": {key: dict(value) for key, value in sorted(by_generator.items())},
@@ -106,14 +130,61 @@ def main() -> int:
         "generator_stats": _group_stats(audit_rows, "generator"),
         "operator_generator_coverage": _operator_generator_coverage(audit_rows),
         "target_drop_sensitivity": _target_drop_sensitivity(
-            audit_rows, thresholds=(0.0, 0.01, 0.05, 0.1, 0.225, 0.3)
+            audit_rows,
+            thresholds=_sensitivity_thresholds(cfg["measurement"]),
+        ),
+        "operator_threshold_calibration": _calibrate_operator_thresholds(
+            audit_rows,
+            thresholds=tuple(
+                threshold
+                for threshold in _sensitivity_thresholds(cfg["measurement"])
+                if threshold >= 0.225
+            ),
+            max_operator_fraction=float(
+                cfg.get("balance", {}).get("max_operator_fraction", 0.4)
+            ),
         ),
     }
     Path(args.summary_out).write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    quality_path = (
+        Path(args.quality_report_out)
+        if args.quality_report_out
+        else Path(args.summary_out).with_name(
+            Path(args.summary_out).stem + "_quality.json"
+        )
+    )
+    quality_path.write_text(
+        json.dumps(
+            {
+                "artifact_audit": artifact_report,
+                "operator_balance": balance_report,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    failures = []
+    if (
+        bool(cfg.get("artifact_audit", {}).get("fail_pipeline", True))
+        and not artifact_report["passed"]
+    ):
+        failures.append("artifact_audit")
+    if (
+        bool(cfg.get("balance", {}).get("fail_pipeline", False))
+        and not balance_report["passed"]
+    ):
+        failures.append("operator_balance")
+    if failures:
+        raise SystemExit(
+            "corruption quality gate failed: "
+            + ", ".join(failures)
+            + f"; see {quality_path}"
+        )
     return 0
 
 
@@ -172,15 +243,90 @@ def _target_drop_sensitivity(
         selected = [
             row
             for row in rows
-            if row["target_drop"] is not None and row["target_drop"] > threshold
+            if row["target_drop"] is not None
+            and row["target_drop"] > threshold
+            and not any(
+                bool(check.get("flagged"))
+                for check in row.get("quality_checks", {}).values()
+            )
         ]
+        counts = Counter(row["corruption_op"] for row in selected)
+        dominant = max(counts, key=counts.get) if counts else None
         result[str(threshold)] = {
             "steps": len(selected),
-            "by_operator": dict(
-                sorted(Counter(row["corruption_op"] for row in selected).items())
+            "by_operator": dict(sorted(counts.items())),
+            "dominant_operator": dominant,
+            "dominant_fraction": (
+                counts[dominant] / len(selected) if dominant is not None else 0.0
             ),
         }
     return result
+
+
+def _sensitivity_thresholds(measurement_cfg: dict) -> tuple[float, ...]:
+    configured = measurement_cfg.get(
+        "target_drop_sensitivity",
+        [0.3, 0.4, 0.5, 0.6],
+    )
+    values = {0.0, 0.225, float(measurement_cfg["target_drop_min"])}
+    values.update(float(value) for value in configured)
+    return tuple(sorted(values))
+
+
+def _calibrate_operator_thresholds(
+    rows: list[dict],
+    *,
+    thresholds: tuple[float, ...],
+    max_operator_fraction: float,
+) -> dict:
+    """Find the largest quality-clean pool satisfying the operator cap."""
+
+    operators = sorted({str(row["corruption_op"]) for row in rows})
+    quality_clean = [
+        row
+        for row in rows
+        if row["target_drop"] is not None
+        and not any(
+            bool(check.get("flagged"))
+            for check in row.get("quality_checks", {}).values()
+        )
+    ]
+    best = None
+    combinations_tested = 0
+    for values in product(thresholds, repeat=len(operators)):
+        combinations_tested += 1
+        minimums = dict(zip(operators, values))
+        selected = [
+            row
+            for row in quality_clean
+            if float(row["target_drop"])
+            > minimums[str(row["corruption_op"])]
+        ]
+        counts = Counter(str(row["corruption_op"]) for row in selected)
+        if set(counts) != set(operators):
+            continue
+        dominant_fraction = max(counts.values()) / len(selected)
+        if dominant_fraction > max_operator_fraction:
+            continue
+        candidate = {
+            "steps": len(selected),
+            "thresholds": minimums,
+            "by_operator": dict(sorted(counts.items())),
+            "dominant_fraction": dominant_fraction,
+        }
+        rank = (
+            candidate["steps"],
+            -sum(values),
+            tuple(-value for value in values),
+        )
+        if best is None or rank > best[0]:
+            best = (rank, candidate)
+    return {
+        "thresholds_tested": list(thresholds),
+        "combinations_tested": combinations_tested,
+        "max_operator_fraction": max_operator_fraction,
+        "recommended": best[1] if best is not None else None,
+    }
 
 
 if __name__ == "__main__":

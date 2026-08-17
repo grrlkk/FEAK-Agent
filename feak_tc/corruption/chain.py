@@ -147,12 +147,24 @@ def _generate_step(
     for attempt in range(1, attempts + 1):
         try:
             if generator == "rule":
-                payload = generate_rule_payload(operator, text, spec, rng)
+                payload = generate_rule_payload(
+                    operator,
+                    text,
+                    spec,
+                    rng,
+                    source_text=source_text,
+                )
             else:
                 variant = generator.split(":", 1)[1]
+                prompt = build_prompt(operator, text, question, spec, variant)
+                if errors:
+                    prompt += (
+                        "\n\n이전 응답은 다음 검증 오류로 거절되었다. 같은 오류를 "
+                        f"반복하지 말고 수정하라:\n- {errors[-1]}"
+                    )
                 payload = request_json(
                     system=_SYSTEM_PROMPT,
-                    user=build_prompt(operator, text, question, spec, variant),
+                    user=prompt,
                     model=model,
                     temperature=(
                         float(llm_cfg["temperature"])
@@ -217,9 +229,17 @@ def _generate_step(
             "new_text": new_text,
         }, errors
 
-    if generator != "rule" and bool(llm_cfg.get("fallback_to_rule", True)):
+    if generator != "rule" and bool(
+        spec.get("fallback_to_rule", llm_cfg.get("fallback_to_rule", True))
+    ):
         try:
-            payload = generate_rule_payload(operator, text, spec, rng)
+            payload = generate_rule_payload(
+                operator,
+                text,
+                spec,
+                rng,
+                source_text=source_text,
+            )
             raw_new_text, edits = parse_and_apply(
                 operator,
                 payload,

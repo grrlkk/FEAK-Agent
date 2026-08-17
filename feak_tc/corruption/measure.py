@@ -45,18 +45,24 @@ def evaluate_chain(
     schema: Mapping[str, Any],
     measurement_cfg: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    """Evaluate every transition and mark only measured target-rubric drops."""
+    """Evaluate target drops and reject measured cross-axis confounds."""
 
     score_basis = str(measurement_cfg.get("score_basis", "rf_corrected"))
-    minimum = float(measurement_cfg.get("target_drop_min", 0.0))
+    default_minimum = float(measurement_cfg.get("target_drop_min", 0.0))
+    operator_minimums = dict(
+        measurement_cfg.get("target_drop_min_by_operator", {})
+    )
     record_id = str(chain["record_id"])
     evaluated: list[dict[str, Any]] = []
 
     for step_index, step in enumerate(chain["steps"]):
+        operator = str(step["corruption_op"])
+        minimum = float(operator_minimums.get(operator, default_minimum))
         before = measurements.get((record_id, step_index))
         after = measurements.get((record_id, step_index + 1))
         reason = ""
         target_drop: float | None = None
+        quality_checks: dict[str, Any] = {}
 
         if before is None or after is None:
             accepted = False
@@ -72,6 +78,19 @@ def evaluate_chain(
             target_drop = before_scores[target] - after_scores[target]
             accepted = target_drop > minimum
             reason = "target_rubric_decreased" if accepted else "target_rubric_not_decreased"
+            if str(step["corruption_op"]) == "DELETE_SPECIFICS":
+                delete_check = _delete_confound_check(
+                    before_scores=before_scores,
+                    after_scores=after_scores,
+                    before_features=before["features"],
+                    after_features=after["features"],
+                    target_rubric=target,
+                    cfg=measurement_cfg.get("delete_confound_guard", {}),
+                )
+                quality_checks["delete_confound"] = delete_check
+                if accepted and delete_check["flagged"]:
+                    accepted = False
+                    reason = "delete_specifics_cross_axis_improvement"
 
         before_rubrics = measured_rubrics(before, score_basis) if before is not None else None
         after_rubrics = measured_rubrics(after, score_basis) if after is not None else None
@@ -103,9 +122,60 @@ def evaluate_chain(
                 "preservation_check": dict(step.get("preservation_check", {})),
                 "edits": list(step["edits"]),
                 "score_basis": score_basis,
+                "target_drop_min": minimum,
                 "target_drop": target_drop,
                 "accepted": accepted,
                 "acceptance_reason": reason,
+                "quality_checks": quality_checks,
             }
         )
     return evaluated
+
+
+def _delete_confound_check(
+    *,
+    before_scores: Mapping[str, float],
+    after_scores: Mapping[str, float],
+    before_features: Mapping[str, Any],
+    after_features: Mapping[str, Any],
+    target_rubric: str,
+    cfg: Mapping[str, Any],
+) -> dict[str, Any]:
+    enabled = bool(cfg.get("enabled", True))
+    nn_reduction = float(before_features.get("NN_repRatio", 0.0)) - float(
+        after_features.get("NN_repRatio", 0.0)
+    )
+    lemma_gain = float(after_features.get("lemma_MATTR", 0.0)) - float(
+        before_features.get("lemma_MATTR", 0.0)
+    )
+    non_target_gains = {
+        rubric: float(after_scores[rubric]) - float(before_scores[rubric])
+        for rubric in before_scores
+        if rubric != target_rubric
+    }
+    max_non_target_gain = max(non_target_gains.values(), default=0.0)
+    repetition_flag = (
+        nn_reduction > float(cfg.get("nn_rep_ratio_reduction_min", 0.01))
+        and lemma_gain > float(cfg.get("lemma_mattr_gain_min", 0.02))
+    )
+    rubric_flag = max_non_target_gain > float(
+        cfg.get("max_non_target_rubric_gain", 0.3)
+    )
+    reasons = []
+    if repetition_flag:
+        reasons.append("repetition_metrics_improved")
+    if rubric_flag:
+        reasons.append("non_target_rubric_improved")
+    return {
+        "enabled": enabled,
+        "flagged": enabled and bool(reasons),
+        "reasons": reasons if enabled else [],
+        "nn_rep_ratio_reduction": nn_reduction,
+        "lemma_mattr_gain": lemma_gain,
+        "max_non_target_rubric_gain": max_non_target_gain,
+        "max_non_target_rubric": (
+            max(non_target_gains, key=non_target_gains.get)
+            if non_target_gains
+            else None
+        ),
+    }

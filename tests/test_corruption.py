@@ -12,6 +12,7 @@ from feak_tc.corruption import (
 from feak_tc.corruption.measure import evaluate_chain
 from feak_tc.corruption.normalize import normalize_text
 from feak_tc.corruption.operators import (
+    LLM_ONLY_OPERATORS,
     _inject_grammar_error,
     build_payload_schema,
     build_prompt,
@@ -134,9 +135,62 @@ def test_shuffle_flow_preserves_sentence_text():
     assert check["dependency_breaks"][0]["markers"] == ["또한"]
 
 
+def test_shuffle_rule_builds_two_effective_moves():
+    spec = _spec("SHUFFLE_FLOW", edits=2)
+    payload = generate_rule_payload(
+        "SHUFFLE_FLOW",
+        ESSAY,
+        spec,
+        random.Random(1),
+    )
+    assert len(payload["moves"]) == 2
+    new_text, edits = parse_and_apply(
+        "SHUFFLE_FLOW",
+        payload,
+        ESSAY,
+        ESSAY,
+        VALIDITY,
+        spec,
+    )
+    check = validate_operator_preservation(
+        "SHUFFLE_FLOW",
+        ESSAY,
+        new_text,
+        edits,
+    )
+    assert len(check["dependency_breaks"]) == 2
+
+
+def test_structural_rules_only_target_source_sentences_after_insertion():
+    inserted = "개성은 개성은 개성은 중요하다고 생각한다."
+    current = ESSAY.replace(
+        "인권은 국가가 함부로 제한할 수 없다.",
+        "인권은 국가가 함부로 제한할 수 없다. " + inserted,
+    )
+    for operator in ("DELETE_SPECIFICS", "SHUFFLE_FLOW"):
+        spec = _spec(operator, edits=2)
+        payload = generate_rule_payload(
+            operator,
+            current,
+            spec,
+            random.Random(1),
+            source_text=ESSAY,
+        )
+        _, edits = parse_and_apply(
+            operator,
+            payload,
+            current,
+            ESSAY,
+            VALIDITY,
+            spec,
+        )
+        assert all(edit["target_span"] in ESSAY for edit in edits)
+        assert all(edit["target_span"] != inserted for edit in edits)
+
+
 def test_shuffle_flow_rejects_ineffective_or_rewritten_moves():
-    moved = "인권이란 모든 인간이 태어나면서부터 가지는 기본적인 권리이다."
-    anchor = "인권은 국가가 함부로 제한할 수 없다."
+    moved = "인권은 국가가 함부로 제한할 수 없다."
+    anchor = "우리는 서로의 인권을 존중하며 살아야 한다."
     new_text, edits = parse_and_apply(
         "SHUFFLE_FLOW",
         {"moves": [{"moved_span": moved, "anchor_span": anchor}]},
@@ -145,13 +199,13 @@ def test_shuffle_flow_rejects_ineffective_or_rewritten_moves():
         VALIDITY,
         _spec("SHUFFLE_FLOW"),
     )
-    with pytest.raises(ValueError, match="no discourse dependency marker"):
-        validate_operator_preservation(
-            "SHUFFLE_FLOW",
-            ESSAY,
-            new_text,
-            edits,
-        )
+    implicit = validate_operator_preservation(
+        "SHUFFLE_FLOW",
+        ESSAY,
+        new_text,
+        edits,
+    )
+    assert implicit["dependency_breaks"][0]["markers"] == ["implicit_adjacency"]
 
     dependent = "또한 헌법 제10조는 인간의 존엄과 가치를 명시하고 있다."
     moved_text, dependent_edits = parse_and_apply(
@@ -186,6 +240,30 @@ def test_insert_offtopic_preserves_existing_text():
     assert new_text.replace(" " + insertion, "") == ESSAY
 
 
+def test_llm_insertion_anchor_is_repaired_to_an_exact_source_sentence():
+    insertion = "어제는 날씨가 좋아서 공원에 다녀왔다."
+    new_text, edits = parse_and_apply(
+        "INSERT_OFFTOPIC",
+        {
+            "edits": [
+                {
+                    "anchor_span": "인권은 국가가 함부로 제한할 수 있습니다.",
+                    "insertion": insertion,
+                }
+            ]
+        },
+        ESSAY,
+        ESSAY,
+        VALIDITY,
+        _spec("INSERT_OFFTOPIC"),
+    )
+    edit = edits[0]
+    assert edit["anchor_repaired"] is True
+    assert edit["requested_target_span"].endswith("있습니다.")
+    assert edit["target_span"] in ESSAY
+    assert f'{edit["target_span"]} {insertion}' in new_text
+
+
 def test_inject_lex_repeat_requires_repeated_word_and_keeps_anchor():
     anchor = "인권은 국가가 함부로 제한할 수 없다."
     repetition = "인권, 인권, 인권은 반드시 중요하게 생각해야 한다."
@@ -198,6 +276,7 @@ def test_inject_lex_repeat_requires_repeated_word_and_keeps_anchor():
         _spec("INJECT_LEX_REPEAT"),
     )
     assert anchor + " " + repetition in new_text
+
     with pytest.raises(ValueError):
         parse_and_apply(
             "INJECT_LEX_REPEAT",
@@ -301,8 +380,11 @@ def test_payload_schema_is_strict_and_uses_exact_edit_count():
     assert schema["properties"]["edits"]["items"]["additionalProperties"] is False
 
 
-@pytest.mark.parametrize("operator", sorted(OPERATOR_SPECS))
-def test_every_operator_has_rule_generator(operator):
+@pytest.mark.parametrize(
+    "operator",
+    sorted(set(OPERATOR_SPECS) - set(LLM_ONLY_OPERATORS)),
+)
+def test_rule_capable_operator_has_rule_generator(operator):
     payload = generate_rule_payload(operator, ESSAY, _spec(operator), random.Random(7))
     new_text, edits = parse_and_apply(
         operator,
@@ -314,6 +396,44 @@ def test_every_operator_has_rule_generator(operator):
     )
     assert new_text != ESSAY
     assert edits
+
+
+@pytest.mark.parametrize("operator", LLM_ONLY_OPERATORS)
+def test_v4_llm_only_operators_reject_rule_generation(operator):
+    with pytest.raises(ValueError, match="LLM-only"):
+        generate_rule_payload(operator, ESSAY, _spec(operator), random.Random(7))
+
+
+def test_delete_specifics_rejects_repeated_content_confound():
+    repeated = (
+        "예를 들어 세계은행은 개발도상국에 금융 지원을 한다 "
+        "예를 들어 세계은행은 개발도상국에 금융 지원을 한다."
+    )
+    essay = f"도입 문장이다. {repeated} 결론 문장이다. 마지막 문장이다."
+    with pytest.raises(ValueError, match="target contains repeated 5-gram"):
+        parse_and_apply(
+            "DELETE_SPECIFICS",
+            {"target_spans": [repeated]},
+            essay,
+            essay,
+            {**VALIDITY, "delete_repeated_ngram_size": 5},
+            _spec("DELETE_SPECIFICS", edits=1),
+        )
+
+
+def test_delete_specifics_cannot_remove_prior_corruption_insertions():
+    source = "첫 문장이다. 원래의 구체적인 사례 문장이다. 결론 문장이다. 마지막 문장이다."
+    inserted = "오늘 아침에 본 드라마가 재미있었다."
+    current = source.replace("첫 문장이다.", f"첫 문장이다. {inserted}")
+    with pytest.raises(ValueError, match="must originate in the source text"):
+        parse_and_apply(
+            "DELETE_SPECIFICS",
+            {"target_spans": [inserted]},
+            current,
+            source,
+            VALIDITY,
+            _spec("DELETE_SPECIFICS", edits=1),
+        )
 
 
 def test_uniform_normalizer_rejects_meaning_rewrite(monkeypatch):
@@ -567,6 +687,37 @@ def test_invalid_llm_payload_falls_back_to_same_rule_operator(monkeypatch):
     assert len(step["errors"]) == 2
 
 
+def test_v4_llm_only_operator_never_falls_back_to_rule(monkeypatch):
+    monkeypatch.setattr(
+        "feak_tc.corruption.chain.request_json",
+        lambda **kwargs: {"edits": []},
+    )
+    cfg = {
+        "seed": 1,
+        "depth": 1,
+        "llm": {"max_attempts": 2, "fallback_to_rule": True},
+        "normalization": {"enabled": False},
+        "generation": {"modes": ["rule"]},
+        "validity": VALIDITY,
+        "operators": {
+            "INJECT_LEX_REPEAT": {
+                **OPERATOR_SPECS["INJECT_LEX_REPEAT"],
+                "generation_modes": ["llm:student_natural"],
+                "fallback_to_rule": False,
+                "edits_per_step": 1,
+            }
+        },
+    }
+    chain = generate_chain(
+        {"record_id": "no-template-fallback", "question": "인권이란?", "text": ESSAY},
+        cfg,
+    )
+    assert chain["status"] == "failed"
+    assert chain["steps"] == []
+    assert len(chain["failure_errors"]) == 2
+    assert all("rule_fallback" not in error for error in chain["failure_errors"])
+
+
 def test_measurement_accepts_each_strict_target_drop_independently():
     with open("configs/schema.yaml", encoding="utf-8") as file:
         schema = yaml.safe_load(file)
@@ -602,6 +753,81 @@ def test_measurement_accepts_each_strict_target_drop_independently():
     assert rows[1]["acceptance_reason"] == "target_rubric_not_decreased"
     assert rows[2]["acceptance_reason"] == "target_rubric_decreased"
     assert rows[1]["target_features"] == []
+
+
+def test_measurement_supports_operator_specific_target_drop_minimums():
+    with open("configs/schema.yaml", encoding="utf-8") as file:
+        schema = yaml.safe_load(file)
+    features = {key: 0.0 for key in schema["features"]["keys"]}
+    before = [5.0] * 8
+    after = list(before)
+    after[6] = 4.6
+    chain = {
+        "record_id": "operator-threshold",
+        "states": ["clean", "repeated"],
+        "steps": [_measured_step("INJECT_LEX_REPEAT", "expression_1")],
+    }
+    rows = evaluate_chain(
+        chain,
+        {
+            ("operator-threshold", 0): _measurement(schema, before, features),
+            ("operator-threshold", 1): _measurement(schema, after, features),
+        },
+        schema,
+        {
+            "score_basis": "rf_corrected",
+            "target_drop_min": 0.225,
+            "target_drop_min_by_operator": {"INJECT_LEX_REPEAT": 0.5},
+        },
+    )
+    assert rows[0]["target_drop"] == pytest.approx(0.4)
+    assert rows[0]["target_drop_min"] == 0.5
+    assert rows[0]["accepted"] is False
+
+
+def test_measurement_rejects_delete_that_improves_repetition_metrics():
+    with open("configs/schema.yaml", encoding="utf-8") as file:
+        schema = yaml.safe_load(file)
+    before_features = {key: 0.0 for key in schema["features"]["keys"]}
+    before_features.update({"NN_repRatio": 0.40, "lemma_MATTR": 0.50})
+    after_features = {
+        **before_features,
+        "NN_repRatio": 0.38,
+        "lemma_MATTR": 0.53,
+    }
+    before_scores = [5.0] * 8
+    after_scores = list(before_scores)
+    after_scores[2] = 4.0
+    chain = {
+        "record_id": "delete-confound",
+        "states": ["clean", "corrupted"],
+        "steps": [_measured_step("DELETE_SPECIFICS", "content_2")],
+    }
+    rows = evaluate_chain(
+        chain,
+        {
+            ("delete-confound", 0): _measurement(
+                schema, before_scores, before_features
+            ),
+            ("delete-confound", 1): _measurement(
+                schema, after_scores, after_features
+            ),
+        },
+        schema,
+        {
+            "score_basis": "rf_corrected",
+            "target_drop_min": 0.5,
+            "delete_confound_guard": {
+                "enabled": True,
+                "nn_rep_ratio_reduction_min": 0.01,
+                "lemma_mattr_gain_min": 0.02,
+                "max_non_target_rubric_gain": 0.3,
+            },
+        },
+    )
+    assert rows[0]["accepted"] is False
+    assert rows[0]["acceptance_reason"] == "delete_specifics_cross_axis_improvement"
+    assert rows[0]["quality_checks"]["delete_confound"]["flagged"] is True
 
 
 def _measurement(schema: dict, rf_scores: list[float], features: dict) -> dict:

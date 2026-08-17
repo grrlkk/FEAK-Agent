@@ -29,7 +29,7 @@ rubrics:
 
 features:
   count: 29
-  usage: audit_only
+  usage: post_generation_audit_and_delete_confound_gate
   keys:
     - C_Cnt
     - E_Cnt
