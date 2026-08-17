@@ -100,6 +100,7 @@ def evaluate_chain(
                 "reverse_action": step["reverse_action"],
                 "intent": step["intent"],
                 "preserve_constraints": list(step["preserve_constraints"]),
+                "preservation_check": dict(step.get("preservation_check", {})),
                 "edits": list(step["edits"]),
                 "score_basis": score_basis,
                 "target_drop": target_drop,

@@ -16,6 +16,7 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 | `docs/PROJECT_CONTEXT.md` | 연구 배경·시스템 구성·확정된 결정 | 항상 먼저 |
 | `docs/IMPLEMENTATION_MVP.md` | 지금 구현할 MVP 루프 상세 지시 | MVP 작업 시 |
 | `docs/SPEC_CORRUPTION_TVM.md` | corruption 데이터 생성 + TVM 학습 스펙 | MVP 이후 단계 |
+| `중간정리/MVP_FINAL_REPORT_2026-07-23.md` | 완료된 MVP 구현·검증 최종 보고서 | MVP 결과 확인 시 |
 
 ## 현재 단계와 우선순위
 

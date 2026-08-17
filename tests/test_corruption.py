@@ -3,7 +3,12 @@ import random
 import pytest
 import yaml
 
-from feak_tc.corruption import OPERATOR_SPECS, generate_chain
+from feak_tc.corruption import (
+    MAIN_CHAIN_OPERATORS,
+    OPERATOR_SPECS,
+    generate_chain,
+    generate_surface_sample,
+)
 from feak_tc.corruption.measure import evaluate_chain
 from feak_tc.corruption.normalize import normalize_text
 from feak_tc.corruption.operators import (
@@ -13,6 +18,7 @@ from feak_tc.corruption.operators import (
     generate_rule_payload,
     parse_and_apply,
     validate_normalized_corruption,
+    validate_operator_preservation,
 )
 
 
@@ -51,6 +57,13 @@ def test_v2_operator_mapping_is_exact():
     }
     assert "INFLATE_REDUNDANCY" not in OPERATOR_SPECS
     assert all(spec["preserve_constraints"] for spec in OPERATOR_SPECS.values())
+    assert set(MAIN_CHAIN_OPERATORS) == {
+        "DELETE_SPECIFICS",
+        "SHUFFLE_FLOW",
+        "INSERT_OFFTOPIC",
+        "INJECT_LEX_REPEAT",
+    }
+    assert "INJECT_GRAMMAR_ERR" not in MAIN_CHAIN_OPERATORS
 
 
 @pytest.mark.parametrize("operator", sorted(OPERATOR_SPECS))
@@ -80,10 +93,25 @@ def test_delete_specifics_only_deletes_exact_spans():
     assert all(span not in new_text for span in spans)
     assert [edit["operation"] for edit in edits] == ["delete", "delete"]
     assert "인권은 국가가 함부로 제한할 수 없다." in new_text
+    check = validate_operator_preservation(
+        "DELETE_SPECIFICS",
+        ESSAY,
+        new_text,
+        edits,
+    )
+    assert check["method"] == "exact_target_span_subtraction"
+
+    with pytest.raises(ValueError, match="outside target spans"):
+        validate_operator_preservation(
+            "DELETE_SPECIFICS",
+            ESSAY,
+            new_text.replace("존중하며", "존중하지 않으며"),
+            edits,
+        )
 
 
 def test_shuffle_flow_preserves_sentence_text():
-    moved = "인권이란 모든 인간이 태어나면서부터 가지는 기본적인 권리이다."
+    moved = "또한 헌법 제10조는 인간의 존엄과 가치를 명시하고 있다."
     anchor = "인권은 국가가 함부로 제한할 수 없다."
     new_text, edits = parse_and_apply(
         "SHUFFLE_FLOW",
@@ -96,6 +124,51 @@ def test_shuffle_flow_preserves_sentence_text():
     assert new_text.index(anchor) < new_text.index(moved)
     assert new_text.count(moved) == 1
     assert edits[0]["operation"] == "move_after"
+    check = validate_operator_preservation(
+        "SHUFFLE_FLOW",
+        ESSAY,
+        new_text,
+        edits,
+    )
+    assert check["method"] == "sentence_multiset_and_discourse_dependency"
+    assert check["dependency_breaks"][0]["markers"] == ["또한"]
+
+
+def test_shuffle_flow_rejects_ineffective_or_rewritten_moves():
+    moved = "인권이란 모든 인간이 태어나면서부터 가지는 기본적인 권리이다."
+    anchor = "인권은 국가가 함부로 제한할 수 없다."
+    new_text, edits = parse_and_apply(
+        "SHUFFLE_FLOW",
+        {"moves": [{"moved_span": moved, "anchor_span": anchor}]},
+        ESSAY,
+        ESSAY,
+        VALIDITY,
+        _spec("SHUFFLE_FLOW"),
+    )
+    with pytest.raises(ValueError, match="no discourse dependency marker"):
+        validate_operator_preservation(
+            "SHUFFLE_FLOW",
+            ESSAY,
+            new_text,
+            edits,
+        )
+
+    dependent = "또한 헌법 제10조는 인간의 존엄과 가치를 명시하고 있다."
+    moved_text, dependent_edits = parse_and_apply(
+        "SHUFFLE_FLOW",
+        {"moves": [{"moved_span": dependent, "anchor_span": anchor}]},
+        ESSAY,
+        ESSAY,
+        VALIDITY,
+        _spec("SHUFFLE_FLOW"),
+    )
+    with pytest.raises(ValueError, match="sentence text or membership changed"):
+        validate_operator_preservation(
+            "SHUFFLE_FLOW",
+            ESSAY,
+            moved_text.replace("살아야 한다.", "살아가야 한다."),
+            dependent_edits,
+        )
 
 
 def test_insert_offtopic_preserves_existing_text():
@@ -364,7 +437,7 @@ def test_generate_chain_records_v2_labels_preservation_and_normalization(monkeyp
                 "insertion": "요즘 유행하는 드라마는 정말 재미있다.",
             }]},
             {"moves": [{
-                "moved_span": "우리는 서로의 인권을 존중하며 살아야 한다.",
+                "moved_span": "또한 헌법 제10조는 인간의 존엄과 가치를 명시하고 있다.",
                 "anchor_span": "인권이란 모든 인간이 태어나면서부터 가지는 기본적인 권리이다.",
             }]},
         ]
@@ -417,7 +490,7 @@ def test_generate_chain_records_v2_labels_preservation_and_normalization(monkeyp
     assert all(step["target_features"] == [] for step in chain["steps"])
 
 
-def test_grammar_operator_override_forces_rule_generator(monkeypatch):
+def test_grammar_operator_is_chain_external_surface_sample(monkeypatch):
     monkeypatch.setattr(
         "feak_tc.corruption.chain.request_json",
         lambda **kwargs: pytest.fail("grammar override must not call the LLM"),
@@ -445,10 +518,22 @@ def test_grammar_operator_override_forces_rule_generator(monkeypatch):
         {"record_id": "grammar-rule", "question": "인권이란?", "text": ESSAY},
         cfg,
     )
-    assert chain["status"] == "ok"
-    assert chain["steps"][0]["generator"] == "rule"
-    assert chain["steps"][0]["model"] is None
-    assert chain["steps"][0]["normalization"]["postcondition_checked"] is True
+    assert chain["status"] == "failed"
+    assert chain["steps"] == []
+    assert "no main-chain" in chain["failure_errors"][0]
+
+    cfg["surface_validation"] = {
+        "operator": "INJECT_GRAMMAR_ERR",
+        "generation_mode": "rule",
+        "edits_per_sample": 3,
+    }
+    sample = generate_surface_sample(
+        {"record_id": "grammar-rule", "question": "인권이란?", "text": ESSAY},
+        cfg,
+    )
+    assert sample["usage"] == "surface_correction_validation_only"
+    assert sample["surface_input_text"] != sample["clean_text"]
+    assert len(sample["edits"]) == 3
 
 
 def test_invalid_llm_payload_falls_back_to_same_rule_operator(monkeypatch):

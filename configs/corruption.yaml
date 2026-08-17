@@ -40,8 +40,9 @@ normalization:
   max_length_ratio: 1.2
 
 generation:
-  # Operators use rule plus two prompt variants unless an operator-level
-  # generation_modes override is declared (grammar is rule-only in G1).
+  # Main-chain operators use rule plus two prompt variants. Mechanical grammar
+  # errors are generated separately under surface_validation and never enter
+  # Planner/TVM corruption chains.
   modes:
     - rule
     - llm:conservative
@@ -77,7 +78,9 @@ operators:
     preserve_constraints:
       - 문장의 내용과 문법을 바꾸지 않는다.
       - 문장 자체는 그대로 두고 위치만 이동한다.
-    edits_per_step: 2
+    # One discourse-dependent move is stronger and easier to verify than two
+    # arbitrary moves that may leave the perceived flow unchanged.
+    edits_per_step: 1
 
   INSERT_OFFTOPIC:
     reverse_action: DELETE_OR_FOCUS
@@ -97,16 +100,9 @@ operators:
       - 기존 문장은 그대로 보존하고 어휘 반복 표현만 추가한다.
     edits_per_step: 2
 
-  INJECT_GRAMMAR_ERR:
-    reverse_action: STYLE_REFINE
-    intent: REFINE_FORMAL_STYLE
-    target_rubric: expression_2
-    preserve_constraints:
-      - 내용과 어휘 선택을 바꾸지 않는다.
-      - 문장 순서와 핵심 사실을 바꾸지 않는다.
-      - 어법·조사·맞춤법 오류만 주입한다.
-    # LLM generation and normalization repaired too many grammar errors in the
-    # first G1 audit. Use three explicit, locally verifiable rule interventions.
-    generation_modes:
-      - rule
-    edits_per_step: 3
+surface_validation:
+  # Chain-external samples for D_raw -> spelling API -> D0 validation only.
+  operator: INJECT_GRAMMAR_ERR
+  sample_count: 10
+  generation_mode: rule
+  edits_per_sample: 3

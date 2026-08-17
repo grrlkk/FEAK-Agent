@@ -1,9 +1,13 @@
+import pytest
+
 from feak_tc.corruption.g2 import (
     TRANSITION_FEATURES,
     build_gbm_pairs,
     build_human_review_pairs,
     evaluate_human_review,
+    evaluate_two_human_reviews,
     run_grouped_gbm,
+    run_grouped_lightgbm_ranker,
 )
 
 
@@ -44,6 +48,82 @@ def test_g2_grouped_gbm_separates_clear_bidirectional_pairs():
     assert all(row["correct"] for row in predictions)
 
 
+def test_g2_lightgbm_ranker_separates_clear_bidirectional_pairs():
+    pytest.importorskip("lightgbm")
+    pairs = []
+    for index in range(12):
+        chosen = _feature_row(target_gain=1.0, non_target_drop=0.0)
+        rejected = _feature_row(target_gain=-1.0, non_target_drop=0.5)
+        pairs.append(
+            {
+                "pair_id": f"essay-{index}:stage1",
+                "essay_id": f"essay-{index}",
+                "stage_gap": 1,
+                "corruption_op": "SHUFFLE_FLOW",
+                "target_rubric": "organization_1",
+                "target_drop": 1.0,
+                "chosen": chosen,
+                "rejected": rejected,
+            }
+        )
+    report, predictions = run_grouped_lightgbm_ranker(pairs, folds=3, seed=7)
+    assert report["backend"] == "lightgbm.LGBMRanker"
+    assert report["text_used_by_model"] is False
+    assert report["split_unit"] == "essay_id"
+    assert report["pairwise_accuracy"] == 1.0
+    assert report["by_stage_gap"]["1"]["pairs"] == 12
+    assert all(row["correct"] for row in predictions)
+
+
+def test_g2_lightgbm_ranker_can_ablate_target_gain():
+    pytest.importorskip("lightgbm")
+    pairs = []
+    for index in range(12):
+        chosen = _feature_row(target_gain=1.0, non_target_drop=0.0)
+        rejected = _feature_row(target_gain=-1.0, non_target_drop=0.5)
+        pairs.append(
+            {
+                "pair_id": f"essay-{index}:stage1",
+                "essay_id": f"essay-{index}",
+                "stage_gap": 1,
+                "corruption_op": "SHUFFLE_FLOW",
+                "target_rubric": "organization_1",
+                "target_drop": 1.0,
+                "chosen": chosen,
+                "rejected": rejected,
+            }
+        )
+    selected = tuple(
+        feature for feature in TRANSITION_FEATURES if feature != "target_gain"
+    )
+    report, predictions = run_grouped_lightgbm_ranker(
+        pairs,
+        folds=3,
+        seed=7,
+        transition_features=selected,
+    )
+    assert "target_gain" not in report["transition_features"]
+    assert report["excluded_transition_features"] == ["target_gain"]
+    assert all("target_gain" not in row["feature"] for row in report["top_feature_importances"])
+    assert report["pairwise_accuracy"] == 1.0
+    assert all(row["correct"] for row in predictions)
+
+
+def test_g2_lightgbm_ranker_rejects_unknown_ablation_feature():
+    with pytest.raises(ValueError, match="unknown transition features"):
+        run_grouped_lightgbm_ranker(
+            [
+                {
+                    "pair_id": "essay-1:stage1",
+                    "essay_id": "essay-1",
+                    "chosen": _feature_row(1.0, 0.0),
+                    "rejected": _feature_row(-1.0, 0.5),
+                }
+            ],
+            transition_features=("not_a_feature",),
+        )
+
+
 def test_human_review_is_blinded_and_remains_pending_until_filled():
     chain = {
         "record_id": "essay-1",
@@ -71,6 +151,50 @@ def test_human_review_is_blinded_and_remains_pending_until_filled():
     result = evaluate_human_review(review, key, required=3)
     assert result["status"] == "passed"
     assert result["agreement"] == 1.0
+
+
+def test_two_human_reviews_require_independent_completion_and_adjudication():
+    keys = [
+        {"pair_id": "pair-1", "expected_preference": "A"},
+        {"pair_id": "pair-2", "expected_preference": "B"},
+    ]
+    rater_one = [
+        {"pair_id": "pair-1", "preference": "A"},
+        {"pair_id": "pair-2", "preference": "B"},
+    ]
+    incomplete_rater_two = [
+        {"pair_id": "pair-1", "preference": "A"},
+        {"pair_id": "pair-2", "preference": ""},
+    ]
+    report, disagreements = evaluate_two_human_reviews(
+        rater_one,
+        incomplete_rater_two,
+        keys,
+    )
+    assert report["status"] == "pending_raters"
+    assert disagreements == []
+
+    rater_two = [
+        {"pair_id": "pair-1", "preference": "B"},
+        {"pair_id": "pair-2", "preference": "B"},
+    ]
+    report, disagreements = evaluate_two_human_reviews(rater_one, rater_two, keys)
+    assert report["status"] == "pending_adjudication"
+    assert report["unresolved_disagreements"] == 1
+    assert disagreements[0]["pair_id"] == "pair-1"
+    assert "expected_preference" not in disagreements[0]
+
+    report, disagreements = evaluate_two_human_reviews(
+        rater_one,
+        rater_two,
+        keys,
+        adjudication_rows=[
+            {"pair_id": "pair-1", "adjudicated_preference": "A"}
+        ],
+    )
+    assert disagreements == []
+    assert report["status"] == "passed"
+    assert report["final_agreement"] == 1.0
 
 
 def _audit_row(

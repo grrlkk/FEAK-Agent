@@ -14,12 +14,14 @@ from feak_tc.mvp.llm import LLMResponseError, LLMUnavailable, request_json
 
 from .normalize import normalize_text
 from .operators import (
+    MAIN_CHAIN_OPERATORS,
     OPERATOR_SPECS,
     build_payload_schema,
     build_prompt,
     generate_rule_payload,
     parse_and_apply,
     validate_normalized_corruption,
+    validate_operator_preservation,
 )
 
 _SYSTEM_PROMPT = (
@@ -44,7 +46,19 @@ def generate_chain(
     validity_cfg = dict(cfg.get("validity", {}))
     configured_specs = dict(cfg.get("operators", {}))
 
-    operator_names = sorted(set(OPERATOR_SPECS) & set(configured_specs))
+    operator_names = sorted(set(MAIN_CHAIN_OPERATORS) & set(configured_specs))
+    if not operator_names:
+        return {
+            "record_id": record["record_id"],
+            "question": str(record.get("question") or "다음 글을 평가하세요."),
+            "grader_avg": record.get("grader_avg"),
+            "planned_operators": [],
+            "status": "failed",
+            "failure_errors": ["no main-chain corruption operators are configured"],
+            "states": [],
+            "normalizations": [],
+            "steps": [],
+        }
     operators = rng.sample(operator_names, min(depth, len(operator_names)))
     source_raw = _normalize_spaces(str(record["text"]))
     question = str(record.get("question") or "다음 글을 평가하세요.")
@@ -162,16 +176,23 @@ def _generate_step(
             new_text, normalization = normalize_text(
                 raw_new_text,
                 normalization_cfg,
-                post_validate=lambda candidate: validate_normalized_corruption(
-                    operator,
-                    edits,
-                    candidate,
+                post_validate=lambda candidate: _validate_candidate(
+                    operator=operator,
+                    before_text=text,
+                    candidate=candidate,
+                    edits=edits,
                 ),
             )
         except (LLMUnavailable, LLMResponseError, ValueError, RuntimeError) as exc:
             errors.append(f"{operator}/{generator} attempt{attempt}: {exc}")
             continue
 
+        preservation_check = validate_operator_preservation(
+            operator,
+            text,
+            new_text,
+            edits,
+        )
         return {
             "operator": operator,
             "corruption_op": operator,
@@ -192,6 +213,7 @@ def _generate_step(
             "raw_new_text": raw_new_text,
             "normalization": normalization,
             "normalized": bool(normalization.get("normalized")),
+            "preservation_check": preservation_check,
             "new_text": new_text,
         }, errors
 
@@ -209,15 +231,22 @@ def _generate_step(
             new_text, normalization = normalize_text(
                 raw_new_text,
                 normalization_cfg,
-                post_validate=lambda candidate: validate_normalized_corruption(
-                    operator,
-                    edits,
-                    candidate,
+                post_validate=lambda candidate: _validate_candidate(
+                    operator=operator,
+                    before_text=text,
+                    candidate=candidate,
+                    edits=edits,
                 ),
             )
         except (LLMUnavailable, LLMResponseError, ValueError, RuntimeError) as exc:
             errors.append(f"{operator}/rule_fallback: {exc}")
         else:
+            preservation_check = validate_operator_preservation(
+                operator,
+                text,
+                new_text,
+                edits,
+            )
             return {
                 "operator": operator,
                 "corruption_op": operator,
@@ -238,6 +267,7 @@ def _generate_step(
                 "raw_new_text": raw_new_text,
                 "normalization": normalization,
                 "normalized": bool(normalization.get("normalized")),
+                "preservation_check": preservation_check,
                 "new_text": new_text,
             }, errors
     return None, errors
@@ -254,6 +284,17 @@ def _merged_spec(operator: str, configured: Mapping[str, Any]) -> dict[str, Any]
     if tuple(merged["preserve_constraints"]) != tuple(base["preserve_constraints"]):
         raise ValueError(f"{operator} preserve_constraints do not match the v2 mapping")
     return merged
+
+
+def _validate_candidate(
+    *,
+    operator: str,
+    before_text: str,
+    candidate: str,
+    edits: list[Mapping[str, Any]],
+) -> None:
+    validate_normalized_corruption(operator, edits, candidate)
+    validate_operator_preservation(operator, before_text, candidate, edits)
 
 
 def _select_generator(

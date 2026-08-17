@@ -17,6 +17,14 @@ from feak_tc.diagnose.stub import split_sentences
 from feak_tc.mvp.validity import is_complete_sentence
 
 
+MAIN_CHAIN_OPERATORS = (
+    "DELETE_SPECIFICS",
+    "SHUFFLE_FLOW",
+    "INSERT_OFFTOPIC",
+    "INJECT_LEX_REPEAT",
+)
+SURFACE_VALIDATION_OPERATOR = "INJECT_GRAMMAR_ERR"
+
 OPERATOR_SPECS: dict[str, dict[str, Any]] = {
     "DELETE_SPECIFICS": {
         "reverse_action": "ADD_DETAIL",
@@ -83,6 +91,36 @@ _COMMON_RULES = (
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*%?")
 _WORD_RE = re.compile(r"[가-힣A-Za-z]{2,}")
 _DETAIL_MARKERS = ("예를 들어", "예컨대", "가령", "사례", "통계", "조사", "때문", "따르면")
+_FLOW_DEPENDENCY_PREFIXES = (
+    "그래서",
+    "따라서",
+    "그러므로",
+    "그러나",
+    "하지만",
+    "반면",
+    "또한",
+    "게다가",
+    "예를 들어",
+    "예컨대",
+    "가령",
+    "먼저",
+    "다음으로",
+    "마지막으로",
+    "결국",
+    "이처럼",
+    "이러한",
+    "이것",
+    "이를",
+    "이는",
+    "그 결과",
+    "이로 인해",
+    "그로 인해",
+    "반대로",
+    "그런데",
+    "한편",
+    "비록",
+    "이때",
+)
 _RULE_OFFTOPIC = (
     "한편 어제 본 영화의 배경 음악은 오래 기억에 남았다.",
     "요즘에는 날씨가 좋아서 산책하는 사람이 많아 보인다.",
@@ -121,8 +159,9 @@ def build_prompt(
         )
     elif operator == "SHUFFLE_FLOW":
         task = (
-            f"서로 다른 완결 문장 {n}개를 각각 다른 위치로 옮긴다. 문장 내용은 한 글자도 "
-            "바꾸지 않고, 읽을 수는 있지만 논리적 연결 순서가 어색해지게 한다. "
+            f"접속어·지시어·시간·인과 표현으로 앞 문장에 의존하는 완결 문장 {n}개를 골라 "
+            "각각 원래 선행 문장에서 멀어지도록 다른 위치로 옮긴다. 문장 내용은 한 글자도 "
+            "바꾸지 않고, 의존 관계가 실제로 끊어져 논리적 연결 순서가 어색해지게 한다. "
             "anchor는 moved 문장의 현재 바로 앞 문장이 아니어야 하며, 두 span 모두 원문에서 "
             "문장부호까지 그대로 복사한다.\n"
             '반환: {"moves": [{"moved_span": "<옮길 문장>", '
@@ -260,11 +299,33 @@ def generate_rule_payload(
         return {"target_spans": list(selected)}
 
     if operator == "SHUFFLE_FLOW":
-        stable_anchors = sentences[1:-1]
-        moved = list(reversed(sentences[1 : 1 + n]))
-        anchors = list(reversed(stable_anchors[-n:]))
-        if set(moved) & set(anchors):
-            anchors = sentences[-n:]
+        candidates = [
+            sentence
+            for index, sentence in enumerate(sentences)
+            if index > 0 and _flow_dependency_markers(sentence)
+        ]
+        if len(candidates) < n:
+            raise ValueError(
+                f"not enough discourse-dependent sentences for SHUFFLE_FLOW: "
+                f"{len(candidates)} < {n}"
+            )
+        moved = candidates[:n]
+        anchors = []
+        for moved_span in moved:
+            moved_index = sentences.index(moved_span)
+            original_predecessor = sentences[moved_index - 1]
+            viable_anchors = [
+                sentence
+                for index, sentence in enumerate(sentences)
+                if sentence not in moved
+                and sentence != original_predecessor
+                and is_complete_sentence(sentence)
+                and index != moved_index
+                and abs(index - moved_index) >= 2
+            ]
+            if not viable_anchors:
+                raise ValueError("no anchor can break the original discourse dependency")
+            anchors.append(viable_anchors[-1])
         return {
             "moves": [
                 {"moved_span": moved_span, "anchor_span": anchor}
@@ -418,6 +479,85 @@ def parse_and_apply(
     return new_text, edits
 
 
+def validate_operator_preservation(
+    operator: str,
+    before_text: str,
+    after_text: str,
+    edits: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate operator-specific preservation beyond rubric score changes."""
+
+    before = _normalize_spaces(before_text)
+    after = _normalize_spaces(after_text)
+
+    if operator == "DELETE_SPECIFICS":
+        expected = before
+        deleted_spans = []
+        for edit in edits:
+            if str(edit.get("operation")) != "delete":
+                raise ValueError("DELETE_SPECIFICS preservation requires delete edits only")
+            target = str(edit.get("target_span", "")).strip()
+            if not target or target not in expected:
+                raise ValueError("DELETE_SPECIFICS target span is missing from source")
+            expected = _replace_once(expected, target, "")
+            deleted_spans.append(target)
+        expected = _normalize_spaces(expected)
+        if after != expected:
+            raise ValueError(
+                "DELETE_SPECIFICS preservation violation: text outside target spans changed"
+            )
+        return {
+            "passed": True,
+            "method": "exact_target_span_subtraction",
+            "deleted_spans": len(deleted_spans),
+        }
+
+    if operator == "SHUFFLE_FLOW":
+        before_sentences = split_sentences(before)
+        after_sentences = split_sentences(after)
+        if Counter(before_sentences) != Counter(after_sentences):
+            raise ValueError(
+                "SHUFFLE_FLOW preservation violation: sentence text or membership changed"
+            )
+
+        dependency_breaks = []
+        for edit in edits:
+            if str(edit.get("operation")) != "move_after":
+                raise ValueError("SHUFFLE_FLOW preservation requires move_after edits only")
+            moved = str(edit.get("target_span", "")).strip()
+            if moved not in before_sentences or moved not in after_sentences:
+                raise ValueError("SHUFFLE_FLOW moved sentence is missing")
+            markers = _flow_dependency_markers(moved)
+            if not markers:
+                raise ValueError(
+                    "SHUFFLE_FLOW ineffective: moved sentence has no discourse dependency marker"
+                )
+            before_index = before_sentences.index(moved)
+            after_index = after_sentences.index(moved)
+            if before_index == 0:
+                raise ValueError("SHUFFLE_FLOW moved sentence has no original predecessor")
+            original_predecessor = before_sentences[before_index - 1]
+            new_predecessor = after_sentences[after_index - 1] if after_index > 0 else None
+            if new_predecessor == original_predecessor:
+                raise ValueError(
+                    "SHUFFLE_FLOW ineffective: original discourse dependency remains adjacent"
+                )
+            dependency_breaks.append(
+                {
+                    "markers": markers,
+                    "original_predecessor": original_predecessor,
+                    "new_predecessor": new_predecessor,
+                }
+            )
+        return {
+            "passed": True,
+            "method": "sentence_multiset_and_discourse_dependency",
+            "dependency_breaks": dependency_breaks,
+        }
+
+    return {"passed": True, "method": "operator_postcondition"}
+
+
 def validate_normalized_corruption(
     operator: str,
     edits: list[Mapping[str, Any]],
@@ -545,6 +685,11 @@ def _content_term(sentence: str) -> str:
 def _specificity_score(sentence: str) -> int:
     marker_hits = sum(marker in sentence for marker in _DETAIL_MARKERS)
     return marker_hits * 2 + int(bool(_NUMBER_RE.search(sentence)))
+
+
+def _flow_dependency_markers(sentence: str) -> list[str]:
+    compact = sentence.lstrip(" \t\"'“‘(")
+    return [marker for marker in _FLOW_DEPENDENCY_PREFIXES if compact.startswith(marker)]
 
 
 _GRAMMAR_ERROR_TYPES = ("particle_swap", "spacing", "spelling_typo")
