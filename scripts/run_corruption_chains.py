@@ -8,6 +8,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -22,6 +23,12 @@ def main() -> int:
     parser.add_argument("--input", required=True, help="source pool jsonl (record_id, question, text)")
     parser.add_argument("--output", required=True)
     parser.add_argument("--config", default="configs/corruption.yaml")
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="skip this many eligible source rows before applying --limit",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
@@ -46,15 +53,13 @@ def main() -> int:
             row = _source_record(json.loads(line))
             if row["record_id"] not in done:
                 records.append(row)
-    if args.limit:
-        records = records[: args.limit]
-    if args.num_shards < 1 or not 0 <= args.shard < args.num_shards:
-        raise SystemExit("--shard must satisfy 0 <= shard < num-shards")
-    records = [
-        record
-        for index, record in enumerate(records)
-        if index % args.num_shards == args.shard
-    ]
+    records = _select_records(
+        records,
+        offset=args.offset,
+        limit=args.limit,
+        shard=args.shard,
+        num_shards=args.num_shards,
+    )
 
     statuses: Counter = Counter()
     mode = "a" if args.append and output.exists() else "w"
@@ -87,6 +92,32 @@ def _source_record(row: dict) -> dict:
             "text": states[0],
         }
     raise ValueError("source row requires text or non-empty states")
+
+
+def _select_records(
+    records: list[dict],
+    *,
+    offset: int,
+    limit: Optional[int],
+    shard: int,
+    num_shards: int,
+) -> list[dict]:
+    """Apply one deterministic source window before disjoint sharding."""
+
+    if offset < 0:
+        raise SystemExit("--offset must be non-negative")
+    if limit is not None and limit < 1:
+        raise SystemExit("--limit must be positive")
+    if num_shards < 1 or not 0 <= shard < num_shards:
+        raise SystemExit("--shard must satisfy 0 <= shard < num-shards")
+    window = records[offset:]
+    if limit is not None:
+        window = window[:limit]
+    return [
+        record
+        for index, record in enumerate(window)
+        if index % num_shards == shard
+    ]
 
 
 if __name__ == "__main__":
