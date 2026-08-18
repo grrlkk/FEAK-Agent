@@ -23,6 +23,12 @@ def main() -> int:
     parser.add_argument("--summary-out", required=True)
     parser.add_argument("--count", type=int, default=50)
     parser.add_argument("--seed", type=int, default=20260722)
+    parser.add_argument(
+        "--operator",
+        action="append",
+        default=[],
+        help="limit valid transitions to these corruption operators (repeatable)",
+    )
     args = parser.parse_args()
 
     outputs = [Path(args.review_out), Path(args.key_out), Path(args.summary_out)]
@@ -30,9 +36,11 @@ def main() -> int:
     if existing:
         raise SystemExit(f"refusing to overwrite existing review outputs: {existing}")
 
+    audit_rows = _read_jsonl(Path(args.audit))
+    audit_rows = _filter_accepted_operators(audit_rows, set(args.operator))
     review, key, summary = build_human_review_pairs(
         _read_jsonl(Path(args.chains)),
-        _read_jsonl(Path(args.audit)),
+        audit_rows,
         count=args.count,
         seed=args.seed,
     )
@@ -45,6 +53,7 @@ def main() -> int:
                 "status": "pending_human_review",
                 "required_raters": 2,
                 "agreement_threshold": 0.70,
+                "operator_filter": sorted(args.operator),
             },
             ensure_ascii=False,
             indent=2,
@@ -58,6 +67,22 @@ def main() -> int:
 def _read_jsonl(path: Path) -> list[dict]:
     with path.open(encoding="utf-8") as file:
         return [json.loads(line) for line in file if line.strip()]
+
+
+def _filter_accepted_operators(
+    rows: list[dict],
+    operators: set[str],
+) -> list[dict]:
+    if not operators:
+        return rows
+    return [
+        {
+            **row,
+            "accepted": bool(row.get("accepted"))
+            and str(row.get("corruption_op")) in operators,
+        }
+        for row in rows
+    ]
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:

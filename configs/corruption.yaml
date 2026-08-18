@@ -62,6 +62,9 @@ validity:
   delete_repeated_ngram_size: 5
   delete_repeated_ngram_occurrences: 2
   delete_cross_text_ngram_size: 8
+  # OFFTOPIC must be one genuinely external sentence, not a copied anchor or
+  # paraphrased source fragment.
+  offtopic_source_ngram_size: 8
 
 measurement:
   score_basis: rf_corrected
@@ -88,6 +91,42 @@ artifact_audit:
   char_ngram_size: 20
   report_limit: 50
   fail_pipeline: true
+
+semantic_artifact_audit:
+  enabled: true
+  operators: [INSERT_OFFTOPIC]
+  model: BAAI/bge-m3
+  similarity_threshold: 0.88
+  relevance_enabled: true
+  max_question_similarity: 0.50
+  max_source_similarity: 0.50
+  min_distinct_essays: 3
+  max_distinct_essay_fraction: 0.02
+  max_first_token_fraction: 0.15
+  cue_terms:
+    - 어제
+    - 오늘
+    - 주말
+    - 요즘
+    - 최근
+    - 지난
+    - 가끔
+    - 점심
+    - 아침
+    - 내일
+    - 영화
+    - 드라마
+    - 고양이
+    - 강아지
+    - 카페
+    - 친구
+    - 산책
+    - 책
+    - 커피
+    - 날씨
+  max_cue_fraction: 0.50
+  batch_size: 32
+  report_limit: 30
 
 balance:
   enabled: true
@@ -127,11 +166,20 @@ operators:
     preserve_constraints:
       - 기존 문장과 기존 문법을 바꾸지 않는다.
       - 원래 글의 사실과 주장을 수정하지 않는다.
-    generation_modes:
-      - llm:conservative
-      - llm:student_natural
+    # Rule v5 retrieves natural sentences from other questions instead of
+    # asking an LLM to invent easy-to-spot lifestyle asides.
+    generation_modes: [retrieval]
     fallback_to_rule: false
     edits_per_step: 2
+    distractor_bank_path: data/corruption/main_1000.jsonl
+    distractor_min_chars: 15
+    distractor_max_chars: 80
+    distractor_max_lexical_jaccard: 0.12
+    distractor_candidate_pool_size: 2
+    distractor_match_ending_style: true
+    distractor_semantic_filter_enabled: true
+    distractor_max_question_similarity: 0.50
+    distractor_max_source_similarity: 0.50
 
   INJECT_LEX_REPEAT:
     reverse_action: STYLE_REFINE

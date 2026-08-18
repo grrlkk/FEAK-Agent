@@ -12,6 +12,7 @@ from typing import Any, Mapping, Optional
 
 from feak_tc.mvp.llm import LLMResponseError, LLMUnavailable, request_json
 
+from .distractors import generate_retrieval_payload
 from .normalize import normalize_text
 from .operators import (
     MAIN_CHAIN_OPERATORS,
@@ -93,6 +94,7 @@ def generate_chain(
             step_idx=step_idx,
         )
         step, errors = _generate_step(
+            record_id=str(record["record_id"]),
             operator=operator,
             generator=generator,
             text=states[-1],
@@ -127,6 +129,7 @@ def generate_chain(
 
 def _generate_step(
     *,
+    record_id: str,
     operator: str,
     generator: str,
     text: str,
@@ -138,11 +141,15 @@ def _generate_step(
     spec: Mapping[str, Any],
     rng: random.Random,
 ) -> tuple[Optional[dict[str, Any]], list[str]]:
-    attempts = 1 if generator == "rule" else int(llm_cfg.get("max_attempts", 3))
+    attempts = (
+        1
+        if generator in {"rule", "retrieval"}
+        else int(llm_cfg.get("max_attempts", 3))
+    )
     model = str(llm_cfg.get("model", "gpt-4o-mini"))
     reasoning_effort = _nested_string(llm_cfg, "reasoning", "effort")
     verbosity = _nested_string(llm_cfg, "text", "verbosity")
-    generation_uses_llm = generator != "rule"
+    generation_uses_llm = generator.startswith("llm:")
     errors: list[str] = []
     for attempt in range(1, attempts + 1):
         try:
@@ -153,6 +160,14 @@ def _generate_step(
                     spec,
                     rng,
                     source_text=source_text,
+                )
+            elif generator == "retrieval":
+                payload = generate_retrieval_payload(
+                    record_id=record_id,
+                    question=question,
+                    text=text,
+                    source_text=source_text,
+                    spec=spec,
                 )
             else:
                 variant = generator.split(":", 1)[1]
@@ -229,7 +244,7 @@ def _generate_step(
             "new_text": new_text,
         }, errors
 
-    if generator != "rule" and bool(
+    if generator.startswith("llm:") and bool(
         spec.get("fallback_to_rule", llm_cfg.get("fallback_to_rule", True))
     ):
         try:
@@ -328,7 +343,7 @@ def _select_generator(
         raise ValueError("generation.modes must not be empty")
     index = sum(ord(char) for char in f"{record_id}:{operator}") + step_idx
     selected = str(modes[index % len(modes)])
-    if selected != "rule" and not selected.startswith("llm:"):
+    if selected not in {"rule", "retrieval"} and not selected.startswith("llm:"):
         raise ValueError(f"Unknown generator mode: {selected}")
     return selected
 

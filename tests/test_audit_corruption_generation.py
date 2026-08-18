@@ -36,6 +36,23 @@ def test_generated_chain_audit_rejects_failed_preservation():
     assert report["preservation_failures"] == 1
 
 
+def test_generated_chain_audit_reports_nonblocking_balance():
+    chains = [
+        _chain("r1", "INSERT_OFFTOPIC", "첫 번째 고유 문장입니다."),
+        _chain("r2", "INSERT_OFFTOPIC", "두 번째 고유 문장입니다."),
+        _chain("r3", "DELETE_SPECIFICS"),
+    ]
+    report = audit_generated_chains(
+        chains,
+        {
+            "artifact_audit": {"enabled": False},
+            "balance": {"max_operator_fraction": 0.4, "fail_pipeline": False},
+        },
+    )
+    assert report["generated_operator_balance"]["passed"] is False
+    assert report["passed"] is True
+
+
 def _chain(record_id: str, operator: str, inserted_text: Optional[str] = None) -> dict:
     edits = []
     if inserted_text is not None:

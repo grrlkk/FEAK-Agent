@@ -34,8 +34,20 @@ DECISION_SCHEMA = {
         "preference": {"type": "string", "enum": ["A", "B", "TIE"]},
         "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
         "notes": {"type": "string", "minLength": 1, "maxLength": 500},
+        "local_fluency_a": {"type": "integer", "minimum": 1, "maximum": 5},
+        "local_fluency_b": {"type": "integer", "minimum": 1, "maximum": 5},
+        "canned_artifact_a": {"type": "boolean"},
+        "canned_artifact_b": {"type": "boolean"},
     },
-    "required": ["preference", "confidence", "notes"],
+    "required": [
+        "preference",
+        "confidence",
+        "notes",
+        "local_fluency_a",
+        "local_fluency_b",
+        "canned_artifact_a",
+        "canned_artifact_b",
+    ],
     "additionalProperties": False,
 }
 
@@ -50,6 +62,10 @@ SYSTEM_PROMPT = """당신은 한국어 논술 품질을 평가하는 독립 블�
 - A가 명확히 낫다면 A, B가 명확히 낫다면 B를 선택한다.
 - 실질적인 품질 차이가 없을 때만 TIE를 사용한다.
 - notes에는 결정적인 근거를 한국어 한두 문장으로 간결하게 적는다.
+- local_fluency_a/b는 주제 적합성을 제외하고 각 글의 개별 문장들이 문법적으로 완결되고
+  학생 글로서 자연스러운 정도를 1(매우 부자연스러움)~5(자연스러움)로 평가한다.
+- canned_artifact_a/b는 뻔한 일상 여담, 반복되는 합성 템플릿, 앞 문맥 없이는 성립하지 않는
+  문장처럼 보일 때만 true다. 단순히 질문과 무관한 문장이 있다는 이유만으로 true로 두지 않는다.
 - 다른 평가자나 숨은 정답은 존재하지 않는다고 가정하고 독립적으로 판단한다.
 """
 
@@ -68,6 +84,13 @@ def main() -> int:
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--threshold", type=float, default=0.70)
+    parser.add_argument(
+        "--accepted-transitions",
+        help=(
+            "after all blind model calls, evaluate only pairs whose "
+            "(essay_id, corrupted_stage) remains in this accepted JSONL"
+        ),
+    )
     parser.add_argument(
         "--skip-adjudication",
         action="store_true",
@@ -129,6 +152,28 @@ def main() -> int:
         adjudication_rows = _read_jsonl(adjudication_path)
 
     key_rows = _read_jsonl(key_path)
+    review_scope = {
+        "reviewed_pairs": len(key_rows),
+        "evaluated_pairs": len(key_rows),
+        "accepted_transitions": None,
+    }
+    if args.accepted_transitions:
+        accepted_path = Path(args.accepted_transitions)
+        accepted_rows = _read_jsonl(accepted_path)
+        selected_pair_ids = _review_pair_ids_for_transitions(key_rows, accepted_rows)
+        if not selected_pair_ids:
+            raise SystemExit("no reviewed pair remains in --accepted-transitions")
+        first_rows = [row for row in first_rows if row["pair_id"] in selected_pair_ids]
+        second_rows = [row for row in second_rows if row["pair_id"] in selected_pair_ids]
+        key_rows = [row for row in key_rows if row["pair_id"] in selected_pair_ids]
+        adjudication_rows = [
+            row for row in adjudication_rows if row["pair_id"] in selected_pair_ids
+        ]
+        review_scope = {
+            "reviewed_pairs": review_scope["reviewed_pairs"],
+            "evaluated_pairs": len(key_rows),
+            "accepted_transitions": str(accepted_path),
+        }
     base_report, unresolved = evaluate_two_human_reviews(
         first_rows,
         second_rows,
@@ -140,9 +185,14 @@ def main() -> int:
         base_report["rater_one"]["meets_threshold"]
         and base_report["rater_two"]["meets_threshold"]
     )
+    blind_quality = _blind_quality_report(first_rows, second_rows, key_rows)
+    quality_pass = all(
+        item["local_fluency_ge3_rate"] >= 0.80
+        for item in blind_quality.values()
+    )
     proxy_status = (
         "passed"
-        if base_report["status"] == "passed" and both_models_pass
+        if base_report["status"] == "passed" and both_models_pass and quality_pass
         else "pending_adjudication"
         if base_report["status"] == "pending_adjudication"
         else "failed"
@@ -161,7 +211,15 @@ def main() -> int:
             "require_both_individual_models": True,
             "adjudication": "fresh blind re-review alternating the two models",
             "key_excluded_from_all_model_inputs": True,
+            "min_corrupted_local_fluency_ge3_rate": 0.80,
+            "canned_artifact_is_diagnostic_only": True,
+            "canned_artifact_gate_exclusion_reason": (
+                "pair-level reviewers conflate the intended off-topic defect "
+                "with generation-template artifacts; corpus n-gram/BGE audits gate templates"
+            ),
         },
+        "blind_corruption_quality": blind_quality,
+        "review_scope": review_scope,
         **base_report,
         "status": proxy_status,
     }
@@ -169,6 +227,21 @@ def main() -> int:
     _write_jsonl_atomic(disagreements_path, unresolved)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if proxy_status == "passed" else 2
+
+
+def _review_pair_ids_for_transitions(
+    key_rows: Sequence[Mapping[str, Any]],
+    accepted_rows: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    allowed = {
+        (str(row["essay_id"]), int(row["stage_k"]))
+        for row in accepted_rows
+    }
+    return {
+        str(row["pair_id"])
+        for row in key_rows
+        if (str(row["essay_id"]), int(row["corrupted_stage"])) in allowed
+    }
 
 
 def _review_form(
@@ -338,6 +411,10 @@ def _validate_decision(raw: Mapping[str, Any]) -> dict[str, Any]:
         "preference": preference,
         "confidence": confidence,
         "notes": notes[:500],
+        "local_fluency_a": _score(raw, "local_fluency_a"),
+        "local_fluency_b": _score(raw, "local_fluency_b"),
+        "canned_artifact_a": _boolean(raw, "canned_artifact_a"),
+        "canned_artifact_b": _boolean(raw, "canned_artifact_b"),
     }
 
 
@@ -346,7 +423,60 @@ def _has_valid_decision(row: Mapping[str, Any], model: str) -> bool:
         str(row.get("preference", "")).strip().upper() in ALLOWED_PREFERENCES
         and row.get("model") == model
         and row.get("review_kind") == "openai_api_blind"
+        and _valid_score(row.get("local_fluency_a"))
+        and _valid_score(row.get("local_fluency_b"))
+        and isinstance(row.get("canned_artifact_a"), bool)
+        and isinstance(row.get("canned_artifact_b"), bool)
     )
+
+
+def _blind_quality_report(
+    first_rows: Sequence[Mapping[str, Any]],
+    second_rows: Sequence[Mapping[str, Any]],
+    key_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    expected = {
+        str(row["pair_id"]): str(row["expected_preference"]).upper()
+        for row in key_rows
+    }
+    result = {}
+    for name, rows in (("rater_one", first_rows), ("rater_two", second_rows)):
+        fluency = []
+        artifacts = []
+        for row in rows:
+            pair_id = str(row["pair_id"])
+            clean_side = expected[pair_id]
+            corrupted_side = "B" if clean_side == "A" else "A"
+            suffix = corrupted_side.lower()
+            fluency.append(int(row[f"local_fluency_{suffix}"]))
+            artifacts.append(bool(row[f"canned_artifact_{suffix}"]))
+        result[name] = {
+            "rows": len(rows),
+            "corrupted_local_fluency_mean": sum(fluency) / len(fluency),
+            "local_fluency_ge3": sum(value >= 3 for value in fluency),
+            "local_fluency_ge3_rate": sum(value >= 3 for value in fluency) / len(fluency),
+            "canned_artifact_count": sum(artifacts),
+            "canned_artifact_rate": sum(artifacts) / len(artifacts),
+        }
+    return result
+
+
+def _score(raw: Mapping[str, Any], key: str) -> int:
+    value = int(raw.get(key, 0))
+    if not _valid_score(value):
+        raise ValueError(f"invalid {key}: {value}")
+    return value
+
+
+def _valid_score(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 5
+
+
+def _boolean(raw: Mapping[str, Any], key: str) -> bool:
+    value = raw.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"invalid {key}: {value!r}")
+    return value
 
 
 def _find_disagreements(

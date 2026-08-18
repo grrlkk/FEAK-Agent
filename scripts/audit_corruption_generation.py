@@ -15,7 +15,11 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from feak_tc.corruption.quality import audit_edit_artifacts, audit_operator_balance
+from feak_tc.corruption.quality import (
+    audit_edit_artifacts,
+    audit_operator_balance,
+    audit_semantic_edit_artifacts,
+)
 
 
 def main() -> int:
@@ -61,6 +65,8 @@ def audit_generated_chains(
             rows.append(
                 {
                     "essay_id": str(chain["record_id"]),
+                    "question": str(chain.get("question") or ""),
+                    "text_before": states[stage_k - 1] if stage_k - 1 < len(states) else "",
                     "stage_k": stage_k,
                     "corruption_op": step["operator"],
                     "edits": step.get("edits", []),
@@ -73,7 +79,12 @@ def audit_generated_chains(
             normalized_steps += bool(step.get("normalized"))
 
     artifact_report = audit_edit_artifacts(rows, cfg.get("artifact_audit", {}))
+    semantic_artifact_report = audit_semantic_edit_artifacts(
+        rows,
+        cfg.get("semantic_artifact_audit", {}),
+    )
     balance_report = audit_operator_balance(rows, cfg.get("balance", {}))
+    balance_blocks = bool(cfg.get("balance", {}).get("fail_pipeline", False))
     passed = (
         not duplicate_record_ids
         and malformed_chains == 0
@@ -81,7 +92,8 @@ def audit_generated_chains(
         and fallback_steps == 0
         and normalized_steps == 0
         and artifact_report["passed"]
-        and balance_report["passed"]
+        and semantic_artifact_report["passed"]
+        and (balance_report["passed"] or not balance_blocks)
     )
     return {
         "gate": "generated_corruption_quality",
@@ -94,6 +106,7 @@ def audit_generated_chains(
         "fallback_steps": fallback_steps,
         "normalized_steps": normalized_steps,
         "artifact_audit": artifact_report,
+        "semantic_artifact_audit": semantic_artifact_report,
         "generated_operator_balance": balance_report,
     }
 

@@ -1,7 +1,11 @@
 from .chain import generate_chain
 from .measure import evaluate_chain
 from .operators import MAIN_CHAIN_OPERATORS, OPERATOR_SPECS
-from .quality import audit_edit_artifacts, audit_operator_balance
+from .quality import (
+    audit_edit_artifacts,
+    audit_operator_balance,
+    audit_semantic_edit_artifacts,
+)
 from .surface import generate_surface_sample
 
 __all__ = [
@@ -12,4 +16,5 @@ __all__ = [
     "OPERATOR_SPECS",
     "audit_edit_artifacts",
     "audit_operator_balance",
+    "audit_semantic_edit_artifacts",
 ]

@@ -18,7 +18,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from feak_tc.corruption.measure import evaluate_chain
-from feak_tc.corruption.quality import audit_edit_artifacts, audit_operator_balance
+from feak_tc.corruption.quality import (
+    audit_edit_artifacts,
+    audit_operator_balance,
+    audit_semantic_edit_artifacts,
+)
 
 
 def main() -> int:
@@ -60,6 +64,10 @@ def main() -> int:
     accepted_rows, artifact_report, artifact_quarantine = _quarantine_artifacts(
         audit_rows,
         cfg.get("artifact_audit", {}),
+    )
+    semantic_artifact_report = audit_semantic_edit_artifacts(
+        accepted_rows,
+        cfg.get("semantic_artifact_audit", {}),
     )
     balance_report = audit_operator_balance(
         accepted_rows,
@@ -119,6 +127,7 @@ def main() -> int:
         "feature_usage": schema["features"]["usage"],
         "artifact_audit": artifact_report,
         "artifact_quarantine": artifact_quarantine,
+        "semantic_artifact_audit": semantic_artifact_report,
         "operator_balance": balance_report,
         "fallback_steps": sum(row["fallback"] for row in audit_rows),
         "by_operator": {key: dict(value) for key, value in sorted(by_operator.items())},
@@ -161,6 +170,7 @@ def main() -> int:
             {
                 "artifact_audit": artifact_report,
                 "artifact_quarantine": artifact_quarantine,
+                "semantic_artifact_audit": semantic_artifact_report,
                 "operator_balance": balance_report,
             },
             ensure_ascii=False,
@@ -175,6 +185,11 @@ def main() -> int:
         and not artifact_report["passed"]
     ):
         failures.append("artifact_audit")
+    if (
+        bool(cfg.get("semantic_artifact_audit", {}).get("fail_pipeline", True))
+        and not semantic_artifact_report["passed"]
+    ):
+        failures.append("semantic_artifact_audit")
     if (
         bool(cfg.get("balance", {}).get("fail_pipeline", False))
         and not balance_report["passed"]

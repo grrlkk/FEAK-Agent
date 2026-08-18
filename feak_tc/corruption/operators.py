@@ -17,6 +17,8 @@ from typing import Any, Mapping
 from feak_tc.diagnose.stub import split_sentences
 from feak_tc.mvp.validity import is_complete_sentence
 
+from .distractors import is_metadata_text, split_sentence_units
+
 
 MAIN_CHAIN_OPERATORS = (
     "DELETE_SPECIFICS",
@@ -25,7 +27,8 @@ MAIN_CHAIN_OPERATORS = (
     "INJECT_LEX_REPEAT",
 )
 SURFACE_VALIDATION_OPERATOR = "INJECT_GRAMMAR_ERR"
-LLM_ONLY_OPERATORS = ("INSERT_OFFTOPIC", "INJECT_LEX_REPEAT")
+RULE_UNSUPPORTED_OPERATORS = ("INSERT_OFFTOPIC", "INJECT_LEX_REPEAT")
+LLM_ONLY_OPERATORS = ("INJECT_LEX_REPEAT",)
 
 OPERATOR_SPECS: dict[str, dict[str, Any]] = {
     "DELETE_SPECIFICS": {
@@ -329,8 +332,8 @@ def generate_rule_payload(
             raise ValueError("no move set can break two source-order dependencies")
         return payload
 
-    if operator in LLM_ONLY_OPERATORS:
-        raise ValueError(f"{operator} is LLM-only in corruption rule v4")
+    if operator in RULE_UNSUPPORTED_OPERATORS:
+        raise ValueError(f"{operator} has no rule generator in corruption rule v5")
 
     if operator == "INJECT_GRAMMAR_ERR":
         if n > len(_GRAMMAR_ERROR_TYPES):
@@ -426,6 +429,8 @@ def parse_and_apply(
         used_anchors: set[str] = set()
         for raw in raw_edits:
             requested_anchor = str(raw.get("anchor_span", "")).strip()
+            if is_metadata_text(requested_anchor):
+                raise ValueError("OFFTOPIC anchor must not be metadata")
             anchor, repaired = _resolve_source_anchor(
                 requested_anchor,
                 new_text,
@@ -435,8 +440,26 @@ def parse_and_apply(
             used_anchors.add(anchor)
             insertion = str(raw.get("insertion", "")).strip()
             _require_insertion(insertion, text, validity_cfg)
+            _require_offtopic_insertion(
+                insertion,
+                anchor,
+                source_text,
+                validity_cfg,
+            )
             new_text = _replace_once(new_text, anchor, anchor + " " + insertion)
             edit = {"operation": "insert_after", "target_span": anchor, "text": insertion}
+            for key in ("distractor_record_id", "distractor_question"):
+                value = str(raw.get(key, "")).strip()
+                if value:
+                    edit[key] = value
+            for key in (
+                "distractor_question_similarity",
+                "distractor_source_similarity",
+                "distractor_semantic_model",
+            ):
+                value = raw.get(key)
+                if value is not None:
+                    edit[key] = value
             if repaired:
                 edit.update(
                     {
@@ -705,7 +728,10 @@ def _resolve_source_anchor(
     candidates = [
         sentence
         for sentence in split_sentences(source_text)
-        if sentence in current_text and sentence not in used and is_complete_sentence(sentence)
+        if sentence in current_text
+        and sentence not in used
+        and is_complete_sentence(sentence)
+        and not is_metadata_text(sentence)
     ]
     if not candidates:
         raise ValueError("no unused source-origin insertion anchor remains")
@@ -736,6 +762,35 @@ def _require_insertion(
         raise ValueError("insertion is not a complete sentence")
     if _NUMBER_RE.search(insertion):
         raise ValueError("insertion must not introduce numeric facts")
+
+
+def _require_offtopic_insertion(
+    insertion: str,
+    anchor: str,
+    source_text: str,
+    validity_cfg: Mapping[str, Any],
+) -> None:
+    if is_metadata_text(anchor) or is_metadata_text(insertion):
+        raise ValueError("OFFTOPIC insertion must not use metadata")
+    units = split_sentence_units(insertion)
+    if len(units) != 1 or _normalize_spaces(units[0]) != _normalize_spaces(insertion):
+        raise ValueError("OFFTOPIC insertion must contain exactly one sentence")
+    normalized_anchor = _normalize_spaces(anchor)
+    normalized_insertion = _normalize_spaces(insertion)
+    if normalized_anchor in normalized_insertion:
+        raise ValueError("OFFTOPIC insertion must not contain its anchor sentence")
+    if normalized_insertion in _normalize_spaces(source_text):
+        raise ValueError("OFFTOPIC insertion must not copy a source sentence")
+    ngram_size = int(validity_cfg.get("offtopic_source_ngram_size", 8))
+    overlap = set(_word_ngrams(insertion, ngram_size)) & set(
+        _word_ngrams(source_text, ngram_size)
+    )
+    if overlap:
+        repeated = " ".join(sorted(overlap)[0])
+        raise ValueError(
+            "OFFTOPIC insertion overlaps source text at "
+            f"{ngram_size}-gram: {repeated}"
+        )
 
 
 def _require_grammar_replacement(

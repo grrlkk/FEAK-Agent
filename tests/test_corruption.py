@@ -13,6 +13,7 @@ from feak_tc.corruption.measure import evaluate_chain
 from feak_tc.corruption.normalize import normalize_text
 from feak_tc.corruption.operators import (
     LLM_ONLY_OPERATORS,
+    RULE_UNSUPPORTED_OPERATORS,
     _inject_grammar_error,
     build_payload_schema,
     build_prompt,
@@ -240,6 +241,57 @@ def test_insert_offtopic_preserves_existing_text():
     assert new_text.replace(" " + insertion, "") == ESSAY
 
 
+@pytest.mark.parametrize(
+    ("anchor", "insertion", "message"),
+    [
+        (
+            "핵심 키워드: 인권, 존엄",
+            "우주에는 아직 밝혀지지 않은 현상이 많이 남아 있다.",
+            "must not be metadata",
+        ),
+        (
+            "인권은 국가가 함부로 제한할 수 없다.",
+            "인권은 국가가 함부로 제한할 수 없다. 우주에는 별이 많다.",
+            "exactly one sentence",
+        ),
+        (
+            "인권은 국가가 함부로 제한할 수 없다.",
+            "인권은 국가가 함부로 제한할 수 없다.",
+            "already exists|contain its anchor",
+        ),
+    ],
+)
+def test_insert_offtopic_rejects_metadata_anchor_and_copied_context(
+    anchor, insertion, message
+):
+    essay = ESSAY + " 핵심 키워드: 인권, 존엄"
+    with pytest.raises(ValueError, match=message):
+        parse_and_apply(
+            "INSERT_OFFTOPIC",
+            {"edits": [{"anchor_span": anchor, "insertion": insertion}]},
+            essay,
+            essay,
+            VALIDITY,
+            _spec("INSERT_OFFTOPIC"),
+        )
+
+
+def test_insert_offtopic_rejects_source_eight_gram_overlap():
+    anchor = "인권은 국가가 함부로 제한할 수 없다."
+    insertion = (
+        "모든 인간이 태어나면서부터 가지는 기본적인 권리이다 예를 들어 표현의 자유는 중요하다."
+    )
+    with pytest.raises(ValueError, match="overlaps source text at 8-gram"):
+        parse_and_apply(
+            "INSERT_OFFTOPIC",
+            {"edits": [{"anchor_span": anchor, "insertion": insertion}]},
+            ESSAY,
+            ESSAY,
+            VALIDITY,
+            _spec("INSERT_OFFTOPIC"),
+        )
+
+
 def test_llm_insertion_anchor_is_repaired_to_an_exact_source_sentence():
     insertion = "어제는 날씨가 좋아서 공원에 다녀왔다."
     new_text, edits = parse_and_apply(
@@ -382,7 +434,7 @@ def test_payload_schema_is_strict_and_uses_exact_edit_count():
 
 @pytest.mark.parametrize(
     "operator",
-    sorted(set(OPERATOR_SPECS) - set(LLM_ONLY_OPERATORS)),
+    sorted(set(OPERATOR_SPECS) - set(RULE_UNSUPPORTED_OPERATORS)),
 )
 def test_rule_capable_operator_has_rule_generator(operator):
     payload = generate_rule_payload(operator, ESSAY, _spec(operator), random.Random(7))
@@ -398,9 +450,9 @@ def test_rule_capable_operator_has_rule_generator(operator):
     assert edits
 
 
-@pytest.mark.parametrize("operator", LLM_ONLY_OPERATORS)
-def test_v4_llm_only_operators_reject_rule_generation(operator):
-    with pytest.raises(ValueError, match="LLM-only"):
+@pytest.mark.parametrize("operator", RULE_UNSUPPORTED_OPERATORS)
+def test_v5_non_rule_operators_reject_rule_generation(operator):
+    with pytest.raises(ValueError, match="no rule generator"):
         generate_rule_payload(operator, ESSAY, _spec(operator), random.Random(7))
 
 
