@@ -1,0 +1,56 @@
+from typing import Optional
+
+from scripts.audit_corruption_generation import audit_generated_chains
+
+
+def test_generated_chain_audit_passes_clean_balanced_rows():
+    chains = [
+        _chain("r1", "DELETE_SPECIFICS"),
+        _chain("r2", "SHUFFLE_FLOW"),
+        _chain("r3", "INSERT_OFFTOPIC", "서로 다른 삽입 문장 하나입니다."),
+        _chain("r4", "INJECT_LEX_REPEAT", "고유하게 반복되는 표현을 더한 문장입니다."),
+    ]
+    cfg = {
+        "artifact_audit": {"min_distinct_essays": 3},
+        "balance": {"max_operator_fraction": 0.4},
+    }
+
+    report = audit_generated_chains(chains, cfg)
+
+    assert report["passed"] is True
+    assert report["chains"] == 4
+    assert report["transitions"] == 4
+    assert report["preservation_failures"] == 0
+
+
+def test_generated_chain_audit_rejects_failed_preservation():
+    chain = _chain("r1", "DELETE_SPECIFICS")
+    chain["steps"][0]["preservation_check"] = {"passed": False}
+
+    report = audit_generated_chains(
+        [chain],
+        {"artifact_audit": {}, "balance": {"enabled": False}},
+    )
+
+    assert report["passed"] is False
+    assert report["preservation_failures"] == 1
+
+
+def _chain(record_id: str, operator: str, inserted_text: Optional[str] = None) -> dict:
+    edits = []
+    if inserted_text is not None:
+        edits.append({"operation": "insert_after", "text": inserted_text})
+    return {
+        "record_id": record_id,
+        "status": "ok",
+        "states": ["전", "후"],
+        "steps": [
+            {
+                "operator": operator,
+                "edits": edits,
+                "preservation_check": {"passed": True},
+                "fallback": False,
+                "normalized": False,
+            }
+        ],
+    }

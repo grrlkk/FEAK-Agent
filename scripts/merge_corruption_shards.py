@@ -24,6 +24,12 @@ def main() -> int:
         type=int,
         help="Keep at most this many records after restoring source order.",
     )
+    parser.add_argument(
+        "--exclude-records-from",
+        action="append",
+        default=[],
+        help="JSONL whose record_ids must be excluded; may be repeated.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -43,6 +49,20 @@ def main() -> int:
     if args.status:
         selected = set(args.status)
         rows = [row for row in rows if str(row.get("status")) in selected]
+    excluded_record_ids = set()
+    for excluded_path in args.exclude_records_from:
+        with open(excluded_path, encoding="utf-8") as file:
+            excluded_record_ids.update(
+                str(json.loads(line)["record_id"])
+                for line in file
+                if line.strip()
+            )
+    if excluded_record_ids:
+        rows = [
+            row
+            for row in rows
+            if str(row["record_id"]) not in excluded_record_ids
+        ]
     if args.limit is not None and args.limit < 1:
         raise SystemExit("--limit must be positive")
     record_ids = [str(row["record_id"]) for row in rows]
