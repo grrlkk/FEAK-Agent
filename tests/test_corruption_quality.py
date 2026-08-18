@@ -26,7 +26,38 @@ def test_artifact_audit_detects_variable_repetition_template():
         item["kind"] == "exact_template" and item["distinct_essays"] == 3
         for item in report["violations"]
     )
+    assert set(report["violations"][0]["affected_pair_ids"]) == {
+        "essay-1:stage1",
+        "essay-2:stage1",
+        "essay-3:stage1",
+    }
     assert canonical_edit_signature(rows[0]["edits"][0]["text"]).startswith("<REP>")
+
+
+def test_artifact_quarantine_rejects_entire_recurring_cluster():
+    from scripts.filter_corruption_g1 import _quarantine_artifacts
+
+    rows = [
+        _accepted_insert_row("essay-1", "어제 본 영화의 결말이 아직도 생각난다."),
+        _accepted_insert_row("essay-2", "어제 본 영화의 결말이 아직도 기억난다."),
+        _accepted_insert_row("essay-3", "어제 본 영화의 결말이 아직도 선명하다."),
+        _accepted_insert_row("essay-4", "서로 겹치지 않는 고유한 문장이다."),
+    ]
+
+    accepted, report, quarantine = _quarantine_artifacts(
+        rows,
+        {
+            "min_distinct_essays": 3,
+            "max_distinct_essay_fraction": 0.02,
+            "word_ngram_sizes": [5],
+            "char_ngram_size": 100,
+        },
+    )
+
+    assert report["passed"] is True
+    assert [row["essay_id"] for row in accepted] == ["essay-4"]
+    assert quarantine["rejected_steps"] == 3
+    assert all(row["acceptance_reason"] == "corpus_artifact" for row in rows[:3])
 
 
 def test_artifact_audit_ignores_unique_generated_edits():
@@ -101,3 +132,15 @@ def _drop_row(operator: str, target_drop: float) -> dict:
         "target_drop": target_drop,
         "quality_checks": {},
     }
+
+
+def _accepted_insert_row(essay_id: str, text: str) -> dict:
+    row = _insert_row(essay_id, text)
+    row.update(
+        {
+            "accepted": True,
+            "acceptance_reason": "accepted",
+            "quality_checks": {},
+        }
+    )
+    return row

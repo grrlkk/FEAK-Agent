@@ -82,6 +82,7 @@ def audit_edit_artifacts(
                 "essay_fraction": distinct / max(1, len(essay_ids)),
                 "occurrences": detail["occurrences"],
                 "operators": dict(sorted(detail["operators"].items())),
+                "affected_pair_ids": sorted(detail["pair_ids"]),
                 "example_pair_ids": sorted(detail["pair_ids"])[:5],
             }
         )

@@ -57,9 +57,8 @@ def main() -> int:
         audit_rows.extend(
             evaluate_chain(chain, measurements, schema, cfg["measurement"])
         )
-    accepted_rows = [row for row in audit_rows if row["accepted"]]
-    artifact_report = audit_edit_artifacts(
-        accepted_rows,
+    accepted_rows, artifact_report, artifact_quarantine = _quarantine_artifacts(
+        audit_rows,
         cfg.get("artifact_audit", {}),
     )
     balance_report = audit_operator_balance(
@@ -119,6 +118,7 @@ def main() -> int:
         ),
         "feature_usage": schema["features"]["usage"],
         "artifact_audit": artifact_report,
+        "artifact_quarantine": artifact_quarantine,
         "operator_balance": balance_report,
         "fallback_steps": sum(row["fallback"] for row in audit_rows),
         "by_operator": {key: dict(value) for key, value in sorted(by_operator.items())},
@@ -160,6 +160,7 @@ def main() -> int:
         json.dumps(
             {
                 "artifact_audit": artifact_report,
+                "artifact_quarantine": artifact_quarantine,
                 "operator_balance": balance_report,
             },
             ensure_ascii=False,
@@ -186,6 +187,52 @@ def main() -> int:
             + f"; see {quality_path}"
         )
     return 0
+
+
+def _quarantine_artifacts(
+    audit_rows: list[dict],
+    artifact_cfg: dict,
+) -> tuple[list[dict], dict, dict]:
+    """Reject every accepted transition participating in a corpus artifact."""
+
+    accepted_rows = [row for row in audit_rows if row["accepted"]]
+    initial_report = audit_edit_artifacts(accepted_rows, artifact_cfg)
+    report = initial_report
+    rejected_pair_ids: set[str] = set()
+    iterations = 0
+    while not report["passed"]:
+        iterations += 1
+        affected = {
+            str(pair_id)
+            for violation in report.get("violations", [])
+            for pair_id in violation.get("affected_pair_ids", [])
+        }
+        changed = 0
+        for row in audit_rows:
+            pair_id = f"{row['essay_id']}:stage{row['stage_k']}"
+            if not row["accepted"] or pair_id not in affected:
+                continue
+            row["accepted"] = False
+            row["acceptance_reason"] = "corpus_artifact"
+            row.setdefault("quality_checks", {})["corpus_artifact"] = {
+                "flagged": True,
+                "pair_id": pair_id,
+            }
+            rejected_pair_ids.add(pair_id)
+            changed += 1
+        if changed == 0:
+            break
+        accepted_rows = [row for row in audit_rows if row["accepted"]]
+        report = audit_edit_artifacts(accepted_rows, artifact_cfg)
+
+    return accepted_rows, report, {
+        "applied": bool(rejected_pair_ids),
+        "iterations": iterations,
+        "rejected_steps": len(rejected_pair_ids),
+        "rejected_pair_ids": sorted(rejected_pair_ids),
+        "initial_artifact_audit": initial_report,
+        "final_passed": report["passed"],
+    }
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
