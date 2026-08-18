@@ -19,6 +19,11 @@ def main() -> int:
         choices=("ok", "partial", "failed"),
         help="Keep only selected chain statuses; may be repeated.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Keep at most this many records after restoring source order.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -38,6 +43,8 @@ def main() -> int:
     if args.status:
         selected = set(args.status)
         rows = [row for row in rows if str(row.get("status")) in selected]
+    if args.limit is not None and args.limit < 1:
+        raise SystemExit("--limit must be positive")
     record_ids = [str(row["record_id"]) for row in rows]
     if len(record_ids) != len(set(record_ids)):
         raise SystemExit("duplicate record_id across shards")
@@ -45,6 +52,8 @@ def main() -> int:
     if missing:
         raise SystemExit(f"shard record_ids missing from source: {missing}")
     rows.sort(key=lambda row: source_order[str(row["record_id"])])
+    if args.limit is not None:
+        rows = rows[: args.limit]
 
     with output.open("w", encoding="utf-8") as file:
         for row in rows:
