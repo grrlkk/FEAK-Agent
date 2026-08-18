@@ -116,11 +116,60 @@ operator 포함 기준 식별률은 reviewer 1/reviewer 2 각각
 
 이 결과는 `2-LLM API proxy gate`이며 실제 사람 검수로 표기하지 않는다.
 
+## Rule v4 100편 1차 생산 결과 (2026-08-18)
+
+`data/corruption/main_1000.jsonl`에서 v4 파일럿과 Stage A와 겹치지 않는
+소스를 사용했다. 첫 100편은 `ok/partial/failed = 77/19/4`였고, 보존
+가드를 완화하지 않고 다음 40편을 oversampling해 `ok` 34편을 더 확보했다.
+소스 순서를 복원한 뒤 첫 `ok` 100개만 최종 풀로 고정했다.
+
+생성 게이트:
+
+- 완전 체인 100개, 상태 400개, 인접 전이 300개
+- 보존 실패 0, fallback 0, normalization 0
+- 생성 operator: `DELETE_SPECIFICS` 81, `SHUFFLE_FLOW` 77,
+  `INJECT_LEX_REPEAT` 72, `INSERT_OFFTOPIC` 70
+- 생성 edit artifact 위반 0
+- 최대 operator 비중 27% (`DELETE_SPECIFICS`), 40% cap 통과
+
+Kanana m=10 재측정은 GPU 4개에서 400/400개를 완료했다. 측정 key
+`(record_id, state_index)`는 400개 모두 unique하며 missing/extra/duplicate는 0이다.
+
+파일럿에 사전 고정한 임계 `global > 0.225`, `LEX_REPEAT > 0.4`를
+그대로 적용한 결과:
+
+- 채택 129/300 = 43.0%, 80개 essay
+- `DELETE_SPECIFICS` 25, `INJECT_LEX_REPEAT` 40,
+  `INSERT_OFFTOPIC` 38, `SHUFFLE_FLOW` 26
+- 최대 채택 operator 비중 31.0%, balance 통과
+- 채택 edit artifact 위반 0
+- DELETE cross-axis improvement confound 5건 제거
+- acceptance gate 재계산 검증 통과
+
+현재 배치에서 모든 operator에 `> 0.225`를 쓰면 146개가 채택되고 최대
+비중은 39.0%로 cap을 통과하지만, 100편 결과를 본 후의 post-hoc 임계
+변경이 되므로 공식 채택 풀에는 반영하지 않았다.
+
+essay-grouped 5-fold LightGBM sanity는 129/129를 맞혔다. `target_gain`을
+제외한 사후 ablation은 120/129 = 93.0%였다. 다만 둘 다 text를 사용하지
+않은 feature sanity이므로 최종 TVM 일반화 성능을 증명하지는 않는다.
+
+주요 결과 파일:
+
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_chains.jsonl`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_generated_quality.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_audit.jsonl`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_accepted.jsonl`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_summary.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_quality.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_g2_lightgbm_report.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_100_g2_lightgbm_no_target_gain_report.json`
+
 ## 다음 단계
 
-1. 2-LLM API 프록시 게이트 통과에 따라 100편 생성
-2. artifact/balance/acceptance와 `SHUFFLE_FLOW` 식별력 재평가
-3. 이상이 없을 때 200편, 300편으로 순차 확대
+1. 동일한 pre-registered threshold로 200편까지 순차 확대
+2. 200편 artifact/balance/acceptance와 `SHUFFLE_FLOW` 안정성 재평가
+3. 이상이 없을 때 300편으로 확대
 4. feature-only GBM과 텍스트 pairwise 모델의 학습곡선을 모두 측정해 더 늦은 포화점을
    최종 데이터 규모 기준으로 사용
 
