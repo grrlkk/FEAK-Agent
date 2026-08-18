@@ -174,3 +174,104 @@ essay-grouped 5-fold LightGBM sanity는 129/129를 맞혔다. `target_gain`을
    최종 데이터 규모 기준으로 사용
 
 기존 v3 채택 42쌍은 오염 분석 기록으로만 보존하고 TVM 학습에는 사용하지 않는다.
+
+## Rule v4 누적 200편 결과 (2026-08-18)
+
+### 소스 확대와 선택 편향 감사
+
+기존 생성 시도에서 채택하지 않았던 `ok` 11편을 버리지 않고 재사용하고, 원문 offset
+140 이후 120편을 추가 생성했다. 추가 구간은 `ok/partial/failed = 103/13/4`였으며,
+누적 260회 시도에서 원문 순서상 첫 `ok` 200편을 고정했다. 기존 100편과 겹치지 않는
+증분 100편만 새로 측정했다.
+
+생성 완료 여부에 따른 소스 선택 편향을 별도 자동 감사했다.
+
+- 누적 시도: `ok/partial/failed = 214/37/9`
+- 선택 200편 vs 미선택 60편의 표준화 평균차(SMD): 글자 수 0.450, 문장 수 0.344,
+  사람 평균점수 -0.084, 문항 길이 -0.372
+- 생성 `ok` 214편 vs 미완료 46편: 글자 수 0.534, 문장 수 0.424,
+  사람 평균점수 -0.073, 문항 길이 -0.411
+- 결론: 점수 편향은 작지만 짧은 글에서 완전 체인이 덜 만들어지는 길이 편향은
+  무시할 수 없다. 현재 200편 checkpoint는 진행하되 최종 규모 전에 partial chain
+  활용 또는 길이 층화 방안을 검토한다.
+
+질문 문구는 260편에서 163종으로 희소해 exact-question 분포 비교의 TV distance가
+과대해질 수 있으므로 길이 대리 지표와 함께 기록했다. 감사 결과는
+`experiments/results/corruption_g1_gpt5mini_rulev4_200_selection_bias.json`에 있다.
+
+### 생성·측정
+
+- 완전 체인 200개, 상태 800개, 인접 전이 600개
+- 보존 실패 0, fallback 0, normalization 0, duplicate record ID 0
+- 생성 operator: `DELETE_SPECIFICS` 151, `INJECT_LEX_REPEAT` 147,
+  `INSERT_OFFTOPIC` 147, `SHUFFLE_FLOW` 155
+- 생성 최대 operator 비중 25.8%, 40% cap 통과
+- 생성 edit artifact 위반 0
+- 기존 측정 400개를 재사용하고 증분 400개만 GPU 4개에서 m=10으로 측정
+- 누적 측정 key `(record_id, state_index)` 800개 모두 unique,
+  missing/extra/duplicate 0, 모든 row에 RF-corrected 8개와 feature 29개 존재
+
+### 채택과 corpus artifact 격리
+
+파일럿에 사전 고정한 `global > 0.225`, `LEX_REPEAT > 0.4`를 그대로 적용했다.
+최초 점수·교차축 필터에서는 259개가 통과했지만, 채택 부분집합 artifact 감사가
+다음 공통 OFFTOPIC 5-gram을 서로 다른 3편에서 발견했다.
+
+`어제 본 영화의 결말이 아직도`
+
+생성 전체 200편에서는 3/200이라 `max(3편, ceil(2%)) = 4편` 기준 아래였지만,
+채택된 생성 edit의 서로 다른 원문 127편에서는 3/127로 기준을 넘었다. 관련 전이
+3개(`train_15553:stage2`, `train_32431:stage1`, `train_55345:stage3`)를 임의로 하나만
+남기지 않고 전부 `corpus_artifact`로 격리했다. 필터가 violation cluster 전체를
+자동 격리하고 재감사하도록 변경했으며 최종 artifact 위반은 0이다.
+
+최종 결과:
+
+- 채택 256/600 = 42.7%, 161개 essay
+- essay당 채택 수: 0개 39편, 1개 79편, 2개 69편, 3개 13편
+- `DELETE_SPECIFICS` 48/151 = 31.8%
+- `INJECT_LEX_REPEAT` 78/147 = 53.1%
+- `INSERT_OFFTOPIC` 73/147 = 49.7%
+- `SHUFFLE_FLOW` 57/155 = 36.8%
+- 최대 채택 operator 비중 30.5%, balance 통과
+- DELETE cross-axis improvement confound 11건 제거
+- acceptance gate 재계산 검증 통과
+- 자연 행 key `(chain_id, stage_k)` 256개 모두 unique, 완전 중복 row 0
+
+현재 데이터에서 모든 operator에 `> 0.225`를 적용하면 artifact 격리 후 282개가
+남고 최대 비중은 36.9%지만, 누적 결과를 본 뒤의 post-hoc 임계 변경이므로 공식
+채택 풀에는 반영하지 않았다.
+
+### G2 feature sanity
+
+essay-grouped 5-fold LightGBM은 256/256을 맞혔다. `target_gain`이 중요도 203으로
+압도적이므로 파이프라인 sanity 이상의 의미를 부여하지 않는다. `target_gain` 제외
+사후 ablation은 244/256 = 95.3%였고 operator별 정확도는 DELETE 100%, LEX 94.9%,
+OFFTOPIC 94.5%, SHUFFLE 93.0%였다. 이 ablation도 scorer-derived feature를 사용하므로
+텍스트 TVM 일반화 증거는 아니다.
+
+주요 결과 파일:
+
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_chains.jsonl`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_generated_quality.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_selection_bias.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_audit.jsonl`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_accepted.jsonl`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_summary.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_quality.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_g2_lightgbm_report.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_200_g2_lightgbm_no_target_gain_report.json`
+
+## 200편 checkpoint 판단
+
+100→200편에서 채택률은 43.0%→42.7%, 최대 operator 비중은 31.0%→30.5%로
+안정적이었고 SHUFFLE 채택률도 33.8%→36.8%로 유지됐다. 따라서 rule v4의 생성·측정·
+필터 규칙은 200편까지 재현됐다. 256개 비교쌍은 예비 TVM 실험에 사용할 수 있다.
+
+300편으로 확대하기 전에는 다음을 먼저 결정한다.
+
+1. 현재 partial chain의 이미 유효한 앞단 전이를 포함해 짧은 글 편향을 줄일지,
+   또는 원문 길이 층화 quota를 둘지 비교한다.
+2. 동일한 사전 고정 임계와 corpus artifact 자동 격리를 유지한다.
+3. 300편까지 이상이 없으면 feature-only GBM과 텍스트 pairwise 모델의 100/200/300
+   학습곡선을 비교하고, 더 늦게 포화하는 쪽으로 최종 규모를 정한다.
