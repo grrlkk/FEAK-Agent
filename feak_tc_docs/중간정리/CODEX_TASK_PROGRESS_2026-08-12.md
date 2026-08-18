@@ -86,13 +86,42 @@ SHUFFLE 민감도 선행 측정에는 동의했다. 다음 항목은 그대로 �
 불일치가 adjudication되며, 최종 key agreement가 70% 이상일 때만 STEP4 대량
 생성을 시작한다.
 
+## 2-LLM API 블라인드 프록시 게이트 (2026-08-18)
+
+사용자 승인에 따라 실제 사람 2인 게이트 대신 먼저 OpenAI API 기반 독립 모델 2개로
+같은 50쌍을 검수했다. Codex/CLI 토큰이나 sub-agent는 사용하지 않았다. 각 pair는
+별도 API context에서 평가했고, 숨긴 key와 상대 모델 결과는 모든 model input에서
+제외했다.
+
+- reviewer 1: `gpt-5-mini-2025-08-07`, 46/50 = 92%
+- reviewer 2: `gpt-4.1-2025-04-14`, 46/50 = 92%
+- inter-rater exact agreement: 46/50 = 92%
+- 4개 불일치는 두 모델 중 하나의 새 blind call을 번갈아 사용해 재검수
+- 최종 key agreement: 45/50 = 90%
+- cleaner와 반대인 A/B를 선택한 오답: 두 reviewer 모두 0건
+- 각 reviewer의 미일치 4건은 전부 `TIE`
+- 판정: `passed` (70% 기준)
+
+operator 포함 기준 식별률은 reviewer 1/reviewer 2 각각
+`DELETE_SPECIFICS` 8/9, 8/9, `INJECT_LEX_REPEAT` 24/24, 23/24,
+`INSERT_OFFTOPIC` 17/17, 17/17, `SHUFFLE_FLOW` 9/12, 10/12였다.
+`SHUFFLE_FLOW`가 상대적으로 약하므로 100편 생산 후 operator별 acceptance와 blind
+식별률을 다시 점검한다.
+
+결과 파일:
+
+- `experiments/results/corruption_g1_gpt5mini_rulev4_30_two_llm_api_report.json`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_30_two_llm_api_adjudication.jsonl`
+- `experiments/results/corruption_g1_gpt5mini_rulev4_30_two_llm_api_disagreements.jsonl`
+
+이 결과는 `2-LLM API proxy gate`이며 실제 사람 검수로 표기하지 않는다.
+
 ## 다음 단계
 
-1. 사람 2인 블라인드 검수 및 불일치 adjudication
-2. 통과 시 100편 생성 후 artifact/balance/acceptance 게이트 재평가
+1. 2-LLM API 프록시 게이트 통과에 따라 100편 생성
+2. artifact/balance/acceptance와 `SHUFFLE_FLOW` 식별력 재평가
 3. 이상이 없을 때 200편, 300편으로 순차 확대
 4. feature-only GBM과 텍스트 pairwise 모델의 학습곡선을 모두 측정해 더 늦은 포화점을
    최종 데이터 규모 기준으로 사용
 
 기존 v3 채택 42쌍은 오염 분석 기록으로만 보존하고 TVM 학습에는 사용하지 않는다.
-
