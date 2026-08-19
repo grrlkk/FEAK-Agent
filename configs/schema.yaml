@@ -1,0 +1,62 @@
+# FEAK-TC v2 G0 schema.
+# Captured from KananaDiagnoser.diagnose(...) outputs and checked across the
+# 2026-07-23 v2 corruption pilot measurements. This file fixes names and order
+# only; it does not map features to corruption operators or optimization goals.
+version: 1
+source: kanana_diagnose
+
+rubrics:
+  count: 8
+  score_range: [1, 9]
+  keys:
+    - task_1
+    - content_1
+    - content_2
+    - content_3
+    - organization_1
+    - organization_2
+    - expression_1
+    - expression_2
+  display_names:
+    task_1: 과제충실성
+    content_1: 설명명료성
+    content_2: 설명구체성
+    content_3: 설명적절성
+    organization_1: 문장연결성
+    organization_2: 글통일성
+    expression_1: 어휘적절성
+    expression_2: 어법적절성
+
+features:
+  count: 29
+  usage: post_generation_audit_and_delete_confound_gate
+  keys:
+    - C_Cnt
+    - E_Cnt
+    - F_Cnt
+    - J_Cnt
+    - X_Cnt
+    - char_Cnt
+    - word_Cnt
+    - E_NDW
+    - morph_NDW
+    - morph_LenAvg
+    - morph_LenStd
+    - word_LenStd
+    - grade_2_ratio
+    - grade_3_ratio
+    - grade_4_ratio
+    - grade_m1_ratio
+    - N_MSTTR
+    - V_HDD
+    - lemma_MATTR
+    - 2-gram_NDW
+    - NN_repRatio
+    - word_sentLenAvg
+    - 2-gram_RTTR
+    - adjacent_sentence_overlap_function_lemmas
+    - char_paraLenAvg
+    - avgSentSimilarity
+    - topicConsistency
+    - text_dalechall
+    - text_oridx

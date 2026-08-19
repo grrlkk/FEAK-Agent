@@ -1,0 +1,101 @@
+# OFFTOPIC-only rule v5 pilot. This keeps the production scorer thresholds and
+# audits while avoiding unrelated LLM regeneration during operator validation.
+seed: 20260722
+schema: configs/schema.yaml
+depth: 1
+
+llm:
+  model: gpt-5-mini-2025-08-07
+  max_attempts: 1
+  fallback_to_rule: false
+
+normalization:
+  enabled: false
+
+generation:
+  modes: [retrieval]
+
+validity:
+  min_ratio_vs_source: 0.6
+  max_ratio_vs_source: 1.8
+  insertion_min_chars: 10
+  insertion_max_chars: 250
+  grammar_min_token_retention: 0.6
+  offtopic_source_ngram_size: 8
+
+measurement:
+  score_basis: rf_corrected
+  target_drop_min: 0.225
+  target_drop_sensitivity: [0.3, 0.4, 0.5, 0.6]
+
+artifact_audit:
+  enabled: true
+  min_distinct_essays: 3
+  max_distinct_essay_fraction: 0.02
+  word_ngram_sizes: [5, 6, 7, 8]
+  char_ngram_size: 20
+  report_limit: 50
+  fail_pipeline: true
+
+semantic_artifact_audit:
+  enabled: true
+  operators: [INSERT_OFFTOPIC]
+  model: BAAI/bge-m3
+  similarity_threshold: 0.88
+  relevance_enabled: true
+  max_question_similarity: 0.50
+  max_source_similarity: 0.50
+  min_distinct_essays: 3
+  max_distinct_essay_fraction: 0.02
+  max_first_token_fraction: 0.15
+  cue_terms:
+    - 어제
+    - 오늘
+    - 주말
+    - 요즘
+    - 최근
+    - 지난
+    - 가끔
+    - 점심
+    - 아침
+    - 내일
+    - 영화
+    - 드라마
+    - 고양이
+    - 강아지
+    - 카페
+    - 친구
+    - 산책
+    - 책
+    - 커피
+    - 날씨
+  max_cue_fraction: 0.50
+  batch_size: 32
+  report_limit: 30
+  fail_pipeline: true
+
+balance:
+  enabled: false
+  max_operator_fraction: 1.0
+  fail_pipeline: false
+
+operators:
+  INSERT_OFFTOPIC:
+    reverse_action: DELETE_OR_FOCUS
+    intent: REMOVE_REDUNDANCY
+    target_rubric: organization_2
+    preserve_constraints:
+      - 기존 문장과 기존 문법을 바꾸지 않는다.
+      - 원래 글의 사실과 주장을 수정하지 않는다.
+    generation_modes: [retrieval]
+    fallback_to_rule: false
+    edits_per_step: 2
+    distractor_bank_path: data/corruption/main_1000.jsonl
+    distractor_min_chars: 15
+    distractor_max_chars: 80
+    distractor_max_lexical_jaccard: 0.12
+    distractor_candidate_pool_size: 2
+    distractor_match_ending_style: true
+    distractor_semantic_filter_enabled: true
+    distractor_max_question_similarity: 0.50
+    distractor_max_source_similarity: 0.50

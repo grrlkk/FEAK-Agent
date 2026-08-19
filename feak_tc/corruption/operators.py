@@ -1,105 +1,380 @@
-"""Corruption operators — forward degradations that invert action types.
+"""FEAK-TC v2 G1 corruption operators.
 
-Each operator asks the LLM to pick spans and produce degraded text, then
-applies the edits locally so the exact spans are recorded. The reverse
-direction of every step is therefore a labeled (action_type, target spans)
-transition for TVM training data.
-
-Pilot v1 showed single-sentence corruption moves essay-level rubric scores
-by less than scorer rerun noise, so every operator degrades several
-sentences per step (counts in configs/corruption.yaml `intensity`).
+Operators are concrete text interventions. They never receive feature values
+and prompts never ask an LLM to lower a rubric. Rubrics select the audit axis;
+features are measured only after generation.
 """
 
 from __future__ import annotations
 
+import random
+import re
+from collections import Counter
+from difflib import SequenceMatcher
+from itertools import combinations, permutations
 from typing import Any, Mapping
 
+from feak_tc.diagnose.stub import split_sentences
 from feak_tc.mvp.validity import is_complete_sentence
 
+from .distractors import is_metadata_text, split_sentence_units
+
+
+MAIN_CHAIN_OPERATORS = (
+    "DELETE_SPECIFICS",
+    "SHUFFLE_FLOW",
+    "INSERT_OFFTOPIC",
+    "INJECT_LEX_REPEAT",
+)
+SURFACE_VALIDATION_OPERATOR = "INJECT_GRAMMAR_ERR"
+RULE_UNSUPPORTED_OPERATORS = ("INSERT_OFFTOPIC", "INJECT_LEX_REPEAT")
+LLM_ONLY_OPERATORS = ("INJECT_LEX_REPEAT",)
 
 OPERATOR_SPECS: dict[str, dict[str, Any]] = {
-    "DROP_DETAIL": {
+    "DELETE_SPECIFICS": {
         "reverse_action": "ADD_DETAIL",
-        "intended_rubrics": ["content_2", "content_1"],
-    },
-    "INSERT_OFFTOPIC": {
-        "reverse_action": "DELETE_OR_FOCUS",
-        "intended_rubrics": ["content_3", "organization_2"],
-    },
-    "VERBOSE_REPEAT": {
-        "reverse_action": "COMPRESS",
-        # Length/repetition features are the primary axis; rubric axis is
-        # confirmed empirically in the pilot report.
-        "intended_rubrics": [],
+        "intent": "ADD_SUPPORTING_EXPLANATION",
+        "target_rubric": "content_2",
+        "preserve_constraints": (
+            "문장 문법을 바꾸지 않는다.",
+            "글의 전체 논지와 남은 문장은 바꾸지 않는다.",
+        ),
     },
     "SHUFFLE_FLOW": {
         "reverse_action": "RESTRUCTURE",
-        "intended_rubrics": ["organization_1"],
+        "intent": "RESTORE_LOGICAL_ORDER",
+        "target_rubric": "organization_1",
+        "preserve_constraints": (
+            "문장의 내용과 문법을 바꾸지 않는다.",
+            "문장 자체는 그대로 두고 위치만 이동한다.",
+        ),
     },
-    "FLATTEN_STYLE": {
+    "INSERT_OFFTOPIC": {
+        "reverse_action": "DELETE_OR_FOCUS",
+        "intent": "REMOVE_REDUNDANCY",
+        "target_rubric": "organization_2",
+        "preserve_constraints": (
+            "기존 문장과 기존 문법을 바꾸지 않는다.",
+            "원래 글의 사실과 주장을 수정하지 않는다.",
+        ),
+    },
+    "INJECT_LEX_REPEAT": {
         "reverse_action": "STYLE_REFINE",
-        "intended_rubrics": ["expression_1", "expression_2"],
+        "intent": "REFINE_FORMAL_STYLE",
+        "target_rubric": "expression_1",
+        "preserve_constraints": (
+            "핵심 주장과 사실을 바꾸지 않는다.",
+            "기존 문장은 그대로 보존하고 어휘 반복 표현만 추가한다.",
+        ),
+    },
+    "INJECT_GRAMMAR_ERR": {
+        "reverse_action": "STYLE_REFINE",
+        "intent": "REFINE_FORMAL_STYLE",
+        "target_rubric": "expression_2",
+        "preserve_constraints": (
+            "내용과 어휘 선택을 바꾸지 않는다.",
+            "문장 순서와 핵심 사실을 바꾸지 않는다.",
+            "어법·조사·맞춤법 오류만 주입한다.",
+        ),
     },
 }
 
-DEFAULT_INTENSITY = {
-    "drop_detail_spans": 2,
-    "insert_offtopic_count": 2,
-    "verbose_spans": 2,
-    "shuffle_moves": 2,
-    "flatten_spans": 4,
+_VARIANT_GUIDANCE = {
+    "conservative": "최소한의 국소 편집으로 요청한 결함만 분명하게 만든다.",
+    "student_natural": "실제 학생 글에서 생길 법한 자연스러운 결함으로 만들되 다른 품질 축은 건드리지 않는다.",
 }
 
 _COMMON_RULES = (
-    "규칙:\n"
-    "- span 필드는 모두 글에 '정확히 그대로' 존재하는 연속 부분 문자열이어야 한다 (복사해서 붙여넣기).\n"
-    "- 서로 다른 edit이 같은 문장을 건드리면 안 된다.\n"
-    "- 글의 다른 부분은 절대 바꾸지 않는다.\n"
+    "공통 규칙:\n"
+    "- span 필드는 글에 정확히 그대로 존재하는 연속 부분 문자열이어야 한다.\n"
+    "- 서로 다른 edit은 같은 문장을 건드리지 않는다.\n"
+    "- 지정한 보존 조건을 반드시 지킨다.\n"
+    "- 글의 다른 부분은 바꾸지 않는다.\n"
     "- JSON 객체만 반환한다."
 )
 
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*%?")
+_WORD_RE = re.compile(r"[가-힣A-Za-z]{2,}")
+_DETAIL_MARKERS = ("예를 들어", "예컨대", "가령", "사례", "통계", "조사", "때문", "따르면")
+_FLOW_DEPENDENCY_PREFIXES = (
+    "그래서",
+    "따라서",
+    "그러므로",
+    "그러나",
+    "하지만",
+    "반면",
+    "또한",
+    "게다가",
+    "예를 들어",
+    "예컨대",
+    "가령",
+    "먼저",
+    "다음으로",
+    "마지막으로",
+    "결국",
+    "이처럼",
+    "이러한",
+    "이것",
+    "이를",
+    "이는",
+    "그 결과",
+    "이로 인해",
+    "그로 인해",
+    "반대로",
+    "그런데",
+    "한편",
+    "비록",
+    "이때",
+)
+def build_prompt(
+    operator: str,
+    text: str,
+    question: str,
+    spec: Mapping[str, Any],
+    variant: str,
+) -> str:
+    """Build an operator-only prompt with explicit preservation constraints."""
 
-def build_prompt(operator: str, text: str, question: str, intensity: Mapping[str, Any]) -> str:
-    header = f"[질문]\n{question}\n\n[글]\n{text}\n\n"
-    if operator == "DROP_DETAIL":
-        n = int(intensity.get("drop_detail_spans", 2))
-        return header + (
-            f"과제: 이 글에서 '구체적인 사례, 근거, 부연 설명'을 담은 문장 {n}개를 골라라. "
-            "그 문장들이 삭제되면 글이 일반론만 남아 설명의 구체성이 크게 떨어져야 한다.\n"
-            '반환 형식: {"target_spans": ["<삭제할 문장 1 (그대로 복사)>", "<삭제할 문장 2>"]}\n' + _COMMON_RULES
+    if operator not in OPERATOR_SPECS:
+        raise ValueError(f"Unknown operator: {operator}")
+    if variant not in _VARIANT_GUIDANCE:
+        raise ValueError(f"Unknown prompt variant: {variant}")
+
+    n = int(spec.get("edits_per_step", 1))
+    preserve = "\n".join(f"- {item}" for item in spec["preserve_constraints"])
+    header = (
+        f"[질문]\n{question}\n\n[글]\n{text}\n\n"
+        f"[보존 조건]\n{preserve}\n\n"
+        f"[편집 방식]\n{_VARIANT_GUIDANCE[variant]}\n\n"
+    )
+    if operator == "DELETE_SPECIFICS":
+        task = (
+            f"구체적인 사례·근거·수치를 담은 서로 다른 완결 문장 {n}개를 고른다. "
+            "그 문장만 삭제하면 전체 논지는 유지되지만 뒷받침의 구체성이 낮아져야 한다.\n"
+            "각 문자열은 원문에서 복사하고 문장부호까지 완전히 동일하게 반환한다.\n"
+            '반환: {"target_spans": ["<삭제 문장>", "..."]}'
         )
-    if operator == "INSERT_OFFTOPIC":
-        n = int(intensity.get("insert_offtopic_count", 2))
-        return header + (
-            f"과제: 이 글의 주제와 직접 관련 없는 여담 문장 {n}개를 만들어, 글의 서로 다른 위치에 끼워 넣어라. "
-            "여담은 글쓴이의 말투를 흉내 내되 내용은 주제에서 벗어나야 한다.\n"
-            '반환 형식: {"edits": [{"anchor_span": "<이 문장 뒤에 삽입 (그대로 복사)>", '
-            '"insertion": "<주제와 무관한 여담 문장>"}, ...]}\n' + _COMMON_RULES
+    elif operator == "SHUFFLE_FLOW":
+        task = (
+            f"접속어·지시어·시간·인과 표현으로 앞 문장에 의존하는 완결 문장 {n}개를 골라 "
+            "각각 원래 선행 문장에서 멀어지도록 다른 위치로 옮긴다. 문장 내용은 한 글자도 "
+            "바꾸지 않고, 의존 관계가 실제로 끊어져 논리적 연결 순서가 어색해지게 한다. "
+            "anchor는 moved 문장의 현재 바로 앞 문장이 아니어야 하며, 두 span 모두 원문에서 "
+            "문장부호까지 그대로 복사한다.\n"
+            '반환: {"moves": [{"moved_span": "<옮길 문장>", '
+            '"anchor_span": "<이 문장 뒤로 이동>"}, ...]}'
         )
-    if operator == "VERBOSE_REPEAT":
-        n = int(intensity.get("verbose_spans", 2))
-        return header + (
-            f"과제: 이 글에서 문장 {n}개를 골라, 각각 같은 내용을 반복하고 군더더기를 붙여 장황한 2~3문장으로 바꿔라. "
-            "의미는 유지하되 불필요하게 길어져야 한다.\n"
-            '반환 형식: {"edits": [{"target_span": "<원래 문장 (그대로 복사)>", '
-            '"replacement": "<장황하게 늘린 2~3문장>"}, ...]}\n' + _COMMON_RULES
+    elif operator == "INSERT_OFFTOPIC":
+        task = (
+            f"글의 주제·과제와 무관한 여담 문장 {n}개를 서로 다른 위치에 삽입한다. "
+            "각 여담은 15~80자의 간결한 한 문장으로 쓰고, 기존 내용을 반박하거나 "
+            "수정하지 말고 통일성만 낮춘다.\n"
+            '반환: {"edits": [{"anchor_span": "<이 문장 뒤에 삽입>", '
+            '"insertion": "<주제와 무관한 완결 문장>"}, ...]}'
         )
+    elif operator == "INJECT_LEX_REPEAT":
+        task = (
+            f"서로 다른 기존 문장 {n}개를 anchor로 고르고, 각 문장 뒤에 같은 핵심 어휘를 "
+            "부자연스럽게 세 번 이상 정확히 같은 표기로 반복하는 한 문장을 추가한다. "
+            "단어만 나열하지 말고 서술어와 종결어미를 포함한 15~60자의 완결문으로 쓴다. "
+            "숫자를 새로 쓰지 않고 반드시 '다.'로 끝내며 새 사실은 만들지 않는다.\n"
+            '반환: {"edits": [{"anchor_span": "<기존 문장>", '
+            '"repetition": "<어휘 반복이 심한 완결 문장>"}, ...]}'
+        )
+    elif operator == "INJECT_GRAMMAR_ERR":
+        task = (
+            f"서로 다른 완결 문장 {n}개를 골라 내용·어휘·수치·순서는 유지하면서 조사 중복, "
+            "호응 오류, 맞춤법 오류 중 하나만 주입한 문장으로 바꾼다. replacement는 반드시 "
+            "target_span과 달라야 하고 완결 문장부호는 유지한다. target_span은 원문에서 "
+            "문장부호까지 그대로 복사한다.\n"
+            '반환: {"edits": [{"target_span": "<원래 문장>", '
+            '"replacement": "<어법 오류가 생긴 문장>", '
+            '"error_type": "<particle_swap|spacing|spelling_typo>"}, ...]}'
+        )
+    else:  # pragma: no cover - guarded above
+        raise ValueError(operator)
+    return header + task + "\n\n" + _COMMON_RULES
+
+
+def build_payload_schema(
+    operator: str,
+    spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the strict JSON Schema for one operator payload."""
+
+    n = int(spec.get("edits_per_step", 1))
+    string = {"type": "string"}
+    if operator == "DELETE_SPECIFICS":
+        properties = {
+            "target_spans": _fixed_array(string, n),
+        }
+    elif operator == "SHUFFLE_FLOW":
+        properties = {
+            "moves": _fixed_array(
+                _strict_object(
+                    {
+                        "moved_span": string,
+                        "anchor_span": string,
+                    }
+                ),
+                n,
+            )
+        }
+    elif operator == "INSERT_OFFTOPIC":
+        properties = {
+            "edits": _fixed_array(
+                _strict_object(
+                    {
+                        "anchor_span": string,
+                        "insertion": string,
+                    }
+                ),
+                n,
+            )
+        }
+    elif operator == "INJECT_LEX_REPEAT":
+        repetition_string = {
+            "type": "string",
+            "minLength": int(spec.get("repetition_min_chars", 15)),
+            "maxLength": int(spec.get("repetition_max_chars", 60)),
+            "pattern": r"다[.]$",
+        }
+        properties = {
+            "edits": _fixed_array(
+                _strict_object(
+                    {
+                        "anchor_span": string,
+                        "repetition": repetition_string,
+                    }
+                ),
+                n,
+            )
+        }
+    elif operator == "INJECT_GRAMMAR_ERR":
+        properties = {
+            "edits": _fixed_array(
+                _strict_object(
+                    {
+                        "target_span": string,
+                        "replacement": string,
+                        "error_type": {
+                            "type": "string",
+                            "enum": ["particle_swap", "spacing", "spelling_typo"],
+                        },
+                    }
+                ),
+                n,
+            )
+        }
+    else:
+        raise ValueError(f"Unknown operator: {operator}")
+    return _strict_object(properties)
+
+
+def generate_rule_payload(
+    operator: str,
+    text: str,
+    spec: Mapping[str, Any],
+    rng: random.Random,
+    source_text: str | None = None,
+) -> dict[str, Any]:
+    """Generate a deterministic corruption payload without feature targets."""
+
+    sentences = split_sentences(text)
+    source_text = source_text or text
+    n = int(spec.get("edits_per_step", 1))
+    if len(sentences) < max(4, n + 2):
+        raise ValueError(f"not enough sentences for {operator}: {len(sentences)}")
+
+    if operator == "DELETE_SPECIFICS":
+        candidates = [
+            sentence
+            for sentence in sentences[1:-1]
+            if _is_clean_sentence_span(source_text, sentence)
+        ]
+        max_removed = 0.35 * len(text)
+        viable = [
+            spans
+            for spans in combinations(candidates, n)
+            if sum(len(span) for span in spans) <= max_removed
+        ]
+        if not viable:
+            raise ValueError("no deletion set satisfies the source-length preservation budget")
+        selected = max(
+            viable,
+            key=lambda spans: (
+                sum(_specificity_score(span) for span in spans),
+                sum(len(span) for span in spans),
+            ),
+        )
+        return {"target_spans": list(selected)}
+
     if operator == "SHUFFLE_FLOW":
-        n = int(intensity.get("shuffle_moves", 2))
-        return header + (
-            f"과제: 이 글에서 서로 다른 문장 {n}개를 골라 각각 다른 위치로 옮겨서 글의 논리 전개 순서가 부자연스러워지게 하라. "
-            "문법적으로는 읽히지만 흐름(연결성)이 어색해지는 이동이어야 한다.\n"
-            '반환 형식: {"moves": [{"moved_span": "<옮길 문장 (그대로 복사)>", '
-            '"anchor_span": "<이 문장 바로 뒤로 이동 (그대로 복사)>"}, ...]}\n' + _COMMON_RULES
+        candidates = sorted(
+            [
+                sentence
+                for index, sentence in enumerate(sentences)
+                if index > 0
+                and sentences.count(sentence) == 1
+                and _is_clean_sentence_span(source_text, sentence)
+                and is_complete_sentence(sentence)
+            ],
+            key=lambda sentence: (
+                bool(_flow_dependency_markers(sentence)),
+                -sentences.index(sentence),
+            ),
+            reverse=True,
         )
-    if operator == "FLATTEN_STYLE":
-        n = int(intensity.get("flatten_spans", 4))
-        return header + (
-            f"과제: 이 글에서 문장 {n}개를 골라, 어휘가 단조롭고 종결어미가 똑같이 반복되며 표현이 어색한 버전으로 바꿔라. "
-            "내용(의미)은 유지하고 길이는 비슷해야 하며, 표현의 질만 떨어져야 한다.\n"
-            '반환 형식: {"edits": [{"target_span": "<원래 문장>", "replacement": "<표현이 나빠진 문장>"}, ...]}\n'
-            + _COMMON_RULES
+        if len(candidates) < n:
+            raise ValueError(
+                f"not enough movable sentences for SHUFFLE_FLOW: "
+                f"{len(candidates)} < {n}"
+            )
+        payload = _find_effective_shuffle_payload(
+            sentences,
+            candidates,
+            n,
+            source_text,
         )
+        if payload is None:
+            raise ValueError("no move set can break two source-order dependencies")
+        return payload
+
+    if operator in RULE_UNSUPPORTED_OPERATORS:
+        raise ValueError(f"{operator} has no rule generator in corruption rule v5")
+
+    if operator == "INJECT_GRAMMAR_ERR":
+        if n > len(_GRAMMAR_ERROR_TYPES):
+            raise ValueError(
+                f"grammar rule supports at most {len(_GRAMMAR_ERROR_TYPES)} distinct error types"
+            )
+        candidates = sorted(
+            sentences,
+            key=lambda sentence: len(_WORD_RE.findall(sentence)),
+            reverse=True,
+        )
+        edits = []
+        used: set[str] = set()
+        for error_type in _GRAMMAR_ERROR_TYPES[:n]:
+            for span in candidates:
+                if span in used:
+                    continue
+                replacement = _inject_grammar_error(span, error_type)
+                if replacement is None:
+                    continue
+                edits.append(
+                    {
+                        "target_span": span,
+                        "replacement": replacement,
+                        "error_type": error_type,
+                    }
+                )
+                used.add(span)
+                break
+            else:
+                raise ValueError(f"no sentence supports grammar error type: {error_type}")
+        return {"edits": edits}
+
     raise ValueError(f"Unknown operator: {operator}")
 
 
@@ -109,53 +384,44 @@ def parse_and_apply(
     text: str,
     source_text: str,
     validity_cfg: Mapping[str, Any],
-    intensity: Mapping[str, Any],
+    spec: Mapping[str, Any],
 ) -> tuple[str, list[dict[str, str]]]:
-    """Apply the LLM-chosen edits locally. Raises ValueError when invalid."""
+    """Apply one controlled intervention and return exact edit records."""
 
-    new_text, edits = text, []
-    if operator == "DROP_DETAIL":
+    if operator not in OPERATOR_SPECS:
+        raise ValueError(f"Unknown operator: {operator}")
+    expected = int(spec.get("edits_per_step", 1))
+    new_text = text
+    edits: list[dict[str, str]] = []
+
+    if operator == "DELETE_SPECIFICS":
         spans = payload.get("target_spans")
-        _require_count(spans, int(intensity.get("drop_detail_spans", 2)))
-        for raw_span in spans:
-            span = _require_span({"target_span": raw_span}, "target_span", new_text)
+        _require_count(spans, expected)
+        _require_distinct(spans)
+        normalized_spans = [
+            _require_span({"target_span": raw_span}, "target_span", new_text)
+            for raw_span in spans
+        ]
+        if any(span not in source_text for span in normalized_spans):
+            raise ValueError(
+                "DELETE_SPECIFICS confound: target must originate in the source text"
+            )
+        _require_clean_delete_spans(new_text, normalized_spans, validity_cfg)
+        for span in normalized_spans:
             new_text = _replace_once(new_text, span, "")
             edits.append({"operation": "delete", "target_span": span, "text": ""})
-    elif operator == "INSERT_OFFTOPIC":
-        raw_edits = payload.get("edits")
-        _require_count(raw_edits, int(intensity.get("insert_offtopic_count", 2)))
-        lo, hi = int(validity_cfg["insertion_min_chars"]), int(validity_cfg["insertion_max_chars"])
-        for raw in raw_edits:
-            anchor = _require_span(raw, "anchor_span", new_text)
-            insertion = str(raw.get("insertion", "")).strip()
-            if not (lo <= len(insertion) <= hi):
-                raise ValueError(f"insertion length {len(insertion)} outside [{lo}, {hi}]")
-            if insertion in new_text:
-                raise ValueError("insertion already exists in text")
-            if not is_complete_sentence(insertion):
-                raise ValueError("insertion is not a complete sentence")
-            new_text = _replace_once(new_text, anchor, anchor + " " + insertion)
-            edits.append({"operation": "insert_after", "target_span": anchor, "text": insertion})
-    elif operator == "VERBOSE_REPEAT":
-        raw_edits = payload.get("edits")
-        _require_count(raw_edits, int(intensity.get("verbose_spans", 2)))
-        for raw in raw_edits:
-            span = _require_span(raw, "target_span", new_text)
-            replacement = str(raw.get("replacement", "")).strip()
-            if len(replacement) <= len(span):
-                raise ValueError("replacement must be longer than target_span")
-            if not is_complete_sentence(replacement):
-                raise ValueError("replacement is not a complete sentence")
-            new_text = _replace_once(new_text, span, replacement)
-            edits.append({"operation": "replace", "target_span": span, "text": replacement})
+
     elif operator == "SHUFFLE_FLOW":
         moves = payload.get("moves")
-        _require_count(moves, int(intensity.get("shuffle_moves", 2)))
+        _require_count(moves, expected)
+        _require_distinct([raw.get("moved_span", "") for raw in moves])
         for raw in moves:
             moved = _require_span(raw, "moved_span", new_text)
             anchor = _require_span(raw, "anchor_span", new_text)
+            _require_source_origin(moved, source_text, operator, "moved_span")
+            _require_source_origin(anchor, source_text, operator, "anchor_span")
             if moved == anchor or moved in anchor or anchor in moved:
-                raise ValueError("moved_span and anchor_span must be distinct sentences")
+                raise ValueError("moved_span and anchor_span must be distinct")
             without = _replace_once(new_text, moved, "")
             if anchor not in without:
                 raise ValueError("anchor_span lost after removing moved_span")
@@ -164,20 +430,103 @@ def parse_and_apply(
                 raise ValueError("move produced no change")
             new_text = candidate
             edits.append({"operation": "move_after", "target_span": moved, "text": anchor})
-    elif operator == "FLATTEN_STYLE":
+
+    elif operator == "INSERT_OFFTOPIC":
         raw_edits = payload.get("edits")
-        _require_count(raw_edits, int(intensity.get("flatten_spans", 4)), tolerance=1)
+        _require_count(raw_edits, expected)
+        used_anchors: set[str] = set()
+        for raw in raw_edits:
+            requested_anchor = str(raw.get("anchor_span", "")).strip()
+            if is_metadata_text(requested_anchor):
+                raise ValueError("OFFTOPIC anchor must not be metadata")
+            anchor, repaired = _resolve_source_anchor(
+                requested_anchor,
+                new_text,
+                source_text,
+                used_anchors,
+            )
+            used_anchors.add(anchor)
+            insertion = str(raw.get("insertion", "")).strip()
+            _require_insertion(insertion, text, validity_cfg)
+            _require_offtopic_insertion(
+                insertion,
+                anchor,
+                source_text,
+                validity_cfg,
+            )
+            new_text = _replace_once(new_text, anchor, anchor + " " + insertion)
+            edit = {"operation": "insert_after", "target_span": anchor, "text": insertion}
+            for key in ("distractor_record_id", "distractor_question"):
+                value = str(raw.get(key, "")).strip()
+                if value:
+                    edit[key] = value
+            for key in (
+                "distractor_question_similarity",
+                "distractor_source_similarity",
+                "distractor_semantic_model",
+            ):
+                value = raw.get(key)
+                if value is not None:
+                    edit[key] = value
+            if repaired:
+                edit.update(
+                    {
+                        "anchor_repaired": True,
+                        "requested_target_span": requested_anchor,
+                    }
+                )
+            edits.append(edit)
+
+    elif operator == "INJECT_LEX_REPEAT":
+        raw_edits = payload.get("edits")
+        _require_count(raw_edits, expected)
+        used_anchors = set()
+        for raw in raw_edits:
+            requested_anchor = str(raw.get("anchor_span", "")).strip()
+            anchor, repaired = _resolve_source_anchor(
+                requested_anchor,
+                new_text,
+                source_text,
+                used_anchors,
+            )
+            used_anchors.add(anchor)
+            repetition = str(raw.get("repetition", "")).strip()
+            _require_insertion(repetition, text, validity_cfg)
+            repetition_minimum = int(spec.get("repetition_min_chars", 15))
+            repetition_maximum = int(spec.get("repetition_max_chars", 60))
+            if not repetition_minimum <= len(repetition) <= repetition_maximum:
+                raise ValueError(
+                    "lexical repetition length "
+                    f"{len(repetition)} outside "
+                    f"[{repetition_minimum}, {repetition_maximum}]"
+                )
+            if _max_word_frequency(repetition) < 3:
+                raise ValueError("lexical repetition must repeat a word at least three times")
+            new_text = _replace_once(new_text, anchor, anchor + " " + repetition)
+            edit = {"operation": "insert_after", "target_span": anchor, "text": repetition}
+            if repaired:
+                edit.update(
+                    {
+                        "anchor_repaired": True,
+                        "requested_target_span": requested_anchor,
+                    }
+                )
+            edits.append(edit)
+
+    elif operator == "INJECT_GRAMMAR_ERR":
+        raw_edits = payload.get("edits")
+        _require_count(raw_edits, expected)
+        _require_distinct([raw.get("target_span", "") for raw in raw_edits])
         for raw in raw_edits:
             span = _require_span(raw, "target_span", new_text)
             replacement = str(raw.get("replacement", "")).strip()
-            if not replacement or replacement == span:
-                raise ValueError("empty or unchanged replacement")
-            if not 0.5 <= len(replacement) / len(span) <= 2.0:
-                raise ValueError("style replacement changes length too much")
+            _require_grammar_replacement(span, replacement, validity_cfg)
             new_text = _replace_once(new_text, span, replacement)
-            edits.append({"operation": "replace", "target_span": span, "text": replacement})
-    else:
-        raise ValueError(f"Unknown operator: {operator}")
+            edit = {"operation": "replace", "target_span": span, "text": replacement}
+            error_type = str(raw.get("error_type", "")).strip()
+            if error_type:
+                edit["error_type"] = error_type
+            edits.append(edit)
 
     new_text = _normalize_spaces(new_text)
     lo = float(validity_cfg["min_ratio_vs_source"]) * len(source_text)
@@ -189,11 +538,176 @@ def parse_and_apply(
     return new_text, edits
 
 
-def _require_count(items: Any, expected: int, tolerance: int = 0) -> None:
+def validate_operator_preservation(
+    operator: str,
+    before_text: str,
+    after_text: str,
+    edits: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate operator-specific preservation beyond rubric score changes."""
+
+    before = _normalize_spaces(before_text)
+    after = _normalize_spaces(after_text)
+
+    if operator == "DELETE_SPECIFICS":
+        expected = before
+        deleted_spans = []
+        for edit in edits:
+            if str(edit.get("operation")) != "delete":
+                raise ValueError("DELETE_SPECIFICS preservation requires delete edits only")
+            target = str(edit.get("target_span", "")).strip()
+            if not target or target not in expected:
+                raise ValueError("DELETE_SPECIFICS target span is missing from source")
+            expected = _replace_once(expected, target, "")
+            deleted_spans.append(target)
+        expected = _normalize_spaces(expected)
+        if after != expected:
+            raise ValueError(
+                "DELETE_SPECIFICS preservation violation: text outside target spans changed"
+            )
+        return {
+            "passed": True,
+            "method": "exact_target_span_subtraction",
+            "deleted_spans": len(deleted_spans),
+        }
+
+    if operator == "SHUFFLE_FLOW":
+        before_sentences = split_sentences(before)
+        after_sentences = split_sentences(after)
+        if Counter(before_sentences) != Counter(after_sentences):
+            raise ValueError(
+                "SHUFFLE_FLOW preservation violation: sentence text or membership changed"
+            )
+
+        dependency_breaks = []
+        for edit in edits:
+            if str(edit.get("operation")) != "move_after":
+                raise ValueError("SHUFFLE_FLOW preservation requires move_after edits only")
+            moved = str(edit.get("target_span", "")).strip()
+            if moved not in before_sentences or moved not in after_sentences:
+                raise ValueError("SHUFFLE_FLOW moved sentence is missing")
+            markers = _flow_dependency_markers(moved) or ["implicit_adjacency"]
+            before_index = before_sentences.index(moved)
+            after_index = after_sentences.index(moved)
+            if before_index == 0:
+                raise ValueError("SHUFFLE_FLOW moved sentence has no original predecessor")
+            original_predecessor = before_sentences[before_index - 1]
+            new_predecessor = after_sentences[after_index - 1] if after_index > 0 else None
+            if new_predecessor == original_predecessor:
+                raise ValueError(
+                    "SHUFFLE_FLOW ineffective: original discourse dependency remains adjacent"
+                )
+            dependency_breaks.append(
+                {
+                    "markers": markers,
+                    "original_predecessor": original_predecessor,
+                    "new_predecessor": new_predecessor,
+                }
+            )
+        return {
+            "passed": True,
+            "method": "sentence_multiset_and_discourse_dependency",
+            "dependency_breaks": dependency_breaks,
+        }
+
+    return {"passed": True, "method": "operator_postcondition"}
+
+
+def validate_normalized_corruption(
+    operator: str,
+    edits: list[Mapping[str, Any]],
+    normalized_text: str,
+) -> None:
+    """Reject normalization output that removes or rewrites the corruption."""
+
+    for index, edit in enumerate(edits, 1):
+        operation = str(edit.get("operation", ""))
+        target = str(edit.get("target_span", ""))
+        inserted = str(edit.get("text", ""))
+        survived = False
+
+        if operation == "delete":
+            survived = bool(target) and target not in normalized_text
+        elif operation == "move_after":
+            survived = (
+                bool(target)
+                and bool(inserted)
+                and target in normalized_text
+                and inserted in normalized_text
+                and normalized_text.index(inserted) < normalized_text.index(target)
+            )
+        elif operation == "insert_after":
+            survived = bool(target) and bool(inserted) and f"{target} {inserted}" in normalized_text
+        elif operation == "replace":
+            survived = (
+                bool(target)
+                and bool(inserted)
+                and inserted in normalized_text
+                and target not in normalized_text
+            )
+
+        if not survived:
+            raise ValueError(
+                f"normalization removed or rewrote {operator} corruption edit {index}"
+            )
+
+
+def _require_count(items: Any, expected: int) -> None:
     if not isinstance(items, list):
         raise ValueError("edits must be a list")
-    if not expected - tolerance <= len(items) <= expected + tolerance:
-        raise ValueError(f"expected ~{expected} edits, got {len(items)}")
+    if len(items) != expected:
+        raise ValueError(f"expected {expected} edits, got {len(items)}")
+
+
+def _require_distinct(items: list[Any]) -> None:
+    values = [str(item).strip() for item in items]
+    if any(not item for item in values) or len(values) != len(set(values)):
+        raise ValueError("edit spans must be non-empty and distinct")
+
+
+def _require_clean_delete_spans(
+    text: str,
+    spans: list[str],
+    validity_cfg: Mapping[str, Any],
+) -> None:
+    """Reject deletions that would also remove an obvious repetition defect."""
+
+    repeated_size = int(validity_cfg.get("delete_repeated_ngram_size", 5))
+    repeated_occurrences = int(
+        validity_cfg.get("delete_repeated_ngram_occurrences", 2)
+    )
+    for span in spans:
+        counts = Counter(_word_ngrams(span, repeated_size))
+        if counts and max(counts.values()) >= repeated_occurrences:
+            repeated = " ".join(counts.most_common(1)[0][0])
+            raise ValueError(
+                "DELETE_SPECIFICS confound: target contains repeated "
+                f"{repeated_size}-gram: {repeated}"
+            )
+
+    remaining = text
+    for span in spans:
+        remaining = _replace_once(remaining, span, "")
+    cross_size = int(validity_cfg.get("delete_cross_text_ngram_size", 8))
+    remaining_ngrams = set(_word_ngrams(remaining, cross_size))
+    for span in spans:
+        overlap = remaining_ngrams & set(_word_ngrams(span, cross_size))
+        if overlap:
+            repeated = " ".join(sorted(overlap)[0])
+            raise ValueError(
+                "DELETE_SPECIFICS confound: target duplicates retained text "
+                f"at {cross_size}-gram: {repeated}"
+            )
+
+
+def _word_ngrams(text: str, size: int) -> list[tuple[str, ...]]:
+    words = _WORD_RE.findall(text.lower())
+    if size <= 0:
+        return []
+    return [
+        tuple(words[index : index + size])
+        for index in range(max(0, len(words) - size + 1))
+    ]
 
 
 def _require_span(payload: Mapping[str, Any], key: str, text: str) -> str:
@@ -205,9 +719,312 @@ def _require_span(payload: Mapping[str, Any], key: str, text: str) -> str:
     return span
 
 
+def _require_source_origin(
+    span: str,
+    source_text: str,
+    operator: str,
+    field: str,
+) -> None:
+    if span not in source_text:
+        raise ValueError(
+            f"{operator} confound: {field} must originate in the source text"
+        )
+
+
+def _resolve_source_anchor(
+    requested: str,
+    current_text: str,
+    source_text: str,
+    used: set[str],
+) -> tuple[str, bool]:
+    """Use an exact source anchor, repairing only the LLM's placement field."""
+
+    if requested and requested in current_text and requested in source_text and requested not in used:
+        return requested, False
+    candidates = [
+        sentence
+        for sentence in split_sentences(source_text)
+        if sentence in current_text
+        and sentence not in used
+        and is_complete_sentence(sentence)
+        and not is_metadata_text(sentence)
+    ]
+    if not candidates:
+        raise ValueError("no unused source-origin insertion anchor remains")
+    if not requested:
+        return candidates[len(candidates) // 2], True
+    anchor = max(
+        candidates,
+        key=lambda candidate: (
+            SequenceMatcher(a=requested, b=candidate).ratio(),
+            len(candidate),
+        ),
+    )
+    return anchor, True
+
+
+def _require_insertion(
+    insertion: str,
+    original_text: str,
+    validity_cfg: Mapping[str, Any],
+) -> None:
+    lo = int(validity_cfg["insertion_min_chars"])
+    hi = int(validity_cfg["insertion_max_chars"])
+    if not lo <= len(insertion) <= hi:
+        raise ValueError(f"insertion length {len(insertion)} outside [{lo}, {hi}]")
+    if insertion in original_text:
+        raise ValueError("insertion already exists in text")
+    if not is_complete_sentence(insertion):
+        raise ValueError("insertion is not a complete sentence")
+    insertion_numbers = set(_NUMBER_RE.findall(insertion))
+    source_numbers = set(_NUMBER_RE.findall(original_text))
+    if not insertion_numbers <= source_numbers:
+        raise ValueError("insertion must not introduce numeric facts")
+
+
+def _require_offtopic_insertion(
+    insertion: str,
+    anchor: str,
+    source_text: str,
+    validity_cfg: Mapping[str, Any],
+) -> None:
+    if is_metadata_text(anchor) or is_metadata_text(insertion):
+        raise ValueError("OFFTOPIC insertion must not use metadata")
+    units = split_sentence_units(insertion)
+    if len(units) != 1 or _normalize_spaces(units[0]) != _normalize_spaces(insertion):
+        raise ValueError("OFFTOPIC insertion must contain exactly one sentence")
+    normalized_anchor = _normalize_spaces(anchor)
+    normalized_insertion = _normalize_spaces(insertion)
+    if normalized_anchor in normalized_insertion:
+        raise ValueError("OFFTOPIC insertion must not contain its anchor sentence")
+    if normalized_insertion in _normalize_spaces(source_text):
+        raise ValueError("OFFTOPIC insertion must not copy a source sentence")
+    ngram_size = int(validity_cfg.get("offtopic_source_ngram_size", 8))
+    overlap = set(_word_ngrams(insertion, ngram_size)) & set(
+        _word_ngrams(source_text, ngram_size)
+    )
+    if overlap:
+        repeated = " ".join(sorted(overlap)[0])
+        raise ValueError(
+            "OFFTOPIC insertion overlaps source text at "
+            f"{ngram_size}-gram: {repeated}"
+        )
+
+
+def _require_grammar_replacement(
+    before: str,
+    after: str,
+    validity_cfg: Mapping[str, Any],
+) -> None:
+    if not after or after == before:
+        raise ValueError("empty or unchanged grammar replacement")
+    if not is_complete_sentence(after):
+        raise ValueError("grammar replacement must remain a complete sentence")
+    if set(_NUMBER_RE.findall(before)) != set(_NUMBER_RE.findall(after)):
+        raise ValueError("grammar replacement changed numeric expressions")
+    before_words = set(_WORD_RE.findall(before))
+    after_words = set(_WORD_RE.findall(after))
+    retention = len(before_words & after_words) / max(1, len(before_words))
+    minimum = float(validity_cfg.get("grammar_min_token_retention", 0.6))
+    if retention < minimum:
+        raise ValueError(f"grammar replacement token retention {retention:.3f} below {minimum}")
+    if not 0.6 <= len(after) / max(1, len(before)) <= 1.4:
+        raise ValueError("grammar replacement changed sentence length too much")
+
+
 def _replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _is_clean_sentence_span(text: str, sentence: str) -> bool:
+    """Reject regex sentence spans embedded in repeated terminal punctuation."""
+
+    if not sentence or text.count(sentence) != 1:
+        return False
+    start = text.index(sentence)
+    end = start + len(sentence)
+    terminals = ".!?。？！"
+    if sentence[-1] in terminals and end < len(text) and text[end] in terminals:
+        return False
+    if sentence[0] in terminals and start > 0 and text[start - 1] in terminals:
+        return False
+    return True
+
+
 def _normalize_spaces(text: str) -> str:
     return " ".join(text.split())
+
+
+def _specificity_score(sentence: str) -> int:
+    marker_hits = sum(marker in sentence for marker in _DETAIL_MARKERS)
+    return marker_hits * 2 + int(bool(_NUMBER_RE.search(sentence)))
+
+
+def _find_effective_shuffle_payload(
+    sentences: list[str],
+    candidates: list[str],
+    count: int,
+    source_text: str,
+) -> dict[str, Any] | None:
+    """Find sequential moves whose final order breaks every old adjacency."""
+
+    movable_sets = list(combinations(candidates[: min(len(candidates), 8)], count))
+    for moved in movable_sets:
+        original_predecessors = {
+            sentence: sentences[sentences.index(sentence) - 1] for sentence in moved
+        }
+        anchor_pool = [
+            sentence
+            for sentence in sentences
+            if sentence not in moved
+            and _is_clean_sentence_span(source_text, sentence)
+            and sentences.count(sentence) == 1
+            and is_complete_sentence(sentence)
+        ]
+        ranked_assignments = sorted(
+            permutations(anchor_pool, count),
+            key=lambda anchors: sum(
+                abs(sentences.index(anchor) - sentences.index(sentence))
+                for sentence, anchor in zip(moved, anchors)
+            ),
+            reverse=True,
+        )
+        for anchors in ranked_assignments:
+            if any(
+                anchor == original_predecessors[sentence]
+                for sentence, anchor in zip(moved, anchors)
+            ):
+                continue
+            current = list(sentences)
+            effective = True
+            for sentence, anchor in zip(moved, anchors):
+                before = list(current)
+                current.remove(sentence)
+                current.insert(current.index(anchor) + 1, sentence)
+                if current == before:
+                    effective = False
+                    break
+            if not effective:
+                continue
+            if all(
+                current.index(sentence) > 0
+                and current[current.index(sentence) - 1]
+                != original_predecessors[sentence]
+                for sentence in moved
+            ):
+                return {
+                    "moves": [
+                        {"moved_span": sentence, "anchor_span": anchor}
+                        for sentence, anchor in zip(moved, anchors)
+                    ]
+                }
+    return None
+
+
+def _flow_dependency_markers(sentence: str) -> list[str]:
+    compact = sentence.lstrip(" \t\"'“‘(")
+    return [marker for marker in _FLOW_DEPENDENCY_PREFIXES if compact.startswith(marker)]
+
+
+_GRAMMAR_ERROR_TYPES = ("particle_swap", "spacing", "spelling_typo")
+_PARTICLE_SWAPS = {
+    "은": "는",
+    "는": "은",
+    "이": "가",
+    "가": "이",
+    "을": "를",
+    "를": "을",
+}
+_PREDICATE_LIKE_STEM_ENDINGS = (
+    "하",
+    "되",
+    "있",
+    "없",
+    "않",
+    "싶",
+    "남",
+)
+_SPELLING_TYPOS = (
+    ("습니다", "슴니다"),
+    ("있다", "잇다"),
+    ("없다", "업다"),
+    ("했다", "햇다"),
+    ("됐다", "됬다"),
+)
+
+
+def _inject_grammar_error(sentence: str, error_type: str) -> str | None:
+    if error_type == "particle_swap":
+        # Prefer object/subject particles and require a multi-syllable nominal
+        # stem. This avoids treating adnominal endings such as 남는→남은 as
+        # particles while still producing a locally obvious 조사 mismatch.
+        for particle_group in (("을", "를"), ("이", "가"), ("은", "는")):
+            alternatives = "|".join(particle_group)
+            pattern = re.compile(
+                rf"(?P<stem>[가-힣]{{2,}})(?P<particle>{alternatives})(?=\s|[,.!?])"
+            )
+            for match in pattern.finditer(sentence):
+                stem = match.group("stem")
+                if stem.endswith(_PREDICATE_LIKE_STEM_ENDINGS):
+                    continue
+                particle = match.group("particle")
+                start, end = match.span("particle")
+                return sentence[:start] + _PARTICLE_SWAPS[particle] + sentence[end:]
+        return None
+
+    if error_type == "spacing":
+        match = re.search(r"(?<=[가-힣])\s+(?=[가-힣])", sentence)
+        if not match:
+            return None
+        return sentence[: match.start()] + sentence[match.end() :]
+
+    if error_type == "spelling_typo":
+        for correct, typo in _SPELLING_TYPOS:
+            if correct in sentence:
+                return sentence.replace(correct, typo, 1)
+        return _inject_batchim_typo(sentence)
+
+    raise ValueError(f"unknown grammar error type: {error_type}")
+
+
+def _inject_batchim_typo(sentence: str) -> str | None:
+    """Replace one 받침 with an implausible one to create an obvious typo."""
+
+    match = re.search(r"[가-힣]{3,}", sentence)
+    if not match:
+        return None
+    chars = list(match.group())
+    index = max(0, len(chars) - 2)
+    code = ord(chars[index]) - 0xAC00
+    if not 0 <= code < 11172:
+        return None
+    initial_vowel, final = divmod(code, 28)
+    replacement_final = 19 if final != 19 else 7  # ㅅ, or ㄷ when already ㅅ
+    chars[index] = chr(0xAC00 + initial_vowel * 28 + replacement_final)
+    return sentence[: match.start()] + "".join(chars) + sentence[match.end() :]
+
+
+def _strict_object(properties: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": dict(properties),
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
+def _fixed_array(items: Mapping[str, Any], count: int) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "items": dict(items),
+        "minItems": count,
+        "maxItems": count,
+    }
+
+
+def _max_word_frequency(text: str) -> int:
+    words = [word for word in _WORD_RE.findall(text) if len(word) >= 2]
+    counts = Counter(words)
+    compact = re.sub(r"\s+", "", text)
+    substring_max = max((compact.count(word) for word in words), default=0)
+    return max(max(counts.values(), default=0), substring_max)

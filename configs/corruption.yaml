@@ -1,24 +1,204 @@
-# Corruption chain generation (see 중간정리/CORRUPTION_GEN_DECISIONS_2026-07-22.md)
+# FEAK-TC v2 G1 corruption configuration.
+#
+# Corruption is action-grounded and rubric-conditioned. Feature values are
+# never generation targets; the 29 features are recorded only after diagnosis
+# for audit. Every operator prompt is expressed as a concrete textual edit plus
+# preservation constraints, never as "lower rubric X".
 seed: 20260722
+schema: configs/schema.yaml
 depth: 3
+
 llm:
-  model: gpt-4o-mini
-  temperature: 0.5
+  model: gpt-5-mini-2025-08-07
+  reasoning:
+    effort: minimal
+  text:
+    verbosity: low
   timeout: 60
   max_attempts: 3
+  # Invalid LLM edit payloads fall back to the same operator's deterministic
+  # rule implementation. The requested and applied generators are both logged.
+  fallback_to_rule: true
+  prompt_variants:
+    - conservative
+    - student_natural
+
+normalization:
+  # Rule v4 edits are applied locally and validated against the untouched
+  # source. An LLM whole-text normalization adds latency and can erase the
+  # intended defect, so every state now uses the same identity pass.
+  enabled: false
+  model: gpt-5-mini-2025-08-07
+  reasoning:
+    effort: minimal
+  text:
+    verbosity: low
+  timeout: 60
+  max_attempts: 3
+  # If every otherwise-valid normalization repairs the injected defect, keep
+  # the already-validated raw corruption instead of accepting the repair.
+  fallback_to_input_on_postcondition_failure: true
+  min_similarity: 0.75
+  min_length_ratio: 0.8
+  max_length_ratio: 1.2
+
+generation:
+  # Main-chain operators use rule plus two prompt variants. Mechanical grammar
+  # errors are generated separately under surface_validation and never enter
+  # Planner/TVM corruption chains.
+  modes:
+    - rule
+    - llm:conservative
+    - llm:student_natural
+
 validity:
-  # State length bounds relative to the source essay x0.
   min_ratio_vs_source: 0.6
   max_ratio_vs_source: 1.8
   insertion_min_chars: 10
   insertion_max_chars: 250
-# Edits per step. Pilot v1 (one sentence per step) moved rubric scores by
-# only ~+0.06 — below the m=10 rerun noise ceiling (0.225) — on both
-# scorer-seen and scorer-unseen essays, so single-sentence corruption is
-# too weak for essay-level scoring. v2 degrades several sentences per step.
-intensity:
-  drop_detail_spans: 2
-  insert_offtopic_count: 2
-  verbose_spans: 2
-  shuffle_moves: 2
-  flatten_spans: 4
+  grammar_min_token_retention: 0.6
+  # Reject DELETE_SPECIFICS spans that also remove obvious repetition. This
+  # prevents a content corruption from silently improving readability.
+  delete_repeated_ngram_size: 5
+  delete_repeated_ngram_occurrences: 2
+  delete_cross_text_ngram_size: 8
+  # OFFTOPIC must be one genuinely external sentence, not a copied anchor or
+  # paraphrased source fragment.
+  offtopic_source_ngram_size: 8
+
+measurement:
+  score_basis: rf_corrected
+  # Strictly exceed the measured m=10 rerun-noise ceiling. LEX_REPEAT has a
+  # stronger scorer response, so its calibrated floor prevents it from
+  # dominating the accepted pool while retaining the largest balanced set.
+  target_drop_min: 0.225
+  target_drop_min_by_operator:
+    INJECT_LEX_REPEAT: 0.4
+  target_drop_sensitivity: [0.3, 0.4, 0.5, 0.6]
+  delete_confound_guard:
+    enabled: true
+    nn_rep_ratio_reduction_min: 0.01
+    lemma_mattr_gain_min: 0.02
+    max_non_target_rubric_gain: 0.3
+
+artifact_audit:
+  enabled: true
+  # Count recurring patterns across distinct source essays, inspecting only
+  # generated insert/replace spans rather than naturally repeated source text.
+  min_distinct_essays: 3
+  max_distinct_essay_fraction: 0.02
+  word_ngram_sizes: [5, 6, 7, 8]
+  char_ngram_size: 20
+  report_limit: 50
+  fail_pipeline: true
+
+semantic_artifact_audit:
+  enabled: true
+  operators: [INSERT_OFFTOPIC]
+  model: BAAI/bge-m3
+  similarity_threshold: 0.88
+  relevance_enabled: true
+  max_question_similarity: 0.50
+  max_source_similarity: 0.50
+  min_distinct_essays: 3
+  max_distinct_essay_fraction: 0.02
+  max_first_token_fraction: 0.15
+  cue_terms:
+    - 어제
+    - 오늘
+    - 주말
+    - 요즘
+    - 최근
+    - 지난
+    - 가끔
+    - 점심
+    - 아침
+    - 내일
+    - 영화
+    - 드라마
+    - 고양이
+    - 강아지
+    - 카페
+    - 친구
+    - 산책
+    - 책
+    - 커피
+    - 날씨
+  max_cue_fraction: 0.50
+  batch_size: 32
+  report_limit: 30
+
+balance:
+  enabled: true
+  max_operator_fraction: 0.4
+  # The pilot reports imbalance instead of deleting valid raw transitions.
+  # STEP4 uses the measured v4 acceptance rates for adaptive generation.
+  fail_pipeline: false
+
+operators:
+  DELETE_SPECIFICS:
+    reverse_action: ADD_DETAIL
+    intent: ADD_SUPPORTING_EXPLANATION
+    target_rubric: content_2
+    preserve_constraints:
+      - 문장 문법을 바꾸지 않는다.
+      - 글의 전체 논지와 남은 문장은 바꾸지 않는다.
+    generation_modes: [rule]
+    edits_per_step: 2
+
+  SHUFFLE_FLOW:
+    reverse_action: RESTRUCTURE
+    intent: RESTORE_LOGICAL_ORDER
+    target_rubric: organization_1
+    preserve_constraints:
+      - 문장의 내용과 문법을 바꾸지 않는다.
+      - 문장 자체는 그대로 두고 위치만 이동한다.
+    generation_modes: [rule]
+    # The v4 full-shuffle ceiling lowered organization_1 by a median 0.685.
+    # Two discourse-dependent moves bridge the gap from the ineffective
+    # single-move v3 operator without replacing the whole sentence order.
+    edits_per_step: 2
+
+  INSERT_OFFTOPIC:
+    reverse_action: DELETE_OR_FOCUS
+    intent: REMOVE_REDUNDANCY
+    target_rubric: organization_2
+    preserve_constraints:
+      - 기존 문장과 기존 문법을 바꾸지 않는다.
+      - 원래 글의 사실과 주장을 수정하지 않는다.
+    # Rule v5 retrieves natural sentences from other questions instead of
+    # asking an LLM to invent easy-to-spot lifestyle asides.
+    generation_modes: [retrieval]
+    fallback_to_rule: false
+    edits_per_step: 2
+    distractor_bank_path: data/corruption/main_1000.jsonl
+    distractor_min_chars: 15
+    distractor_max_chars: 80
+    distractor_max_lexical_jaccard: 0.12
+    distractor_candidate_pool_size: 2
+    distractor_match_ending_style: true
+    distractor_semantic_filter_enabled: true
+    distractor_max_question_similarity: 0.50
+    distractor_max_source_similarity: 0.50
+
+  INJECT_LEX_REPEAT:
+    reverse_action: STYLE_REFINE
+    intent: REFINE_FORMAL_STYLE
+    target_rubric: expression_1
+    preserve_constraints:
+      - 핵심 주장과 사실을 바꾸지 않는다.
+      - 기존 문장은 그대로 보존하고 어휘 반복 표현만 추가한다.
+    generation_modes:
+      - llm:conservative
+      - llm:student_natural
+    fallback_to_rule: false
+    edits_per_step: 2
+    repetition_min_chars: 15
+    repetition_max_chars: 60
+
+surface_validation:
+  # Chain-external samples for D_raw -> spelling API -> D0 validation only.
+  operator: INJECT_GRAMMAR_ERR
+  sample_count: 10
+  generation_mode: rule
+  edits_per_sample: 3

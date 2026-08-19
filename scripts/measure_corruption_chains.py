@@ -27,6 +27,7 @@ def build_diagnoser(args: argparse.Namespace):
             question="다음 글을 평가하세요.",
             config_kwargs={
                 "m": args.kanana_m,
+                "chunk_m": args.kanana_chunk_m,
                 "generate_feedback": False,
                 "device_id": args.device_id,
                 "load_in_4bit": True,
@@ -41,17 +42,75 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument(
+        "--shard-indices",
+        type=int,
+        nargs="+",
+        help="logical shard indices handled by this process; overrides --shard",
+    )
     parser.add_argument("--device-id", type=int, default=3)
     parser.add_argument("--kanana-m", type=int, default=10)
+    parser.add_argument(
+        "--kanana-chunk-m",
+        type=int,
+        default=1,
+        help="number of self-consistency samples generated per GPU batch",
+    )
     parser.add_argument("--diagnoser", default="kanana", choices=["kanana", "stub"])
+    parser.add_argument(
+        "--state-index-min",
+        type=int,
+        default=0,
+        help="measure only states at or above this index (suffix reruns)",
+    )
+    parser.add_argument(
+        "--state-index-max",
+        type=int,
+        default=None,
+        help="measure only states at or below this index",
+    )
+    parser.add_argument(
+        "--record-id",
+        action="append",
+        default=[],
+        help="measure only these record IDs (repeatable)",
+    )
+    parser.add_argument(
+        "--state-index-from-field",
+        help="per-chain lower state index stored in this chain field",
+    )
+    parser.add_argument(
+        "--exclude-measured",
+        action="append",
+        default=[],
+        help="skip keys already present in another measurement JSONL",
+    )
     args = parser.parse_args()
+    if args.kanana_chunk_m < 1 or args.kanana_chunk_m > args.kanana_m:
+        raise SystemExit("--kanana-chunk-m must be between 1 and --kanana-m")
+    selected_shards = set(args.shard_indices or [args.shard])
+    if any(index < 0 or index >= args.num_shards for index in selected_shards):
+        raise SystemExit("every shard index must be in [0, --num-shards)")
+    shard_label = ",".join(str(index) for index in sorted(selected_shards))
+    if args.state_index_min < 0:
+        raise SystemExit("--state-index-min must be non-negative")
+    if args.state_index_max is not None and args.state_index_max < args.state_index_min:
+        raise SystemExit("--state-index-max must be at least --state-index-min")
+    selected_record_ids = set(args.record_id)
 
     chains = []
     with open(args.input, encoding="utf-8") as f:
         for idx, line in enumerate(f):
-            if idx % args.num_shards == args.shard:
+            if idx % args.num_shards in selected_shards:
                 chain = json.loads(line)
-                if chain["status"] in ("ok", "partial") and len(chain["states"]) >= 2:
+                if (
+                    chain["status"] in ("ok", "partial")
+                    and len(chain["states"]) >= 2
+                    and (
+                        not selected_record_ids
+                        or str(chain["record_id"]) in selected_record_ids
+                    )
+                ):
                     chains.append(chain)
 
     output = Path(args.output)
@@ -61,15 +120,46 @@ def main() -> int:
             for line in f:
                 row = json.loads(line)
                 done.add((row["record_id"], row["state_index"]))
+    for measured_path in args.exclude_measured:
+        with open(measured_path, encoding="utf-8") as file:
+            for line in file:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                done.add((row["record_id"], row["state_index"]))
 
+    def selected_state_indices(chain: dict) -> range:
+        lower = args.state_index_min
+        if args.state_index_from_field:
+            lower = max(lower, int(chain[args.state_index_from_field]))
+        last = len(chain["states"]) - 1
+        if args.state_index_max is not None:
+            last = min(last, args.state_index_max)
+        return range(lower, max(lower, last + 1))
+
+    selected_keys = {
+        (chain["record_id"], state_index)
+        for chain in chains
+        for state_index in selected_state_indices(chain)
+    }
+    total = len(selected_keys)
+    measured = len(done & selected_keys)
     diagnoser = build_diagnoser(args)
-    total = sum(len(c["states"]) for c in chains)
-    measured = len(done)
     started = time.time()
     with output.open("a", encoding="utf-8") as out:
         for chain in chains:
             diagnoser.question = chain.get("question") or "다음 글을 평가하세요."
+            chain_minimum = args.state_index_min
+            if args.state_index_from_field:
+                chain_minimum = max(
+                    chain_minimum,
+                    int(chain[args.state_index_from_field]),
+                )
             for state_index, text in enumerate(chain["states"]):
+                if state_index < chain_minimum:
+                    continue
+                if args.state_index_max is not None and state_index > args.state_index_max:
+                    continue
                 if (chain["record_id"], state_index) in done:
                     continue
                 t0 = time.time()
@@ -87,11 +177,13 @@ def main() -> int:
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
                 out.flush()
                 measured += 1
-                print(f"[shard {args.shard}] {measured}/{total} "
-                      f"{chain['record_id']} x{state_index} ({row['seconds']}s)")
+                print(f"[shard {shard_label}] {measured}/{total} "
+                      f"{chain['record_id']} x{state_index} ({row['seconds']}s)",
+                      flush=True)
 
-    print(f"shard {args.shard} done: {measured}/{total} states, "
-          f"{(time.time() - started) / 60:.1f} min")
+    print(f"shard {shard_label} done: {measured}/{total} states, "
+          f"{(time.time() - started) / 60:.1f} min",
+          flush=True)
     return 0
 
 

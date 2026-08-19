@@ -20,6 +20,11 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+g2 = [
+    "lightgbm>=4.0",
+    "pandas>=2.0",
+    "scikit-learn>=1.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
