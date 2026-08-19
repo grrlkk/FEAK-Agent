@@ -32,6 +32,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument(
+        "--exclude-records-from",
+        action="append",
+        default=[],
+        help="skip record_ids present in another JSONL file (repeatable)",
+    )
     parser.add_argument("--append", action="store_true", help="resume: skip record_ids already in output")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -43,6 +49,7 @@ def main() -> int:
     if args.append and output.exists():
         with output.open() as f:
             done = {json.loads(line)["record_id"] for line in f}
+    excluded = done | _read_record_ids(args.exclude_records_from)
 
     with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -51,7 +58,7 @@ def main() -> int:
     with open(args.input, encoding="utf-8") as f:
         for line in f:
             row = _source_record(json.loads(line))
-            if row["record_id"] not in done:
+            if row["record_id"] not in excluded:
                 records.append(row)
     records = _select_records(
         records,
@@ -92,6 +99,23 @@ def _source_record(row: dict) -> dict:
             "text": states[0],
         }
     raise ValueError("source row requires text or non-empty states")
+
+
+def _read_record_ids(paths: list[str]) -> set[str]:
+    record_ids = set()
+    for raw_path in paths:
+        with Path(raw_path).open(encoding="utf-8") as file:
+            for line_number, line in enumerate(file, 1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                record_id = str(row.get("record_id") or "").strip()
+                if not record_id:
+                    raise ValueError(
+                        f"{raw_path}:{line_number} is missing record_id"
+                    )
+                record_ids.add(record_id)
+    return record_ids
 
 
 def _select_records(

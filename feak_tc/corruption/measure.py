@@ -98,6 +98,7 @@ def evaluate_chain(
             {
                 "essay_id": record_id,
                 "chain_id": f"{record_id}:g1",
+                "transition_id": f"{record_id}:g1:stage{step_index + 1}",
                 "question": str(chain.get("question") or ""),
                 "stage_k": step_index + 1,
                 "corruption_op": step["corruption_op"],

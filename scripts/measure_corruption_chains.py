@@ -27,6 +27,7 @@ def build_diagnoser(args: argparse.Namespace):
             question="다음 글을 평가하세요.",
             config_kwargs={
                 "m": args.kanana_m,
+                "chunk_m": args.kanana_chunk_m,
                 "generate_feedback": False,
                 "device_id": args.device_id,
                 "load_in_4bit": True,
@@ -41,8 +42,20 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument(
+        "--shard-indices",
+        type=int,
+        nargs="+",
+        help="logical shard indices handled by this process; overrides --shard",
+    )
     parser.add_argument("--device-id", type=int, default=3)
     parser.add_argument("--kanana-m", type=int, default=10)
+    parser.add_argument(
+        "--kanana-chunk-m",
+        type=int,
+        default=1,
+        help="number of self-consistency samples generated per GPU batch",
+    )
     parser.add_argument("--diagnoser", default="kanana", choices=["kanana", "stub"])
     parser.add_argument(
         "--state-index-min",
@@ -73,6 +86,12 @@ def main() -> int:
         help="skip keys already present in another measurement JSONL",
     )
     args = parser.parse_args()
+    if args.kanana_chunk_m < 1 or args.kanana_chunk_m > args.kanana_m:
+        raise SystemExit("--kanana-chunk-m must be between 1 and --kanana-m")
+    selected_shards = set(args.shard_indices or [args.shard])
+    if any(index < 0 or index >= args.num_shards for index in selected_shards):
+        raise SystemExit("every shard index must be in [0, --num-shards)")
+    shard_label = ",".join(str(index) for index in sorted(selected_shards))
     if args.state_index_min < 0:
         raise SystemExit("--state-index-min must be non-negative")
     if args.state_index_max is not None and args.state_index_max < args.state_index_min:
@@ -82,7 +101,7 @@ def main() -> int:
     chains = []
     with open(args.input, encoding="utf-8") as f:
         for idx, line in enumerate(f):
-            if idx % args.num_shards == args.shard:
+            if idx % args.num_shards in selected_shards:
                 chain = json.loads(line)
                 if (
                     chain["status"] in ("ok", "partial")
@@ -158,11 +177,11 @@ def main() -> int:
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
                 out.flush()
                 measured += 1
-                print(f"[shard {args.shard}] {measured}/{total} "
+                print(f"[shard {shard_label}] {measured}/{total} "
                       f"{chain['record_id']} x{state_index} ({row['seconds']}s)",
                       flush=True)
 
-    print(f"shard {args.shard} done: {measured}/{total} states, "
+    print(f"shard {shard_label} done: {measured}/{total} states, "
           f"{(time.time() - started) / 60:.1f} min",
           flush=True)
     return 0

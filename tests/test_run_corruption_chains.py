@@ -1,6 +1,8 @@
+import json
+
 import pytest
 
-from scripts.run_corruption_chains import _select_records
+from scripts.run_corruption_chains import _read_record_ids, _select_records
 
 
 def test_select_records_applies_offset_and_limit_before_sharding():
@@ -31,3 +33,16 @@ def test_select_records_applies_offset_and_limit_before_sharding():
 def test_select_records_rejects_invalid_windows(kwargs, message):
     with pytest.raises(SystemExit, match=message):
         _select_records([], **kwargs)
+
+
+def test_read_record_ids_accepts_source_or_chain_jsonl(tmp_path):
+    source = tmp_path / "source.jsonl"
+    source.write_text(
+        "".join(
+            json.dumps({"record_id": record_id}) + "\n"
+            for record_id in ("r2", "r1", "r2")
+        ),
+        encoding="utf-8",
+    )
+
+    assert _read_record_ids([str(source)]) == {"r1", "r2"}

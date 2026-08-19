@@ -292,6 +292,105 @@ def test_insert_offtopic_rejects_source_eight_gram_overlap():
         )
 
 
+def test_lex_repeat_allows_only_numbers_already_present_in_source():
+    essay = (
+        "형광등은 실내를 밝히는 도구이다. "
+        "가게에서는 20W 형광등을 판매한다. "
+        "소비자는 방 크기에 맞는 제품을 선택한다. "
+        "적절한 조명은 눈의 피로를 줄인다."
+    )
+    anchor = "가게에서는 20W 형광등을 판매한다."
+    allowed = "20W 형광등은 20W 형광등은 20W 형광등은 중요하다."
+    new_text, _ = parse_and_apply(
+        "INJECT_LEX_REPEAT",
+        {"edits": [{"anchor_span": anchor, "repetition": allowed}]},
+        essay,
+        essay,
+        VALIDITY,
+        {**_spec("INJECT_LEX_REPEAT"), "edits_per_step": 1},
+    )
+    assert allowed in new_text
+
+    introduced = "21W 형광등은 21W 형광등은 21W 형광등은 중요하다."
+    with pytest.raises(ValueError, match="must not introduce numeric facts"):
+        parse_and_apply(
+            "INJECT_LEX_REPEAT",
+            {"edits": [{"anchor_span": anchor, "repetition": introduced}]},
+            essay,
+            essay,
+            VALIDITY,
+            {**_spec("INJECT_LEX_REPEAT"), "edits_per_step": 1},
+        )
+
+
+def test_lex_repeat_rejects_text_beyond_operator_length_limit():
+    anchor = "인권은 국가가 함부로 제한할 수 없다."
+    repetition = "권리는 " * 25 + "중요하다."
+    with pytest.raises(ValueError, match="lexical repetition length"):
+        parse_and_apply(
+            "INJECT_LEX_REPEAT",
+            {"edits": [{"anchor_span": anchor, "repetition": repetition}]},
+            ESSAY,
+            ESSAY,
+            VALIDITY,
+            {
+                **_spec("INJECT_LEX_REPEAT"),
+                "edits_per_step": 1,
+                "repetition_max_chars": 60,
+            },
+        )
+
+
+def test_lex_repeat_schema_requires_terminal_punctuation():
+    schema = build_payload_schema(
+        "INJECT_LEX_REPEAT",
+        {
+            **_spec("INJECT_LEX_REPEAT"),
+            "repetition_min_chars": 15,
+            "repetition_max_chars": 60,
+        },
+    )
+    repetition = schema["properties"]["edits"]["items"]["properties"]["repetition"]
+    assert repetition == {
+        "type": "string",
+        "minLength": 15,
+        "maxLength": 60,
+        "pattern": r"다[.]$",
+    }
+
+
+def test_shuffle_rule_avoids_sentence_fragment_from_double_punctuation():
+    essay = (
+        "첫 문장은 문제를 소개한다. "
+        "두 번째 문장은 잘못된 이중 마침표를 가진다.. "
+        "세 번째 문장은 원인을 설명한다. "
+        "네 번째 문장은 해결 방법을 제안한다. "
+        "다섯 번째 문장은 결론을 제시한다. "
+        "여섯 번째 문장은 의미를 정리한다."
+    )
+    spec = {**_spec("SHUFFLE_FLOW"), "edits_per_step": 2}
+    payload = generate_rule_payload(
+        "SHUFFLE_FLOW",
+        essay,
+        spec,
+        random.Random(7),
+        source_text=essay,
+    )
+    moved = {item["moved_span"] for item in payload["moves"]}
+    assert "두 번째 문장은 잘못된 이중 마침표를 가진다." not in moved
+    new_text, edits = parse_and_apply(
+        "SHUFFLE_FLOW",
+        payload,
+        essay,
+        essay,
+        VALIDITY,
+        spec,
+    )
+    assert validate_operator_preservation(
+        "SHUFFLE_FLOW", essay, new_text, edits
+    )["passed"] is True
+
+
 def test_llm_insertion_anchor_is_repaired_to_an_exact_source_sentence():
     insertion = "어제는 날씨가 좋아서 공원에 다녀왔다."
     new_text, edits = parse_and_apply(
@@ -802,6 +901,11 @@ def test_measurement_accepts_each_strict_target_drop_independently():
     )
     assert [row["accepted"] for row in rows] == [True, False, True]
     assert rows[0]["target_drop"] == pytest.approx(0.2)
+    assert [row["transition_id"] for row in rows] == [
+        "r1:g1:stage1",
+        "r1:g1:stage2",
+        "r1:g1:stage3",
+    ]
     assert rows[1]["acceptance_reason"] == "target_rubric_not_decreased"
     assert rows[2]["acceptance_reason"] == "target_rubric_decreased"
     assert rows[1]["target_features"] == []

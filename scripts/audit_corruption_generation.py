@@ -27,13 +27,18 @@ def main() -> int:
     parser.add_argument("--chains", required=True)
     parser.add_argument("--config", default="configs/corruption.yaml")
     parser.add_argument("--report-out", required=True)
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="accept validated non-empty chain prefixes whose later step failed",
+    )
     args = parser.parse_args()
 
     with open(args.chains, encoding="utf-8") as file:
         chains = [json.loads(line) for line in file if line.strip()]
     with open(args.config, encoding="utf-8") as file:
         cfg = yaml.safe_load(file)
-    report = audit_generated_chains(chains, cfg)
+    report = audit_generated_chains(chains, cfg, allow_partial=args.allow_partial)
     Path(args.report_out).write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -45,7 +50,10 @@ def main() -> int:
 
 
 def audit_generated_chains(
-    chains: list[Mapping[str, Any]], cfg: Mapping[str, Any]
+    chains: list[Mapping[str, Any]],
+    cfg: Mapping[str, Any],
+    *,
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
     record_ids = [str(chain["record_id"]) for chain in chains]
     duplicate_record_ids = sorted(
@@ -56,10 +64,18 @@ def audit_generated_chains(
     fallback_steps = 0
     normalized_steps = 0
     malformed_chains = 0
+    status_counts: Counter[str] = Counter()
     for chain in chains:
         steps = list(chain.get("steps") or [])
         states = list(chain.get("states") or [])
-        if chain.get("status") != "ok" or len(states) != len(steps) + 1:
+        status = str(chain.get("status") or "")
+        status_counts[status] += 1
+        allowed_statuses = {"ok", "partial"} if allow_partial else {"ok"}
+        if (
+            status not in allowed_statuses
+            or not steps
+            or len(states) != len(steps) + 1
+        ):
             malformed_chains += 1
         for stage_k, step in enumerate(steps, 1):
             rows.append(
@@ -99,6 +115,8 @@ def audit_generated_chains(
         "gate": "generated_corruption_quality",
         "passed": passed,
         "chains": len(chains),
+        "allow_partial": allow_partial,
+        "chain_statuses": dict(status_counts),
         "transitions": len(rows),
         "duplicate_record_ids": duplicate_record_ids,
         "malformed_chains": malformed_chains,

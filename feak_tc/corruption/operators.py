@@ -177,7 +177,7 @@ def build_prompt(
             f"서로 다른 기존 문장 {n}개를 anchor로 고르고, 각 문장 뒤에 같은 핵심 어휘를 "
             "부자연스럽게 세 번 이상 정확히 같은 표기로 반복하는 한 문장을 추가한다. "
             "단어만 나열하지 말고 서술어와 종결어미를 포함한 15~60자의 완결문으로 쓴다. "
-            "숫자를 새로 쓰지 않고 반드시 온점·물음표·느낌표로 끝내며 새 사실은 만들지 않는다.\n"
+            "숫자를 새로 쓰지 않고 반드시 '다.'로 끝내며 새 사실은 만들지 않는다.\n"
             '반환: {"edits": [{"anchor_span": "<기존 문장>", '
             '"repetition": "<어휘 반복이 심한 완결 문장>"}, ...]}'
         )
@@ -233,12 +233,18 @@ def build_payload_schema(
             )
         }
     elif operator == "INJECT_LEX_REPEAT":
+        repetition_string = {
+            "type": "string",
+            "minLength": int(spec.get("repetition_min_chars", 15)),
+            "maxLength": int(spec.get("repetition_max_chars", 60)),
+            "pattern": r"다[.]$",
+        }
         properties = {
             "edits": _fixed_array(
                 _strict_object(
                     {
                         "anchor_span": string,
-                        "repetition": string,
+                        "repetition": repetition_string,
                     }
                 ),
                 n,
@@ -282,7 +288,9 @@ def generate_rule_payload(
 
     if operator == "DELETE_SPECIFICS":
         candidates = [
-            sentence for sentence in sentences[1:-1] if sentence in source_text
+            sentence
+            for sentence in sentences[1:-1]
+            if _is_clean_sentence_span(source_text, sentence)
         ]
         max_removed = 0.35 * len(text)
         viable = [
@@ -308,7 +316,7 @@ def generate_rule_payload(
                 for index, sentence in enumerate(sentences)
                 if index > 0
                 and sentences.count(sentence) == 1
-                and sentence in source_text
+                and _is_clean_sentence_span(source_text, sentence)
                 and is_complete_sentence(sentence)
             ],
             key=lambda sentence: (
@@ -484,6 +492,14 @@ def parse_and_apply(
             used_anchors.add(anchor)
             repetition = str(raw.get("repetition", "")).strip()
             _require_insertion(repetition, text, validity_cfg)
+            repetition_minimum = int(spec.get("repetition_min_chars", 15))
+            repetition_maximum = int(spec.get("repetition_max_chars", 60))
+            if not repetition_minimum <= len(repetition) <= repetition_maximum:
+                raise ValueError(
+                    "lexical repetition length "
+                    f"{len(repetition)} outside "
+                    f"[{repetition_minimum}, {repetition_maximum}]"
+                )
             if _max_word_frequency(repetition) < 3:
                 raise ValueError("lexical repetition must repeat a word at least three times")
             new_text = _replace_once(new_text, anchor, anchor + " " + repetition)
@@ -760,7 +776,9 @@ def _require_insertion(
         raise ValueError("insertion already exists in text")
     if not is_complete_sentence(insertion):
         raise ValueError("insertion is not a complete sentence")
-    if _NUMBER_RE.search(insertion):
+    insertion_numbers = set(_NUMBER_RE.findall(insertion))
+    source_numbers = set(_NUMBER_RE.findall(original_text))
+    if not insertion_numbers <= source_numbers:
         raise ValueError("insertion must not introduce numeric facts")
 
 
@@ -818,6 +836,21 @@ def _replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _is_clean_sentence_span(text: str, sentence: str) -> bool:
+    """Reject regex sentence spans embedded in repeated terminal punctuation."""
+
+    if not sentence or text.count(sentence) != 1:
+        return False
+    start = text.index(sentence)
+    end = start + len(sentence)
+    terminals = ".!?。？！"
+    if sentence[-1] in terminals and end < len(text) and text[end] in terminals:
+        return False
+    if sentence[0] in terminals and start > 0 and text[start - 1] in terminals:
+        return False
+    return True
+
+
 def _normalize_spaces(text: str) -> str:
     return " ".join(text.split())
 
@@ -844,7 +877,7 @@ def _find_effective_shuffle_payload(
             sentence
             for sentence in sentences
             if sentence not in moved
-            and sentence in source_text
+            and _is_clean_sentence_span(source_text, sentence)
             and sentences.count(sentence) == 1
             and is_complete_sentence(sentence)
         ]

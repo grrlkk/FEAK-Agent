@@ -53,6 +53,27 @@ def test_generated_chain_audit_reports_nonblocking_balance():
     assert report["passed"] is True
 
 
+def test_generated_chain_audit_allows_only_validated_partial_prefixes_when_enabled():
+    partial = _chain("r1", "DELETE_SPECIFICS")
+    partial["status"] = "partial"
+
+    strict = audit_generated_chains(
+        [partial],
+        {"artifact_audit": {"enabled": False}, "balance": {"enabled": False}},
+    )
+    allowed = audit_generated_chains(
+        [partial],
+        {"artifact_audit": {"enabled": False}, "balance": {"enabled": False}},
+        allow_partial=True,
+    )
+
+    assert strict["passed"] is False
+    assert strict["malformed_chains"] == 1
+    assert allowed["passed"] is True
+    assert allowed["malformed_chains"] == 0
+    assert allowed["chain_statuses"] == {"partial": 1}
+
+
 def _chain(record_id: str, operator: str, inserted_text: Optional[str] = None) -> dict:
     edits = []
     if inserted_text is not None:
