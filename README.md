@@ -1,4 +1,5 @@
 # FEAK-Agent
+A revision agent that judges each edit as a transition (s→s′) using a value model trained from diagnostically corrupted essays, without human-labeled edit pairs.
 
 FEAK-TC experiment repository for Korean essay revision-control research.
 
