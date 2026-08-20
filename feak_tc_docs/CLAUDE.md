@@ -30,9 +30,11 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
    (`중간정리/CORRUPTION_RULEV3_STEP1_3_RESULTS_2026-07-29.md`)
 6. [완료] G2 블라인드 검증 — 2-LLM + Claude, 라벨 결함 2건 발견
    (`중간정리/G2_TWO_LLM_BLIND_REVIEW_2026-08-12.md`)
-7. **지금: corruption rule v4** — 템플릿 아티팩트 제거, SHUFFLE_FLOW 존폐 진단,
-   margin·균형 조정 후 대량 생성 (`중간정리/CODEX_TASK_CORRUPTION_V4.md`)
-8. 그 다음: TVM 학습 → Global Drift 평가기 → controller 통합 → 평가
+7. [완료] corruption rule v4/v5 — 템플릿 아티팩트 제거, SHUFFLE_FLOW 강화,
+   검색형 OFFTOPIC 전환, 최종 1,000쌍 품질 게이트 통과
+   (`중간정리/CORRUPTION_RULEV5_1000_RESULTS_2026-08-20.md`)
+8. **지금: feature-only GBM·text pairwise 학습곡선 비교 → TVM 학습**
+9. 그 다음: Global Drift 평가기 → controller 통합 → 평가
 
 ## 절대 규칙 (No Feature Creep)
 
