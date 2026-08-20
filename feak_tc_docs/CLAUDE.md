@@ -33,8 +33,10 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 7. [완료] corruption rule v4/v5 — 템플릿 아티팩트 제거, SHUFFLE_FLOW 강화,
    검색형 OFFTOPIC 전환, 최종 1,000쌍 품질 게이트 통과
    (`중간정리/CORRUPTION_RULEV5_1000_RESULTS_2026-08-20.md`)
-8. **지금: feature-only GBM·text pairwise 학습곡선 비교 → TVM 학습**
-9. 그 다음: Global Drift 평가기 → controller 통합 → 평가
+8. [완료] feature-only GBM·BGE-M3 text pairwise 학습곡선 — 1,000쌍에서 포화,
+   추가 생성 중단 (`중간정리/CORRUPTION_LEARNING_CURVES_2026-08-20.md`)
+9. **지금: TVM Stage-1 학습**
+10. 그 다음: Global Drift 평가기 → controller 통합 → 평가
 
 ## 절대 규칙 (No Feature Creep)
 
