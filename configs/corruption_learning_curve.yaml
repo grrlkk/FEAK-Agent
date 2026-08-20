@@ -1,0 +1,16 @@
+seed: 20260820
+folds: 5
+train_sizes: [100, 200, 400, 600]
+
+embedding:
+  model: BAAI/bge-m3
+  device: cuda:1
+  batch_size: 2
+
+text_ranker:
+  c: 1.0
+  condition_key: reverse_action
+
+generation_decision:
+  plateau_max_gain: 0.015
+  minimum_text_accuracy: 0.75
