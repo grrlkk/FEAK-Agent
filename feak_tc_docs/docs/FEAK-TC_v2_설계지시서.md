@@ -144,12 +144,16 @@ operator      : SHUFFLE_FLOW
 - Stage-2: real-log distill (§3.3-4).
 
 ### 5.2 TVM (text-aware)
-- 구조: kanana-8B + LoRA 어댑터B → 마지막 토큰 hidden → linear head → scalar.
+- 구조(2026-08-21 사용자 승인 변경): 주 모델 Qwen2.5-7B-Instruct + LoRA + scalar head,
+  matched-backbone 대조군 Kanana-8B + 별도 LoRA/head. 기존 Kanana 단일 본선보다
+  채점기와 같은 backbone 효과를 직접 측정할 수 있다.
 - 입력 프롬프트: `[과제][수정 전(target 주변 문맥)][수정 후][plan: action/span/intent][transition feature 수치 텍스트]`
 - Loss: pairwise BT + corruption 단계차 margin: `L = -log σ((V_c - V_r) - m(Δstage))`
 - 학습 규칙(위반 금지): **1 epoch 엄수** / LR 1~3e-6, AdamW, warmup ~10 / 재측정 차이 미미한 쌍 필터 / 학습 후 zero-mean 정규화.
 - 커리큘럼: Stage-1 corruption 쌍(+feature-모호 쌍 20%) → Stage-2 실후보+NO_OP+human pair.
 - baseline: 동일 쌍으로 GBM(feature-only), 휴리스틱 가중합, immediate FEAK gain.
+- 입력 ablation: 두 backbone 모두 `full`과 `scorer_free`를 학습한다.
+  `scorer_free`는 Kanana score 출력인 `target_gain`, `non_target_drop`을 제외한다.
 
 ---
 

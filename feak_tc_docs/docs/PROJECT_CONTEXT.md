@@ -43,13 +43,20 @@
 |---|---|---|
 | 채점기 | kanana-8B+LoRA, 글→rubric만. **자질을 입력에 넣지 않음** | 성능 향상 미미 + 자질 독립성이 순환 방지 근거 |
 | 자질 | 채점기와 독립적으로 룰베이스 계산 | rubric 신호와 feature 신호를 독립 신호로 활용 |
-| TVM 구조 | kanana + **새 어댑터B** + last-token linear head (채점기 어댑터A와 별개) | 주류 reward model 표준 |
+| TVM 구조 | **주 모델 Qwen2.5-7B-Instruct** + LoRA + scalar head, **대조군 Kanana-8B** + 별도 LoRA/head | 채점기와 같은 backbone 효과를 분리하고 주류 reward model 구조 유지 |
 | TVM 입력 | 수정 전/후 **텍스트** + transition feature (텍스트 프롬프트에 포함) | 수치만으론 수정의 미묘함 못 잡음 |
 | TVM loss | pairwise Bradley-Terry (+corruption 단계차를 margin/confidence로) | RM 표준 + corruption의 공짜 이점 |
 | TVM 학습 데이터 | FEAK-guided corruption (action 역연산) + 실제 LLM 수정 소량 + 사람 보정쌍 소량 | 라벨 없음 문제 해결, 순환 방지(정답 근거=사람 점수) |
 | policy 학습 | 하지 않음 (future work). TVM argmax로 action 선택 유도 | 일정/리스크 |
 | tool-use | 넣지 않음. "value-guided control agent"로 포지셔닝 | agent 코스프레 방지 |
 | drift 측정 | 고정 임베딩(한국어 SBERT 계열) 유사도, 학습 안 함 | goal_preservation + 전역 drift 공용 |
+
+TVM 모델 결정은 2026-08-21 사용자 승인으로 기존 Kanana 단일 본선에서
+cross-backbone 주 모델 + matched-backbone 대조군으로 바뀌었다. Kanana TVM의 adapter/head는
+채점기 adapter와 공유하지 않지만, 같은 base backbone 자체가 주는 상관을 확인하기 위해서다.
+또한 각 backbone에서 `full`과 Kanana 채점 출력(`target_gain`, `non_target_drop`)을 입력에서
+제외한 `scorer_free`를 함께 학습한다. 단, `scorer_free`도 corruption 채택·필터 단계가
+Kanana 측정에 의존하므로 완전한 독립 사람 라벨로 해석하지 않는다.
 
 ## 5. Transition Feature (TVM 입력, 고정)
 

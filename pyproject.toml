@@ -25,6 +25,15 @@ g2 = [
     "pandas>=2.0",
     "scikit-learn>=1.4",
 ]
+tvm = [
+    "accelerate>=1.0",
+    "bitsandbytes>=0.45",
+    "numpy>=1.26",
+    "peft>=0.15",
+    "scikit-learn>=1.4",
+    "torch>=2.4",
+    "transformers>=4.48",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -16,6 +16,7 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 | `docs/PROJECT_CONTEXT.md` | 연구 배경·시스템 구성·확정된 결정 | 항상 먼저 |
 | `docs/IMPLEMENTATION_MVP.md` | 지금 구현할 MVP 루프 상세 지시 | MVP 작업 시 |
 | `docs/SPEC_CORRUPTION_TVM.md` | corruption 데이터 생성 + TVM 학습 스펙 | MVP 이후 단계 |
+| `중간정리/TVM_STAGE1_REMOTE_RUN_2026-08-21.md` | 4090 최소 전송·학습·평가 명령 | TVM Stage-1 실행 시 |
 
 ## 현재 단계와 우선순위
 
@@ -35,7 +36,8 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
    (`중간정리/CORRUPTION_RULEV5_1000_RESULTS_2026-08-20.md`)
 8. [완료] feature-only GBM·BGE-M3 text pairwise 학습곡선 — 1,000쌍에서 포화,
    추가 생성 중단 (`중간정리/CORRUPTION_LEARNING_CURVES_2026-08-20.md`)
-9. **지금: TVM Stage-1 학습**
+9. **지금: TVM Stage-1 학습** — Qwen2.5-7B 주 모델 + Kanana-8B matched-backbone
+   대조군, 각 `full`/`scorer_free`, validation-only LR 선택 후 test 1회
 10. 그 다음: Global Drift 평가기 → controller 통합 → 평가
 
 ## 절대 규칙 (No Feature Creep)

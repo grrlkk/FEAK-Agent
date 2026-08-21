@@ -64,10 +64,15 @@ x1 --[?]--> x0                     (역방향)
 
 ### 구조
 ```
-kanana-8B (LoRA, 새 어댑터B — 채점기 어댑터A와 별개)
-→ end-of-response 토큰 hidden state
-→ linear head → scalar value
+주 모델: Qwen2.5-7B-Instruct + LoRA → end-of-sequence hidden → scalar head
+대조군: Kanana-8B + 새 LoRA/head (채점기 어댑터와 공유하지 않음)
 ```
+
+- 두 모델 모두 동일 pair/split/prompt/loss로 학습한다.
+- 각 모델은 `full`과 `scorer_free` 두 입력 조건을 가진다.
+- `scorer_free`는 Kanana 채점기의 직접 출력인 `target_gain`, `non_target_drop`을 뺀다.
+  `target_gap_reduction`은 독립 FEAK 자질 재측정값이므로 유지한다.
+- LR은 validation에서만 선택하고, 고정 test는 조건별 선택 모델에 한 번만 사용한다.
 
 ### 입력 포맷 (텍스트 프롬프트)
 ```
@@ -96,7 +101,7 @@ L = -log σ( (V(chosen) - V(rejected)) - m(Δstage) )
 ### 순서 (싸게 찔러보고 비싸게 들어가기)
 1. **GBM baseline 먼저**: transition feature 9개만 입력 (텍스트 없이) → LightGBM으로
    corruption 쌍이 학습되는지 며칠 안에 확인. 안 되면 데이터 문제 → 8B 학습 전에 발견.
-2. 되면 kanana TVM 본 학습.
+2. 되면 Qwen 주 TVM과 Kanana matched-backbone 대조군을 같은 프로토콜로 학습.
 
 ## 5. 검증 (필수 리포트)
 

@@ -1,0 +1,60 @@
+seed: 20260821
+
+data:
+  path: experiments/results/corruption_g1_rulev5_1000_training.jsonl
+  elite_stats: configs/elite_features.yaml
+  similarity_cache: experiments/results/corruption_g1_rulev5_1000_bge_m3_states_verified.npz
+
+split:
+  folds: 10
+  validation_fold: 2
+  test_fold: 1
+
+models:
+  qwen:
+    name: Qwen/Qwen2.5-7B-Instruct
+    role: primary_independent_backbone
+  kanana:
+    name: kakaocorp/kanana-1.5-8b-instruct-2505
+    role: matched_scorer_backbone_control
+
+feature_variants:
+  - full
+  - scorer_free
+
+quantization:
+  load_in_4bit: true
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  epochs: 1
+  learning_rates:
+    - 1.0e-6
+    - 2.0e-6
+    - 3.0e-6
+  max_length: 1536
+  pair_batch_size: 1
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  warmup_steps: 10
+  margin_per_stage: 0.1
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  log_every_updates: 10
+
+selection:
+  primary_metric: validation.pairwise_accuracy
+  tie_breaker: validation.mean_loss
+  test_policy: evaluate_once_after_learning_rate_selection
