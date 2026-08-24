@@ -17,7 +17,7 @@
 글 입력
  → ① 진단: 채점기(kanana-8B+LoRA, 학습완료) → rubric 8개
            + 독립 룰베이스 → feature 29개
- → ② 후보 생성: LLM(GPT-4o-mini)이 action별 수정안
+ → ② 후보 생성: LLM(GPT-5 mini)이 action별 수정안
     action = ADD_DETAIL / DELETE_OR_FOCUS / COMPRESS / RESTRUCTURE / STYLE_REFINE / STOP
  → ③ 평가: TVM이 각 후보 transition의 가치 채점  ← 유일한 신규 학습 모듈
  → ④ 제어: accept / reject(국소) / rollback(전역 drift) / stop

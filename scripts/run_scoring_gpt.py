@@ -61,17 +61,14 @@ def get_gpt_score(essay_text):
     """
     
     try:
-        # 최신 버전 호출 방식: client.chat.completions.create
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a professional essay grader specializing in Korean academic writing."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            response_format={ "type": "json_object" } # JSON 출력 강제 설정 (최신 기능)
+        response = client.responses.create(
+            model="gpt-5-mini-2025-08-07",
+            instructions="You are a professional essay grader specializing in Korean academic writing.",
+            input=prompt,
+            text={"format": {"type": "json_object"}},
+            reasoning={"effort": "minimal"},
         )
-        return json.loads(response.choices[0].message.content)
+        return json.loads(response.output_text)
     except Exception as e:
         print(f"\nAPI Error: {e}")
         return None
@@ -84,7 +81,7 @@ if not os.path.exists(INPUT_FILE):
 df = pd.read_excel(INPUT_FILE)
 gpt_results = []
 
-print(f"🚀 Starting GPT Grading (Total: {len(df)} essays) via GPT-4o")
+print(f"🚀 Starting GPT Grading (Total: {len(df)} essays) via GPT-5 mini")
 
 for i, row in tqdm(df.iterrows(), total=len(df)):
     essay = str(row.get('essay', ""))

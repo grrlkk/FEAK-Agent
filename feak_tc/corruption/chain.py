@@ -146,7 +146,7 @@ def _generate_step(
         if generator in {"rule", "retrieval"}
         else int(llm_cfg.get("max_attempts", 3))
     )
-    model = str(llm_cfg.get("model", "gpt-4o-mini"))
+    model = str(llm_cfg.get("model", "gpt-5-mini-2025-08-07"))
     reasoning_effort = _nested_string(llm_cfg, "reasoning", "effort")
     verbosity = _nested_string(llm_cfg, "text", "verbosity")
     generation_uses_llm = generator.startswith("llm:")

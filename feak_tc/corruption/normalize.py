@@ -59,7 +59,7 @@ def normalize_text(
     explicit metadata so every state records whether normalization occurred.
     """
 
-    model = str(cfg.get("model", "gpt-4o-mini"))
+    model = str(cfg.get("model", "gpt-5-mini-2025-08-07"))
     reasoning_effort = _nested_string(cfg, "reasoning", "effort")
     verbosity = _nested_string(cfg, "text", "verbosity")
     metadata = {

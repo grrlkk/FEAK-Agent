@@ -114,7 +114,7 @@ def _propose_with_llm(
             "Do not rewrite the essay. Produce local, reversible revision candidates."
         ),
         user=_build_llm_prompt(diag, n_per_action=n_per_action),
-        model=str(cfg.get("model", "gpt-4o-mini")),
+        model=str(cfg.get("model", "gpt-5-mini-2025-08-07")),
         temperature=float(cfg.get("temperature", 0.2)),
         env_file=cfg.get("env_file"),
         timeout=float(cfg["timeout"]) if cfg.get("timeout") is not None else None,

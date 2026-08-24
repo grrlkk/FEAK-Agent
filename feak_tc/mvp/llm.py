@@ -26,7 +26,7 @@ def request_json(
     *,
     system: str,
     user: str,
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5-mini-2025-08-07",
     temperature: Optional[float] = 0.2,
     reasoning_effort: Optional[str] = None,
     verbosity: Optional[str] = None,
@@ -37,9 +37,9 @@ def request_json(
 ) -> dict[str, Any]:
     """Call an OpenAI model and parse a JSON object response.
 
-    Existing GPT-4o callers keep the Chat Completions path. GPT-5 callers use
-    the Responses API so reasoning effort, verbosity, and strict JSON Schema
-    can be configured without changing the MVP proposer/patcher behavior.
+    GPT-5 callers use the Responses API so reasoning effort, verbosity, and
+    strict JSON Schema can be configured consistently across MVP and corruption
+    generation.
     """
 
     _load_env(env_file)

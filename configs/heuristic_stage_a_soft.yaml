@@ -2,12 +2,12 @@ weak_rubric_top_n: 3
 n_per_action: 1
 proposer:
   mode: auto
-  model: gpt-4o-mini
+  model: gpt-5-mini-2025-08-07
   temperature: 0.2
   timeout: 30
 patcher:
   mode: auto
-  model: gpt-4o-mini
+  model: gpt-5-mini-2025-08-07
   temperature: 0.1
   timeout: 30
 surface_normalizer:

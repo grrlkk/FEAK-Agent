@@ -73,7 +73,7 @@ action 선택을 지금 똑똑하게 만들수록 로그의 action 분포가 편
 수리할 것:
 
 1. **action별 독립 LLM 호출로 분리** (최소한 프롬프트에 action별 한국어 정의 주입).
-   gpt-4o-mini 5회 호출 비용은 kanana 재진단 6회 대비 무시 가능.
+   GPT-5 mini 5회 호출 비용은 kanana 재진단 6회 대비 무시 가능.
 2. **`n_per_action` 2~3 + temperature**로 action 내 다양성 확보.
    → 같은 action의 좋은 실행 vs 나쁜 실행 쌍이 로그에 생김
    = corruption 스펙의 hard negative("무엇을 ADD했는지가 중요")를 실데이터에서 공짜로 획득

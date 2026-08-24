@@ -70,17 +70,15 @@ def get_topic_relevance_score(essay_text: str, topic: str) -> Optional[int]:
 """
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o", 
-            messages=[
-                {"role": "system", "content": "You are a professional essay evaluator."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=5
+        response = client.responses.create(
+            model="gpt-5-mini-2025-08-07",
+            instructions="You are a professional essay evaluator.",
+            input=prompt,
+            reasoning={"effort": "minimal"},
+            max_output_tokens=5,
         )
-        
-        score_str = response.choices[0].message.content.strip()
+
+        score_str = response.output_text.strip()
         score_match = re.search(r'[0-3]', score_str)
         
         if score_match:

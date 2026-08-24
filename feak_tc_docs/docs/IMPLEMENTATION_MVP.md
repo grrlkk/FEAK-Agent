@@ -44,7 +44,7 @@ features = extract_features(text: str) -> dict[str, float]
 # 예: {"len_word": 320, "ending_diversity": 0.4, ...}  (29개 내외)
 ```
 
-LLM 후보 생성용 API (예: GPT-4o-mini)도 사용 가능하다고 가정한다.
+LLM 후보 생성용 API (GPT-5 mini)를 사용한다.
 키/엔드포인트는 `.env`로 주입.
 
 ---

@@ -245,7 +245,7 @@ def _request_generated_text(
     payload = request_json(
         system=system,
         user=user,
-        model=str(cfg.get("model", "gpt-4o-mini")),
+        model=str(cfg.get("model", "gpt-5-mini-2025-08-07")),
         temperature=float(cfg.get("temperature", 0.1)),
         env_file=cfg.get("env_file"),
         timeout=float(cfg["timeout"]) if cfg.get("timeout") is not None else None,

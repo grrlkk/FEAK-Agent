@@ -68,4 +68,4 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
 - VSCode, 연구실 GPU (A6000 x6)
 - 채점기: kanana-8B + LoRA (학습 완료, 함수 호출 가능) — 글 → 8 rubric 점수
 - 자질(feature): 룰베이스 계산, 채점기와 독립 — 글 → 29개 언어학 feature
-- 후보 생성 LLM: GPT-4o-mini 계열 API (키는 .env)
+- 후보 생성 LLM: GPT-5 mini (`gpt-5-mini-2025-08-07`) API (키는 .env)
