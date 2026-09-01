@@ -1,0 +1,77 @@
+# Revision Verifier transition-data feasibility pilot.
+version: rv-pilot-v1
+seed: 20260831
+sample_size: 50
+
+input:
+  training_pool: experiments/results/corruption_g1_rulev5_1000_training.jsonl
+  # Order is provenance priority. Together these sources reconstruct all 1,000
+  # selected transitions and retain explicit fallbacks for repeatable audits on
+  # partially migrated workspaces.
+  raw_chains:
+    - experiments/results/migrated_3080/corruption_g1_rulev5_1000_remaining_v2_chains.jsonl
+    - experiments/results/migrated_3080/corruption_g1_rulev5_retrieval_offtopic_200_prefix_chains.jsonl
+    - experiments/results/migrated_3080/corruption_g1_rulev5_retrieval_offtopic_30_chains.jsonl
+    - experiments/results/migrated_3080/corruption_g1_gpt5mini_rulev4_200_chains.jsonl
+    - experiments/results/migrated_3080/corruption_g1_gpt5mini_rulev4_100_chains.jsonl
+    - experiments/results/migrated_3080/corruption_g1_gpt5mini_rulev4_200_incremental_100_chains.jsonl
+
+output:
+  dataset: experiments/results/rv_data_pilot_50.jsonl
+  audit: experiments/results/rv_data_pilot_50_audit.json
+  report: experiments/results/rv_data_pilot_50_report.json
+  schema: experiments/results/rv_data_pilot_50_schema.json
+  llm_cache: experiments/results/rv_data_pilot_50_llm_cache.jsonl
+
+llm:
+  model: gpt-5-mini-2025-08-07
+  reasoning:
+    effort: low
+  text:
+    verbosity: low
+  timeout: 120
+  max_attempts: 3
+  candidate_repair_attempts: 3
+  workers: 4
+  validation:
+    min_length_ratio: 0.60
+    max_length_ratio: 1.80
+    min_length_ratio_by_candidate:
+      over_edit: 0.25
+    max_length_ratio_by_candidate:
+      over_edit: 3.00
+
+labels:
+  source: candidate_type_weak_supervision_v1
+  # pass/partial/fail are synthetic pretraining signals, not human ground truth.
+  mapping:
+    correct_repair:
+      target_fulfillment: pass
+      preservation: pass
+      edit_appropriateness: pass
+      action_consistency: pass
+    partial_repair:
+      target_fulfillment: partial
+      preservation: pass
+      edit_appropriateness: pass
+      action_consistency: pass
+    wrong_target:
+      target_fulfillment: fail
+      preservation: pass
+      edit_appropriateness: partial
+      action_consistency: fail
+    over_edit:
+      target_fulfillment: pass
+      preservation: partial
+      edit_appropriateness: fail
+      action_consistency: partial
+    further_corruption:
+      target_fulfillment: fail
+      preservation: fail
+      edit_appropriateness: fail
+      action_consistency: fail
+    no_edit:
+      target_fulfillment: fail
+      preservation: pass
+      edit_appropriateness: fail
+      action_consistency: fail
