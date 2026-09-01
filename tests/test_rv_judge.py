@@ -4,8 +4,10 @@ from feak_tc.rv.judge import (
     LABEL_FIELDS,
     analyze_judgments,
     build_blind_packets,
+    fisher_exact_two_sided,
     fleiss_kappa,
     request_judgment,
+    wilson_interval,
 )
 
 
@@ -89,9 +91,21 @@ def test_analysis_scores_majority_and_agreement():
     assert report["per_model"]["m3"]["inferred_type_confusion"]["wrong_target"] == {
         "other": 1
     }
+    assert report["per_model"]["m1"]["inferred_type_classification"]["wrong_target"][
+        "precision"
+    ] == 1.0
     assert report["inter_rater_agreement"]["three_way_unanimity"]["inferred_candidate_type"] == 0.5
+    assert report["inter_rater_agreement"]["pairwise_chance_diagnostics"]["m1__m2"][
+        "usable_for_weak_supervision"
+    ]["observed_agreement"] == 1.0
     assert len(disagreements) == 1
     assert fleiss_kappa([["a", "a", "a"], ["b", "b", "b"]]) == 1.0
+
+
+def test_binomial_interval_and_fisher_exact_match_reference_values():
+    assert wilson_interval(14, 50) == {"low": 0.174742, "high": 0.416651}
+    assert wilson_interval(39, 50) == {"low": 0.647585, "high": 0.872461}
+    assert fisher_exact_two_sided(3, 10, 36, 1) == 2.8538e-07
 
 
 def _pilot_rows():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections import Counter, defaultdict
 from itertools import combinations
@@ -228,6 +229,13 @@ def analyze_judgments(
         "pairwise": {
             f"{left}__{right}": {
                 field: _pair_agreement(items, left, right, field)
+                for field in ("inferred_candidate_type", *LABEL_FIELDS, "usable_for_weak_supervision")
+            }
+            for left, right in combinations(model_names, 2)
+        },
+        "pairwise_chance_diagnostics": {
+            f"{left}__{right}": {
+                field: _pair_diagnostics(items, left, right, field)
                 for field in ("inferred_candidate_type", *LABEL_FIELDS, "usable_for_weak_supervision")
             }
             for left, right in combinations(model_names, 2)
@@ -472,6 +480,17 @@ def _score_model(items: Sequence[Mapping[str, Any]], model: str) -> dict[str, An
             )
             for candidate_type in REVIEWED_CANDIDATE_TYPES
         },
+        "inferred_type_classification": {
+            candidate_type: _classification_metrics(
+                items,
+                [
+                    item["judgments"][model]["inferred_candidate_type"]
+                    for item in items
+                ],
+                candidate_type,
+            )
+            for candidate_type in REVIEWED_CANDIDATE_TYPES
+        },
     }
 
 
@@ -526,6 +545,16 @@ def _majority_report(
             "decided": available_types,
             "coverage": _rate(available_types, len(items)),
             "accuracy_on_decided": _rate(type_correct, available_types),
+            "exact": type_correct,
+            "full_sample_accuracy": _rate(type_correct, len(items)),
+            "classification": {
+                candidate_type: _classification_metrics(
+                    items,
+                    type_values,
+                    candidate_type,
+                )
+                for candidate_type in REVIEWED_CANDIDATE_TYPES
+            },
         },
         "label_exact_agreement": label_agreement,
         "all_four_labels": {
@@ -546,6 +575,7 @@ def _majority_report(
             )
             for candidate_type in REVIEWED_CANDIDATE_TYPES
         },
+        "operator_contrasts": _operator_contrasts(items, decisions),
     }
 
 
@@ -562,11 +592,12 @@ def _majority_type_summary(
     total = len(indices)
     inferred = [decisions["inferred_candidate_type"][index] for index in indices]
     usable = [decisions["usable_for_weak_supervision"][index] for index in indices]
+    exact = sum(value == candidate_type for value in inferred)
     return {
         "candidates": total,
-        "intended_type_exact_rate": _rate(
-            sum(value == candidate_type for value in inferred), total
-        ),
+        "intended_type_exact": exact,
+        "intended_type_exact_rate": _rate(exact, total),
+        "intended_type_exact_wilson_95_ci": wilson_interval(exact, total),
         "inferred_type_distribution": dict(
             sorted(Counter("undecided" if value is None else value for value in inferred).items())
         ),
@@ -648,6 +679,106 @@ def _pair_agreement(
     )
 
 
+def _pair_diagnostics(
+    items: Sequence[Mapping[str, Any]], left: str, right: str, field: str
+) -> dict[str, Any]:
+    left_values = [item["judgments"][left][field] for item in items]
+    right_values = [item["judgments"][right][field] for item in items]
+    total = len(items)
+    left_counts = Counter(left_values)
+    right_counts = Counter(right_values)
+    categories = set(left_counts) | set(right_counts)
+    observed = sum(a == b for a, b in zip(left_values, right_values)) / total
+    expected = sum(
+        (left_counts[category] / total) * (right_counts[category] / total)
+        for category in categories
+    )
+    kappa = None if expected == 1.0 else (observed - expected) / (1.0 - expected)
+    return {
+        "observed_agreement": round(observed, 6),
+        "expected_agreement_from_marginals": round(expected, 6),
+        "observed_minus_expected": round(observed - expected, 6),
+        "cohen_kappa": round(kappa, 6) if kappa is not None else None,
+        "left_distribution": dict(sorted(left_counts.items(), key=lambda item: str(item[0]))),
+        "right_distribution": dict(sorted(right_counts.items(), key=lambda item: str(item[0]))),
+    }
+
+
+def _classification_metrics(
+    items: Sequence[Mapping[str, Any]],
+    predictions: Sequence[Any | None],
+    positive_type: str,
+) -> dict[str, Any]:
+    true_positive = sum(
+        prediction == positive_type and item["expected_type"] == positive_type
+        for item, prediction in zip(items, predictions)
+    )
+    false_positive = sum(
+        prediction == positive_type and item["expected_type"] != positive_type
+        for item, prediction in zip(items, predictions)
+    )
+    false_negative = sum(
+        prediction != positive_type and item["expected_type"] == positive_type
+        for item, prediction in zip(items, predictions)
+    )
+    predicted_positive = true_positive + false_positive
+    actual_positive = true_positive + false_negative
+    return {
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+        "precision": _rate(true_positive, predicted_positive),
+        "recall": _rate(true_positive, actual_positive),
+        "recall_wilson_95_ci": wilson_interval(true_positive, actual_positive),
+    }
+
+
+def _operator_contrasts(
+    items: Sequence[Mapping[str, Any]],
+    decisions: Mapping[str, Sequence[Any | None]],
+) -> dict[str, Any]:
+    selected = [
+        index for index, item in enumerate(items)
+        if item["expected_type"] == "over_edit"
+    ]
+    delete = [
+        index for index in selected
+        if items[index]["stratum"]["corruption_type"] == "DELETE_SPECIFICS"
+    ]
+    delete_set = set(delete)
+    other = [index for index in selected if index not in delete_set]
+    delete_exact = sum(
+        decisions["inferred_candidate_type"][index] == "over_edit"
+        for index in delete
+    )
+    other_exact = sum(
+        decisions["inferred_candidate_type"][index] == "over_edit"
+        for index in other
+    )
+    return {
+        "over_edit_delete_specifics_vs_other_operators": {
+            "delete_specifics": {
+                "exact": delete_exact,
+                "candidates": len(delete),
+                "rate": _rate(delete_exact, len(delete)),
+                "wilson_95_ci": wilson_interval(delete_exact, len(delete)),
+            },
+            "other_operators": {
+                "exact": other_exact,
+                "candidates": len(other),
+                "rate": _rate(other_exact, len(other)),
+                "wilson_95_ci": wilson_interval(other_exact, len(other)),
+            },
+            "fisher_exact_two_sided_p": fisher_exact_two_sided(
+                delete_exact,
+                len(delete) - delete_exact,
+                other_exact,
+                len(other) - other_exact,
+            ),
+        }
+    }
+
+
 def _disagreement_rows(
     items: Sequence[Mapping[str, Any]], models: Sequence[str]
 ) -> list[dict[str, Any]]:
@@ -688,6 +819,58 @@ def _majority(values: Sequence[Any]) -> Any | None:
 
 def _rate(numerator: int, denominator: int) -> float | None:
     return round(numerator / denominator, 6) if denominator else None
+
+
+def wilson_interval(successes: int, total: int) -> dict[str, float] | None:
+    """Return a two-sided Wilson 95% interval for a binomial proportion."""
+
+    if total < 0 or successes < 0 or successes > total:
+        raise ValueError("invalid binomial counts")
+    if total == 0:
+        return None
+    z = 1.959963984540054
+    proportion = successes / total
+    denominator = 1.0 + z * z / total
+    center = (proportion + z * z / (2.0 * total)) / denominator
+    margin = (
+        z
+        * math.sqrt(
+            proportion * (1.0 - proportion) / total
+            + z * z / (4.0 * total * total)
+        )
+        / denominator
+    )
+    return {"low": round(center - margin, 6), "high": round(center + margin, 6)}
+
+
+def fisher_exact_two_sided(a: int, b: int, c: int, d: int) -> float:
+    """Return the two-sided Fisher exact p-value for a 2x2 count table."""
+
+    if any(not isinstance(value, int) or value < 0 for value in (a, b, c, d)):
+        raise ValueError("Fisher exact counts must be non-negative integers")
+    row_one = a + b
+    row_two = c + d
+    column_one = a + c
+    total = row_one + row_two
+    if total == 0:
+        raise ValueError("Fisher exact table must not be empty")
+
+    def probability(cell_a: int) -> float:
+        return (
+            math.comb(row_one, cell_a)
+            * math.comb(row_two, column_one - cell_a)
+            / math.comb(total, column_one)
+        )
+
+    lower = max(0, column_one - row_two)
+    upper = min(row_one, column_one)
+    observed = probability(a)
+    p_value = sum(
+        probability(cell_a)
+        for cell_a in range(lower, upper + 1)
+        if probability(cell_a) <= observed + 1e-15
+    )
+    return round(min(p_value, 1.0), 12)
 
 
 def _stable_int(value: str) -> int:

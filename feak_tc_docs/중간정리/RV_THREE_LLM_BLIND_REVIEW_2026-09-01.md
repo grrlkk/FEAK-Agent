@@ -8,8 +8,9 @@ Revision Verifier 데이터의 **구성 방식과 schema는 사용할 수 있지
 학습에 사용하면 안 된다.** LLM 생성 후보 중 `wrong_target`의 의도 재현율이 낮고,
 candidate type마다 4축 label을 고정하는 방식은 실제 후보별 차이를 반영하지 못했다.
 
-현재 판단은 **RV 학습 보류(no-go)** 이다. 후보 생성과 instance-level label을 고친 뒤 같은
-블라인드 검증을 다시 통과시켜야 한다.
+현재 판단은 **현재 300행을 4축 RV 데이터셋으로 그대로 학습하는 것은 보류(no-go)** 이다.
+이것은 모든 후보를 폐기한다는 뜻이 아니다. 검증된 부분집합은 보존하고, 실패한 후보 생성과
+instance-level label을 고친 뒤 같은 블라인드 검증을 다시 통과시켜야 한다.
 
 ## 검증 범위
 
@@ -38,27 +39,34 @@ deterministic corruption-edit replay로 후보 생성 자체를 이미 검증했
 | GPT-5 mini | 59% | 72% | 46% | 0% | 68% |
 | GPT-4.1 | 50% | 24% | 76% | 6% | 32% |
 
-GPT-5 mini는 해당 후보를 생성한 모델과 동일하다. 이 모델만 `wrong_target` 일치율이 유독
-높으므로 생성 의도를 다시 인식하는 편향 가능성이 있다. 후보 생성에 참여하지 않은 GPT-5와
-GPT-4.1만 비교하면 다음과 같다.
+GPT-5 mini는 해당 후보를 생성한 모델과 동일하다. 이 모델만 `wrong_target` recall이 72%로
+높고 `over_edit` recall은 46%로 세 모델 중 가장 낮다. 따라서 전반적인 판정 성능이 높은 것이
+아니라, 동일 모델 계열의 생성 양식과 판정 기준이 정렬된 편향일 가능성이 크다. API 호출 간
+기억이 유지되는 것은 아니므로 이를 "자기 의도를 기억한다"고 해석하지는 않는다. 후보 생성에
+참여하지 않은 GPT-5와 GPT-4.1만 비교하면 다음과 같다.
 
 - `wrong_target`: 두 모델이 모두 intended type으로 판정한 후보 2/50, 둘 다 `other` 30/50
 - `over_edit`: 두 모델이 모두 intended type으로 판정한 후보 37/50, 둘 다 `other` 7/50
 
-세 모델 모두 같은 OpenAI provider이므로 이 결과는 사람 평가나 provider-independent 검증을
-대체하지 않는 LLM proxy이다.
+세 모델 모두 같은 OpenAI provider이고 GPT-5 mini는 생성 당사자와 같은 모델이다. 따라서
+생성 품질을 보는 실질적인 비생성 판정자는 GPT-5와 GPT-4.1 두 개에 가깝고, 이 둘도 완전히
+독립적이지 않다. 이 결과는 사람 평가나 provider-independent 검증을 대체하지 않는 LLM proxy이다.
 
 ## 다수결 결과
 
 ### Candidate type
 
 - 전체 intended type 일치: 53/100 (2개는 세 모델이 모두 달라 다수결 불가)
-- `wrong_target`: 14/50 (28%)
-- `over_edit`: 39/50 (78%)
+- `wrong_target`: 14/50, recall 28%, precision 100%, Wilson 95% CI [17.5%, 41.7%]
+- `over_edit`: 39/50, recall 78%, precision 97.5%, Wilson 95% CI [64.8%, 87.2%]
 
 `wrong_target` 50개 중 33개는 다수결로 `other`, 1개는 `over_edit`, 2개는 다수결 불가였다.
-대표 실패는 target 밖의 문제를 실제로 고친 후보가 아니라, 오염을 그대로 두고 표현 몇 개만
-바꾸거나 target을 불완전하게 고친 후보였다.
+세 모델 각각의 판정에서도 실제 `over_edit`를 `wrong_target`이라고 한 false positive는 0개였다.
+반면 실제 `wrong_target`에 대한 세 모델의 miss 96개 중 91개는 `other`, 5개는 `over_edit`였다.
+따라서 이것은 타입 간 무작위 혼동보다 **높은 precision, 낮은 recall, 대부분 `other`로의
+abstention** 문제다. 개념을 폐기할 이유는 없지만 다른 rubric을 실제로 개선했다는 신호가 훨씬
+명확하게 보이도록 생성해야 한다. 여기서 precision 100%는 `wrong_target`와 `over_edit`만 넣은
+제한된 평가 집합 기준이며, 실제 운영 후보 전체에서의 precision으로 일반화할 수는 없다.
 
 ### 4축 weak label
 
@@ -78,6 +86,12 @@ GPT-4.1만 비교하면 다음과 같다.
 
 즉 candidate type은 4축 label의 정답이 아니다. **각 후보 text를 보고 축별로 따로 label해야 한다.**
 
+`edit_appropriateness`는 mapping만의 문제도 아니다. `over_edit` 타입에는 39/50이 동의했지만,
+같은 후보의 edit appropriateness는 12/50에서 다수결이 없었고 나머지도 fail 10, partial 17,
+pass 11로 갈렸다. 판정자들이 "수정 범위가 크다"와 "그 수정이 이 action에서 부적절하다"를
+다른 질문으로 해석했다. pass/partial/fail의 operational definition과 action별 경계 자체를
+다시 써야 하며, anchor 추가만으로 해결됐다고 간주할 수 없다.
+
 ## 평가자 일치도
 
 | 항목 | Fleiss' kappa | 3자 완전 일치 |
@@ -89,12 +103,30 @@ GPT-4.1만 비교하면 다음과 같다.
 | action_consistency | 0.434 | 46% |
 | usable_for_weak_supervision | -0.060 | 29% |
 
-100개 중 93개는 여섯 판정 항목 중 하나 이상에서 모델 간 불일치가 있었다. 특히 usable 판정은
-GPT-5 99%, GPT-4.1 32%로 calibration 차이가 너무 커서 현재 형태로 gate에 쓰면 안 된다.
+100개 중 93개는 여섯 판정 항목 중 하나 이상에서 모델 간 불일치가 있었다.
+
+### Usable 판정의 정보량
+
+| 모델 쌍 | 관측 일치 | marginal 독립 기대 | 차이 | Cohen kappa |
+|---|---:|---:|---:|---:|
+| GPT-5 / GPT-5 mini | 0.670 | 0.676 | -0.006 | -0.020 |
+| GPT-5 / GPT-4.1 | 0.330 | 0.324 | +0.006 | 0.009 |
+| GPT-5 mini / GPT-4.1 | 0.580 | 0.435 | +0.145 | 0.256 |
+
+GPT-5는 100개 중 99개를 usable로 판정했다. 출력 entropy가 거의 없는 상수 판정이며, GPT-5가
+낀 두 쌍의 관측 일치는 각 모델의 yes/no 비율만으로 얻는 기대 일치와 사실상 같다. 따라서
+현재 GPT-5 usable 출력은 다른 판정과의 연관 정보가 실무적으로 거의 없다. 이 문제는 사후
+threshold 조정으로 해결할 수 없다. usable을 LLM 단일 질문에서 제거하고, intended type 합의,
+축별 합의, 구조 검사를 결합한 data-quality gate로 다시 정의해야 한다.
+
+Fleiss kappa -0.060은 이 결론과 방향이 같지만 marginal이 99% 대 32%로 극단적이어서, 여기서는
+kappa보다 위의 관측-기대 일치 비교를 주 근거로 사용한다.
 
 ## Corruption별 차이
 
-`wrong_target`는 모든 구간에서 낮았다. stage별 성공 수는 0~3개 수준이었다.
+`wrong_target`는 모든 구간에서 낮았다. stage별 성공 수는 0~3개 수준이지만 각 cell이 6~7개라
+개별 stage/operator 순위를 해석해서는 안 된다. 예를 들어 Wilson 95% CI는 0/6도 [0.00, 0.39],
+1/6은 [0.03, 0.56], 6/6은 [0.61, 1.00]으로 넓다.
 
 `over_edit`는 action에 따라 결과가 명확히 갈렸다.
 
@@ -102,7 +134,19 @@ GPT-5 99%, GPT-4.1 32%로 calibration 차이가 너무 커서 현재 형태로 g
 - 나머지 `INJECT_LEX_REPEAT`, `INSERT_OFFTOPIC`, `SHUFFLE_FLOW`: 36/37
 
 ADD_DETAIL에서는 내용을 더 많이 추가하는 것만으로 over-edit인지 정상적인 detail 보강인지
-구분하기 어렵다. 현재의 공통 생성 prompt로는 명확한 negative를 만들지 못한다.
+구분하기 어렵다. 두 집계의 Wilson 95% CI는 각각 [8.2%, 50.3%], [86.2%, 99.5%]이며,
+Fisher 양측 정확검정은 p=2.85e-7이다. 작은 개별 cell과 달리 `DELETE_SPECIFICS` 대 나머지의
+차이는 강하게 지지된다. 현재의 공통 생성 prompt로는 ADD_DETAIL negative를 만들지 못한다.
+
+## 부분 재사용 판단
+
+- `over_edit` 중 `INJECT_LEX_REPEAT`, `INSERT_OFFTOPIC`, `SHUFFLE_FLOW`: 다수결 36/37,
+  비생성 판정자 GPT-5와 GPT-4.1 동시 일치 34/37이다. 후보 text는 보존할 가치가 있다.
+- `target_fulfillment`: Fleiss kappa 0.637로 가장 안정적이고 기존 label과 다수결 일치도 75/100이다.
+  첫 축소형 RV의 후보 축으로는 적합하다.
+- 다만 위 후보도 4축 고정 label을 그대로 쓸 수 있다는 뜻은 아니다. `target_fulfillment` 단일축
+  학습도 나머지 200개 trajectory/replay 후보의 instance label과 class balance를 검증한 뒤에야
+  결정할 수 있다.
 
 ## 진단
 
@@ -112,8 +156,9 @@ ADD_DETAIL에서는 내용을 더 많이 추가하는 것만으로 over-edit인�
    경계를 별도로 정의해야 한다.
 3. candidate type 기반 고정 label mapping은 폐기해야 한다. 같은 타입 안에서도 4축 결과가 크게
    다르다.
-4. LLM judge끼리도 preservation/minimality calibration이 낮다. 명시적 anchor 예시와 소규모 사람
-   평가로 rubric을 먼저 보정해야 한다.
+4. `edit_appropriateness`는 축 정의와 action별 판정 경계를 다시 작성해야 한다. preservation도
+   kappa 0.148이라 명시적 기준과 소규모 사람 평가가 필요하다.
+5. 현재 `usable_for_weak_supervision` LLM 질문은 제거하고 합의·구조 검사 기반 gate로 재설계한다.
 
 ## 다음 작업
 
@@ -122,8 +167,11 @@ ADD_DETAIL에서는 내용을 더 많이 추가하는 것만으로 over-edit인�
 2. `over_edit`는 correct repair를 시작점으로 target 밖의 의미 손실, 불필요한 재구성, 근거 없는
    추가 중 하나를 의도적으로 결합한다. ADD_DETAIL 전용 규칙을 별도로 둔다.
 3. `candidate_type`은 생성 provenance로만 저장하고, 4축 label은 instance별 판정으로 만든다.
-4. 2/3 모델이 intended type에 동의하지 않는 synthetic candidate는 폐기하거나 재생성한다.
-5. 수정 후 50-state 전수 블라인드 검증을 다시 실행하고, 이후 나머지 4개 trajectory 후보의
+4. 생성 모델을 제외한 판정자들이 intended type에 동의하지 않는 synthetic candidate는
+   폐기하거나 재생성한다.
+5. 다수결로 보존 가능한 over-edit 36개(비생성 2모델 동의 기준 core 34개)는 text를 유지하되
+   4축 label은 instance별로 다시 산출한다.
+6. 수정 후 50-state 전수 블라인드 검증을 다시 실행하고, 이후 나머지 4개 trajectory 후보의
    instance-level label도 별도로 audit한다.
 
 ## 재현 파일
