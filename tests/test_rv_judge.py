@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 
 from feak_tc.rv.judge import (
@@ -7,8 +8,10 @@ from feak_tc.rv.judge import (
     fisher_exact_two_sided,
     fleiss_kappa,
     request_judgment,
+    review_packet_digest,
     wilson_interval,
 )
+from scripts.evaluate_rv_pilot_llm_judges import _review_model
 
 
 WEAK_LABELS = {
@@ -59,6 +62,59 @@ def test_request_judgment_never_sends_hidden_key():
     assert "expected_labels" not in captured["user"]
     assert "candidate_source" not in captured["user"]
     assert public[0]["candidate_a_text"] in captured["user"]
+    assert review_packet_digest(public[0]) == review_packet_digest(dict(public[0]))
+    changed = dict(public[0], candidate_a_text="changed")
+    assert review_packet_digest(public[0]) != review_packet_digest(changed)
+
+
+def test_model_cache_is_invalidated_when_packet_digest_changes(tmp_path, monkeypatch):
+    public, _ = build_blind_packets(_pilot_rows(), sample_states=1, seed=2)
+    judgment = _judgment("wrong_target", WEAK_LABELS["wrong_target"])
+    path = tmp_path / "judge.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "review_id": public[0]["review_id"],
+                "model": "test-model",
+                "review_kind": "openai_api_independent_blind",
+                "public_packet_sha256": "stale",
+                **judgment,
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request(*args, **kwargs):
+        calls.append(kwargs)
+        return judgment
+
+    monkeypatch.setattr(
+        "scripts.evaluate_rv_pilot_llm_judges.request_judgment", fake_request
+    )
+
+    rows = _review_model(
+        public_rows=public,
+        path=path,
+        model_config={"name": "test", "id": "test-model"},
+        workers=1,
+        max_attempts=1,
+        timeout=1,
+    )
+    assert len(calls) == 1
+    assert rows[0]["public_packet_sha256"] == review_packet_digest(public[0])
+
+    _review_model(
+        public_rows=public,
+        path=path,
+        model_config={"name": "test", "id": "test-model"},
+        workers=1,
+        max_attempts=1,
+        timeout=1,
+    )
+    assert len(calls) == 1
 
 
 def test_analysis_scores_majority_and_agreement():

@@ -18,6 +18,7 @@ from .schema import LABEL_FIELDS, LABEL_VALUES
 
 REVIEWED_CANDIDATE_TYPES = ("wrong_target", "over_edit")
 INFERRED_CANDIDATE_TYPES = (*REVIEWED_CANDIDATE_TYPES, "other")
+JUDGE_PROTOCOL_VERSION = "rv-blind-candidate-judge-v1"
 
 JUDGMENT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -186,6 +187,20 @@ def request_judgment(
         f"review failed for {row.get('review_id')} with {model} "
         f"after {max_attempts} attempts: {last_error}"
     )
+
+
+def review_packet_digest(row: Mapping[str, Any]) -> str:
+    """Bind cached model output to the exact public packet and judge protocol."""
+
+    payload = {
+        "protocol_version": JUDGE_PROTOCOL_VERSION,
+        "system_prompt": SYSTEM_PROMPT,
+        "schema": JUDGMENT_SCHEMA,
+        "public_packet": dict(row),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def validate_judgment(raw: Mapping[str, Any]) -> dict[str, Any]:

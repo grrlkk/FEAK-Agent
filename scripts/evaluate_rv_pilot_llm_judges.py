@@ -21,6 +21,7 @@ from feak_tc.rv.judge import (
     build_blind_packets,
     read_jsonl,
     request_judgment,
+    review_packet_digest,
     validate_judgment,
     write_json_atomic,
     write_jsonl_atomic,
@@ -109,11 +110,20 @@ def _review_model(
     model_name = str(model_config["name"])
     model_id = str(model_config["id"])
     existing = read_jsonl(path) if path.exists() else []
-    existing_by_id = {
-        str(row["review_id"]): dict(row)
-        for row in existing
-        if row.get("model") == model_id and _valid_saved_judgment(row)
-    }
+    public_by_id = {str(row["review_id"]): row for row in public_rows}
+    existing_by_id = {}
+    for saved in existing:
+        review_id = str(saved.get("review_id") or "")
+        public_row = public_by_id.get(review_id)
+        if public_row is None or saved.get("model") != model_id:
+            continue
+        expected_digest = review_packet_digest(public_row)
+        saved_digest = saved.get("public_packet_sha256")
+        if saved_digest != expected_digest:
+            continue
+        if not _valid_saved_judgment(saved):
+            continue
+        existing_by_id[review_id] = dict(saved)
     pending = [
         row for row in public_rows
         if str(row["review_id"]) not in existing_by_id
@@ -138,6 +148,7 @@ def _review_model(
             "review_id": str(public_row["review_id"]),
             "model": model_id,
             "review_kind": "openai_api_independent_blind",
+            "public_packet_sha256": review_packet_digest(public_row),
             **judgment,
         }
 
@@ -158,7 +169,9 @@ def _review_model(
                     f"{result['review_id']}",
                     flush=True,
                 )
-    return [existing_by_id[str(row["review_id"])] for row in public_rows]
+    ordered = [existing_by_id[str(row["review_id"])] for row in public_rows]
+    write_jsonl_atomic(path, ordered)
+    return ordered
 
 
 def _valid_saved_judgment(row: Mapping[str, Any]) -> bool:

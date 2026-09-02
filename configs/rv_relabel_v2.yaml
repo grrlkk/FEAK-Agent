@@ -1,0 +1,29 @@
+version: rv-pilot-v2.1
+seed: 20260902
+
+input:
+  dataset: experiments/results/rv_data_pilot_50_v2_candidates.jsonl
+  candidate_judge_prefix: experiments/results/rv_data_pilot_50_v2_candidate_judge
+  candidate_quality_judges:
+    - gpt5
+    - gpt41
+
+output:
+  prefix: experiments/results/rv_data_pilot_50_v2_relabel
+
+# GPT-5 mini generated the selective candidates and is intentionally excluded.
+models:
+  - name: gpt5
+    id: gpt-5-2025-08-07
+    reasoning_effort: low
+    verbosity: low
+  - name: gpt41
+    id: gpt-4.1-2025-04-14
+  - name: o3
+    id: o3-2025-04-16
+    reasoning_effort: low
+
+request:
+  workers: 3
+  max_attempts: 3
+  timeout: 240
