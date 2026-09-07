@@ -6,16 +6,20 @@
 ## 프로젝트 한 줄
 
 FEAK-TC: 한국어 글쓰기 반복 수정을 **transition 단위로 평가·제어**하는 writing agent.
-채점기(kanana-8B+LoRA, 학습 완료)가 진단하고, LLM이 action별 수정 후보를 만들고,
-TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controller가 accept/reject/rollback/stop 한다.
+채점기(kanana-8B+LoRA, 학습 완료)가 진단하고, LLM이 수정 후보를 만들며,
+RV가 목표 달성·내용 보존·편집 적절성을 검증해 FEAK 신호와 함께 controller에 제공하는 구조다.
+**현재 신규 학습 대상은 RV이며, RV 학습과 반복 controller 통합은 아직 미완료다.**
+기존 TVM 개발은 종료하고 결과·코드는 이전 실험 기록으로 보존한다.
 
 ## 문서 지도 (자세한 내용은 docs/)
 
 | 문서 | 내용 | 언제 읽나 |
 |---|---|---|
-| `docs/PROJECT_CONTEXT.md` | 연구 배경·시스템 구성·확정된 결정 | 항상 먼저 |
+| `docs/FEAK_TC_RV_METHOD_2026-09-08.md` | RV 중심 현재 방법론·판정 원칙·평가 설계 | 항상 먼저, 과거 TVM 설계보다 우선 |
+| `중간정리/RV_DATA_STATUS_2026-09-08.md` | 데이터 규모·실제 산출물·남은 검증·다음 작업 | 항상 함께 |
+| `docs/PROJECT_CONTEXT.md` | 과거 TVM 설계의 연구 배경·결정 기록 | 역사적 맥락 확인 시 |
 | `docs/IMPLEMENTATION_MVP.md` | 지금 구현할 MVP 루프 상세 지시 | MVP 작업 시 |
-| `docs/SPEC_CORRUPTION_TVM.md` | corruption 데이터 생성 + TVM 학습 스펙 | MVP 이후 단계 |
+| `docs/SPEC_CORRUPTION_TVM.md` | 기존 corruption + TVM 학습 스펙 | 기존 실험 재현·출처 확인 시 |
 | `중간정리/MVP_FINAL_REPORT_2026-07-23.md` | 완료된 MVP 구현·검증 최종 보고서 | MVP 결과 확인 시 |
 
 ## 현재 단계와 우선순위
@@ -36,8 +40,15 @@ TVM(학습 예정)이 각 후보 transition의 가치를 평가하고, controlle
    (`중간정리/CORRUPTION_RULEV5_1000_RESULTS_2026-08-20.md`)
 8. [완료] feature-only GBM·BGE-M3 text pairwise 학습곡선 — 1,000쌍에서 포화,
    추가 생성 중단 (`중간정리/CORRUPTION_LEARNING_CURVES_2026-08-20.md`)
-9. **지금: TVM Stage-1 학습**
-10. 그 다음: Global Drift 평가기 → controller 통합 → 평가
+9. [완료·개발 종료] TVM 학습 및 실제 수정 20글/99후보 평가 — 합성 성능의 실제 전이는 충분히 입증되지 않음
+10. [완료] RV v1/v2 데이터 파일럿 — 50글/300후보 중 227개 LLM 합의 subset 보존
+    (`중간정리/RV_DATA_PILOT_V2_2026-09-02.md`)
+11. **지금: 구체적인 수정 요구 + RV 역할에 맞는 소규모 비교 세트 + 사람 검수 양식 준비**
+12. 그 다음: 라벨·분할·학습 설정 고정 → RV 최소 학습·실제 수정 평가 → controller/Trajectory Guard 통합
+
+227개는 사람 검수 완료 데이터가 아니다. 기존 corruption 1,000쌍과 파일럿을 재사용하고,
+유형을 맞추기 위한 반복 생성이나 같은 후보의 이유 없는 전수 LLM 재판정을 재개하지 않는다.
+상세 종료 기준과 미확정 설계는 위 2026-09-08 문서를 따른다.
 
 ## 절대 규칙 (No Feature Creep)
 
