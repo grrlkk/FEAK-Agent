@@ -1,110 +1,142 @@
 # FEAK-Agent
-A revision agent that judges each edit as a transition (s→s′) using a value model trained from diagnostically corrupted essays, without human-labeled edit pairs.
 
-FEAK-TC experiment repository for Korean essay revision-control research.
+Research code for **FEAK-TC**, a writing agent that revises Korean essays iteratively while
+managing two things at once: whether each revision achieves what it was asked to do, and
+whether it preserves the content that had to stay.
 
-The active MVP path runs one local revision step:
+FEAK-TC is the successor to [FEAK](#relation-to-feak) (SAC'26), which turns rubric-linked
+linguistic features into evidence for LLM feedback. FEAK stops at the feedback; FEAK-TC
+asks what comes after it — once feedback becomes an actual edit, how do we verify the edit
+and decide whether to keep it, retry, roll back, or stop?
+
+> **Work in progress.** This repository accompanies a paper in preparation, targeted for
+> conference submission in 2026. Interfaces and data formats are still moving.
+
+## Overview
+
+Verification is split into two levels. The **Revision Verifier (RV)** judges a single
+revision. The **Trajectory Guard** checks whether the essay as a whole degrades as edits
+accumulate.
+
+| Step | What happens | Output |
+|---|---|---|
+| 1. Diagnose, retrieve, plan | FEAK locates weaknesses; RAG supplies traits of relevant high-quality essays | A concrete revision request and its preservation constraints |
+| 2. Generate | An LLM produces several candidate revisions for the fixed request | Revised text and its change set |
+| 3. Verify (RV) | Each candidate is judged on goal attainment and content preservation | Two-axis verdict |
+| 4. Trajectory guard | The full essay and edit history are checked for accumulated damage | Flow-level problems with evidence |
+| 5. Control | FEAK quality change and verdicts are combined | Accept, replan, restore, or stop |
+
+RV takes `(task, essay before, revision request, essay after)` and emits two independent
+axes, each `pass` / `partial` / `fail`:
+
+- `target_fulfillment` — was the requested problem actually solved?
+- `preservation` — were the claims, conditions, and evidence that had to stay kept intact?
+
+The axes are judged separately: a revision can hit its goal and still destroy content, or
+miss its goal while leaving the original intact. Preservation is not string identity —
+errors the request asks to fix and additions it permits are allowed to change.
+
+**RV is the only model trained here.** Scoring and feature computation reuse FEAK; the
+planner, generator, and trajectory guard use off-the-shelf LLMs.
+
+## Status
+
+Design and implementation are deliberately kept apart in this repository.
+
+- Runnable today: a one-step heuristic revision loop under `feak_tc/mvp/`.
+- `feak_tc/rv/` and the RV scripts are tooling for an earlier four-axis data pilot, kept
+  for reuse. Their presence does not mean the final two-axis RV is implemented.
+- Not yet implemented: the two-axis schema end to end, RV training, RAG-backed planning,
+  and the iterative controller.
+
+Experiment records and the current state of collected data live in `feak_tc_docs/`.
+
+## Repository layout
 
 ```text
-essay
-  -> diagnose
-  -> propose action-stratified candidates
-  -> apply reversible patches
-  -> re-diagnose
-  -> compute transition features
-  -> heuristic accept/reject/stop
+feak_tc/diagnose/     FEAK / Kanana / stub scorer bindings
+feak_tc/mvp/          one-step revision, patching, quality scoring, heuristics
+feak_tc/rv/           RV pilot data tooling
+feak_tc/corruption/   corruption generation, inspection, analysis
+feak_tc/data/         AI-Hub JSON normalization
+feak_tc/schemas/      source data schemas
+src/apps/             Korean linguistic analysis and scoring
+scripts/              entry points for runs and data reuse
+configs/              run configuration
+tests/                regression tests
+feak_tc_docs/         specifications and experiment records
+data/                 source corpora (not tracked)
+experiments/results/  generated data and experiment output (not tracked)
 ```
 
-This repository intentionally excludes the previous web frontend, FastAPI routers,
-server runtime files, private keys, API keys, raw spreadsheets, and model weights.
+## Setup
 
-## Layout
-
-```text
-feak_tc/mvp/             One-step FEAK-TC MVP loop
-feak_tc/diagnose/        Stub, Kanana, and legacy FEAK diagnoser adapters
-feak_tc/data/            AI-Hub JSON normalization utilities
-feak_tc/db/              MongoDB skeleton for later ingestion/log storage
-src/apps/                 Core analysis modules kept compatible with existing imports
-scripts/                  Experiment entry points
-experiments/configs/      Experiment configuration files
-experiments/results/      Generated outputs, ignored by Git
-data/                     Local datasets, ignored by Git
-```
-
-## MVP Smoke Run
-
-Offline deterministic run:
+Pick the dependency set that matches your runtime.
 
 ```bash
-python scripts/run_mvp.py \
+pip install -r requirements.txt          # core / dev
+pip install -r requirements-kanana.txt   # Kanana scorer
+pip install -r requirements-legacy.txt   # legacy UKTA / KoBERT scorer
+```
+
+API keys are read from `.env`.
+
+## Usage
+
+Run the tests:
+
+```bash
+python -m pytest -q
+```
+
+Run the one-step MVP against the stub diagnoser, with no model download:
+
+```bash
+HF_HUB_OFFLINE=1 python scripts/run_mvp.py \
+  --diagnoser stub \
   --text "인권은 인간이 가지는 기본적인 권리이다. 우리는 서로의 권리를 존중해야 한다." \
   --proposer-mode deterministic \
-  --patcher-mode deterministic
+  --patcher-mode deterministic \
+  --surface-normalizer off
 ```
 
-Batch JSONL logging:
+This exercises the heuristic loop, not a trained RV or the full controller. For wiring a
+real scorer, see [Diagnoser Integration](docs/DIAGNOSER_INTEGRATION.md).
 
-```bash
-python scripts/run_mvp_batch.py \
-  --input data/data_jsonl/train.jsonl \
-  --output experiments/results/mvp_batch.jsonl \
-  --diagnoser stub \
-  --min-chars 150 \
-  --proposer-mode deterministic \
-  --patcher-mode deterministic
+## Relation to FEAK
+
+FEAK is the preceding system and has its own repository at
+[grrlkk/FEAK](https://github.com/grrlkk/FEAK). FEAK-TC reuses its scorers and feature
+computation as the diagnostic layer and adds revision verification and trajectory control
+on top.
+
+> **From Evaluation to Feedback: A Feature-Based and LLM-Constrained Tool for Korean Writing Assessment**
+> Chanwoo Jang, Ganghee Go, Jinyong Yun, Seokho Ahn, Myungsun Shin, Ho-Hyun Kil,
+> Sungmin Chang, Do-Guk Kim, Young-Duk Seo.
+> *The 41st ACM/SIGAPP Symposium on Applied Computing (SAC'26)*, Thessaloniki, Greece.
+> [doi:10.1145/3748522.3780021](https://doi.org/10.1145/3748522.3780021)
+
+FEAK dynamically identifies rubric-linked linguistic features with low values and uses them
+as evidence for LLM-based feedback generation, grounding generated feedback in measurable
+diagnostic signals so that it stays interpretable and verifiable.
+
+Cite FEAK when referring to that diagnostic layer:
+
+```bibtex
+@inproceedings{jang2026feak,
+  title     = {From Evaluation to Feedback: A Feature-Based and LLM-Constrained Tool
+               for Korean Writing Assessment},
+  author    = {Jang, Chanwoo and Go, Ganghee and Yun, Jinyong and Ahn, Seokho and
+               Shin, Myungsun and Kil, Ho-Hyun and Chang, Sungmin and Kim, Do-Guk and
+               Seo, Young-Duk},
+  booktitle = {Proceedings of the 41st ACM/SIGAPP Symposium on Applied Computing (SAC '26)},
+  year      = {2026},
+  publisher = {ACM},
+  address   = {New York, NY, USA},
+  doi       = {10.1145/3748522.3780021}
+}
 ```
 
-The batch input can be a `.txt`, `.jsonl`, `.json`, or a directory of `.txt`
-files. Each JSONL output row contains the original record, candidates,
-transition features, heuristic scores, and final decision.
+## License
 
-True Kanana execution uses the sibling `essay_scoring_llm` package:
-
-```bash
-python scripts/run_mvp.py \
-  --diagnoser kanana \
-  --device-id 3 \
-  --question "인권의 뜻과 특징에 대해 서술하세요" \
-  --text-file sample_essay.txt
-```
-
-## Local Data
-
-Place experiment inputs under `data/`. The default scripts expect:
-
-```text
-data/UKTA_1128_total_result.xlsx
-```
-
-You can override paths without editing code:
-
-```bash
-FEAK_INPUT_FILE=/path/to/input.xlsx FEAK_OUTPUT_FILE=/path/to/output.xlsx python scripts/run_final_scoring.py
-```
-
-## Secrets
-
-Do not commit API keys. For Bareun, either set `BAREUN_API_KEY_PATH` or place a local
-untracked key file at:
-
-```text
-secrets/bareun_api.txt
-```
-
-For OpenAI experiments, create a local `.env` with:
-
-```text
-OPENAI_API_KEY=...
-```
-
-## Model Weights
-
-Essay scoring expects the GRU checkpoint locally at:
-
-```text
-src/apps/cohesion/essay_scoring/model/not_topic_model.pth
-```
-
-Model weights are ignored by Git. Store them locally or document an external download
-location for reproducibility.
+MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for third-party components.
