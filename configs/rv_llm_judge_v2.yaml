@@ -1,0 +1,23 @@
+version: rv-llm-judge-v2
+seed: 20260902
+sample_states: 50
+
+input:
+  dataset: experiments/results/rv_data_pilot_50_v2_candidates.jsonl
+
+output:
+  prefix: experiments/results/rv_data_pilot_50_v2_candidate_judge
+
+# The GPT-5 mini candidate generator is intentionally excluded.
+models:
+  - name: gpt5
+    id: gpt-5-2025-08-07
+    reasoning_effort: low
+    verbosity: low
+  - name: gpt41
+    id: gpt-4.1-2025-04-14
+
+request:
+  workers: 3
+  max_attempts: 3
+  timeout: 180

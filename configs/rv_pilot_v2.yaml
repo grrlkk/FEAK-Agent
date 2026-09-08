@@ -1,0 +1,31 @@
+version: rv-pilot-v2
+
+input:
+  dataset: experiments/results/rv_data_pilot_50.jsonl
+
+output:
+  staging_dataset: experiments/results/rv_data_pilot_50_v2_candidates.jsonl
+  regeneration_cache: experiments/results/rv_data_pilot_50_v2_regeneration_cache.jsonl
+  regeneration_report: experiments/results/rv_data_pilot_50_v2_regeneration_report.json
+
+regeneration:
+  over_edit_actions:
+    - ADD_DETAIL
+  model: gpt-5-mini-2025-08-07
+  reasoning:
+    effort: low
+  text:
+    verbosity: low
+  workers: 4
+  timeout: 180
+  max_attempts: 4
+  validation:
+    min_length_ratio: 0.60
+    max_length_ratio: 2.00
+    wrong_target_min_edit_ratio: 0.02
+    wrong_target_max_edit_ratio: 0.40
+    over_edit_min_reference_edit_ratio: 0.08
+    over_edit_min_changed_chars: 70
+    strong_wrong_target_min_edit_ratio: 0.05
+    strong_over_edit_min_reference_edit_ratio: 0.10
+    strong_over_edit_min_changed_chars: 100
