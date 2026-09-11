@@ -47,7 +47,8 @@ The training-free loop under `feak_tc/agent/` runs diagnosis, a concrete revisio
 multiple local patches, two-axis RV checks, selection against keeping the current text,
 checkpointing, trajectory checks, rollback, replanning and bounded stopping. It saves the
 original, every candidate, verdict reasons and the final essay. The default local model is
-the cached Qwen2.5-7B-Instruct in 4-bit inference; no external LLM API is used.
+the cached `kakaocorp/kanana-1.5-8b-instruct-2505` in 4-bit inference; no external LLM API
+is used. Only the diagnoser uses the trained scorer adapter; all other roles use general Kanana.
 
 Optional exemplar retrieval accepts a curated train-only JSONL. Without a configured
 corpus, the planner runs without exemplars. The earlier one-step heuristic MVP and
@@ -62,6 +63,7 @@ Experiment records and the current state of collected data live in `feak_tc_docs
 feak_tc/diagnose/     FEAK / Kanana / stub scorer bindings
 feak_tc/mvp/          one-step revision, patching, quality scoring, heuristics
 feak_tc/agent/        training-free local revision loop and two-axis runtime RV
+feak_tc/web/          local visual console, history and candidate comparison
 feak_tc/rv/           RV pilot data tooling
 feak_tc/corruption/   corruption generation, inspection, analysis
 feak_tc/data/         AI-Hub JSON normalization
@@ -89,7 +91,19 @@ API keys are read from `.env`.
 
 ## Usage
 
-Run the full local loop (existing Kanana assets and cached Qwen weights required):
+Open the local visual console:
+
+```bash
+python scripts/run_agent_web.py --port 8765
+```
+
+Visit `http://localhost:8765` (forward port 8765 if using a remote server). Enter a task
+and essay, then watch diagnosis, revision plans, candidate edits, two-axis RV decisions
+and rollback. Compare versions, revisit saved runs or download the full JSON. The default
+is a real Kanana run; the explicitly labeled demo mode does not load models. The server
+binds to loopback and is intended for personal use, not public deployment.
+
+Run the same loop from the CLI (existing trained Kanana assets and cached base weights required):
 
 ```bash
 python scripts/run_agent.py \
@@ -98,7 +112,7 @@ python scripts/run_agent.py \
   --output experiments/results/local_agent.json
 ```
 
-The default allocation is Kanana on GPU 1 and Qwen on GPU 2. Override with
+The default allocation is trained Kanana on GPU 1 and general Kanana on GPU 2. Override with
 `--kanana-device 1 --llm-device cuda:2`. All thresholds, budgets and model settings are in
 [`configs/agent_local.yaml`](configs/agent_local.yaml). Use `--offline-smoke` for a wiring
 check without models. See [the local agent guide](docs/TRAINING_FREE_AGENT.md) for setup,

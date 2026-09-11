@@ -1,6 +1,6 @@
 # No new training, remote API, dataset generation or model download.
 local_llm:
-  model: Qwen/Qwen2.5-7B-Instruct
+  model: kakaocorp/kanana-1.5-8b-instruct-2505
   device: cuda:2
   load_in_4bit: true
   max_input_tokens: 8192

@@ -2,7 +2,7 @@
 
 import json
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from feak_tc.diagnose.constants import RUBRIC_NAMES_KO
 from feak_tc.mvp.llm import LLMResponseError
@@ -11,6 +11,11 @@ from feak_tc.mvp.propose import propose
 from feak_tc.mvp.schemas import Candidate
 
 from .schemas import AxisVerdict, GuardVerdict, PlanResponse, RevisionRequest, RevisionVerdict
+
+
+class PatchText(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    after: str = Field(min_length=1)
 
 
 class LocalRoles:
@@ -62,7 +67,15 @@ class LocalRoles:
                         "새 예시가 필요하면 가정적인 상황임을 명시한다.")
         instruction += f"\n같은 요청에 대한 독립적인 수정 후보 {candidate_index + 1}을 작성한다."
         candidate = Candidate(request.action_type, request.target_rubric, request.target_span, instruction)
-        patch_cfg = {**self.cfg, "patcher": {"mode": "llm", "request_json": self.client}}
+
+        def patch_json(*, system, user, **unused):
+            return self._structured(
+                PatchText, system + ' 반드시 {"after": "수정 문장"} 형태의 유효한 JSON만 출력한다. '
+                'after: 문장 같은 일반 텍스트나 YAML은 출력하지 않는다.',
+                {"patch_request": user},
+            ).model_dump()
+
+        patch_cfg = {**self.cfg, "patcher": {"mode": "llm", "request_json": patch_json}}
         return apply_patch(text, candidate, cfg=patch_cfg)
 
     def verify(self, question, before_text, request, after_text):
