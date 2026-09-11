@@ -18,8 +18,9 @@
 
 - FEAK-TC는 한국어 글쓰기의 반복 수정과 경로 제어를 연구한다.
 - 2026-09-11 사용자 지시: 신규 학습을 보류하고 전체 루프 실행을 먼저 완성한다.
-- 진단기만 기존 학습된 Kanana를 사용한다. Planner·Generator·RV·경로 가드는 일반 로컬 LLM을
-  사용한다. 기본은 캐시된 Qwen2.5-7B-Instruct 4비트 추론이며 외부 LLM API를 호출하지 않는다.
+- 진단기만 기존 학습된 Kanana를 사용한다. Planner·Generator·RV·경로 가드도 일반 Kanana로
+  통일한다. 기본은 캐시된 `kakaocorp/kanana-1.5-8b-instruct-2505` 4비트 추론이며,
+  이 역할들에는 진단기 adapter를 적용하지 않는다. 외부 LLM API를 호출하지 않는다.
 - 개별 모듈의 학습·교체는 루프 실행 및 평가 이후의 선택 사항이다. 기존 TVM의 추가 개발은 종료했다.
 - RV 입력은 과제, 수정 전 글, 수정 요구·보존 조건, 수정 후 글이다.
 - RV 출력은 `target_fulfillment`와 `preservation`의 두 축이며 각 축은 pass/partial/fail이다.
@@ -32,6 +33,7 @@
 ## 설계와 구현 상태
 
 현재 실행 진입점은 `scripts/run_agent.py`, 반복 controller는 `feak_tc/agent/`다.
+`scripts/run_agent_web.py`는 같은 CLI를 실행하는 로컬 웹 UI이며, 단계·후보·RV·복구 이력을 보여준다.
 기존 `feak_tc/mvp/`의 patch·validity·transition·heuristic을 재사용한다.
 국소 RV의 두 축, 재계획, checkpoint 복구, 경로 가드, 종료 예산을 연결한다.
 `feak_tc/rv/`와 `configs/rv_*.yaml`은 기존 4축 파일럿을 재사용하기 위해 보존한 코드·설정이다.

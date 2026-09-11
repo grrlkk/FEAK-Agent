@@ -60,11 +60,13 @@ def run_agent(text, *, question, diagnoser, roles, cfg, exemplars=None,
     stop_reason = "max_steps"
     status = "completed"
     try:
+        emit("phase", step=0, stage="diagnose")
         current = diagnose(text)
         checkpoints.append({"id": 0, "parent_id": None, "text": text,
                             "diagnosis": asdict(current), "quality": _quality(current), "safe": True})
         emit("start", original_text=text, question=question, diagnosis=asdict(current))
         for step in range(1, control.max_steps + 1):
+            emit("phase", step=step, stage="plan")
             memory = history[-control.memory_steps:]
             examples = exemplars.retrieve(text, current.weak_rubrics,
                                           essay_id=essay_id, source_group=source_group)
@@ -94,8 +96,10 @@ def run_agent(text, *, question, diagnoser, roles, cfg, exemplars=None,
             for index in range(0 if invalid_plan else control.candidates_per_step):
                 row = {"step": step, "index": index, "request": request.model_dump()}
                 try:
+                    emit("phase", step=step, index=index, stage="generate")
                     candidate = roles.patch(current_text, request, index)
                     row["candidate"] = candidate.to_dict()
+                    emit("patch", **row)
                     after_text = candidate.new_text
                     reasons = patch_validity_violations(current_text, candidate, cfg=cfg)
                     if not after_text or after_text == current_text:
@@ -106,6 +110,7 @@ def run_agent(text, *, question, diagnoser, roles, cfg, exemplars=None,
                         reasons.append("duplicate_candidate")
                     candidate_texts.add(after_text)
                     if not reasons:
+                        emit("phase", step=step, index=index, stage="rediagnose")
                         after = diagnose(after_text)
                         row["after"] = asdict(after)
                         transition = compute_transition(current, after, candidate, similarity_fn=similarity_fn)
@@ -113,6 +118,7 @@ def run_agent(text, *, question, diagnoser, roles, cfg, exemplars=None,
                         row.update(result.to_dict())
                         reasons.extend(result.reject_reasons)
                         # Give the RV only operational text/request inputs, regardless of FEAK gain.
+                        emit("phase", step=step, index=index, stage="verify")
                         rv = roles.verify(question, current_text, request, after_text)
                         row["rv"] = rv.model_dump()
                         for axis, allowed in (
@@ -174,6 +180,7 @@ def run_agent(text, *, question, diagnoser, roles, cfg, exemplars=None,
             # Global checks happen after adoption. On failure, restore a stored full snapshot.
             best = checkpoints[best_id]
             try:
+                emit("phase", step=step, stage="guard")
                 guard = roles.guard(question, text, best["text"], current_text,
                                     history[-control.memory_steps:])
                 guard_reasons = []

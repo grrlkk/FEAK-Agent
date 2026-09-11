@@ -107,6 +107,11 @@ def test_accept_repeat_and_stop_preserve_full_snapshots(cfg):
     assert [row["parent_id"] for row in output["checkpoints"]] == [None, 0, 1, 2]
     assert all(row["safe"] for row in output["checkpoints"])
     assert all(row["after"]["rubrics"] for row in output["events"] if row["event"] == "candidate")
+    phases = [row["stage"] for row in output["events"] if row["event"] == "phase"]
+    assert phases == ["diagnose"] + ["plan", "generate", "rediagnose", "verify", "guard"] * 3
+    first_patch = next(i for i, row in enumerate(output["events"]) if row["event"] == "patch")
+    first_verdict = next(i for i, row in enumerate(output["events"]) if row["event"] == "candidate")
+    assert first_patch < first_verdict
 
 
 @pytest.mark.parametrize("target,preservation", [("fail", "pass"), ("pass", "fail"),
@@ -221,6 +226,22 @@ def test_invalid_structured_response_retries_then_fails(cfg):
     with pytest.raises(LLMResponseError):
         LocalRoles(client, cfg).verify("과제", ORIGINAL, request(), "수정문")
     assert len(calls) == cfg["controller"]["schema_retries"] + 1
+
+
+def test_patch_json_failure_retries_without_coercing_plain_text(cfg):
+    calls = []
+
+    def client(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise LLMResponseError("Local model did not return a complete JSON object")
+        return {"after": "예를 들어, 학생회의에서 의견을 나눌 수 있다."}
+
+    patched = LocalRoles(client, cfg).patch(ORIGINAL, request(), 0)
+    assert len(calls) == 2
+    assert "Previous response failed validation" in calls[1]["user"]
+    assert "JSON schema" in calls[0]["user"]
+    assert patched.patch.after.startswith("예를 들어")
 
 
 def test_patcher_uses_local_callback_and_preserves_constraints(cfg, monkeypatch):

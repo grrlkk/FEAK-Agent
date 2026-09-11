@@ -2,13 +2,14 @@
 
 2026-09-11 사용자 지시로 신규 RV 학습을 보류하고 전체 루프를 먼저 실행한다.
 진단기는 기존 Kanana + 학습된 LoRA·보정 모델과 독립 FEAK 자질 계산기를 그대로 사용한다.
-Planner, Generator, 두 축 RV, Trajectory Guard는 하나의 일반 로컬 Qwen 모델을 공유한다.
+Planner, Generator, 두 축 RV, Trajectory Guard는 하나의 일반 로컬 Kanana 모델을 공유한다.
+기본 모델은 `kakaocorp/kanana-1.5-8b-instruct-2505`이며, 이 역할들에는 진단기 adapter를 적용하지 않는다.
 이 실행 경로에는 학습, corruption 생성, 외부 LLM API 호출이 없다.
 
 ## 실행
 
 기존 `essay_scoring_llm` 설치, Kanana adapter·보정 모델, FEAK 자질 계산 환경
-(Bareun/UTagger 등), 캐시된 Qwen2.5-7B-Instruct가 필요하다.
+(Bareun/UTagger 등), 캐시된 Kanana-1.5-8B-Instruct-2505가 필요하다.
 의존성은 기존 `requirements-kanana.txt`를 재사용한다. 모델은 `local_files_only=True`로
 읽으며 자동 다운로드하지 않는다. 설정에서 다른 로컬 Instruct 모델 경로를 지정할 수도 있다.
 
@@ -22,7 +23,7 @@ python scripts/run_agent.py \
 ```
 
 GPU 번호는 실행 환경에 맞게 지정한다. 기존 Kanana 로더가 `CUDA_VISIBLE_DEVICES`를
-변경하므로 진단기는 별도 persistent process에서 재사용한다. Qwen과 채점기의 GPU 설정이
+변경하므로 진단기는 별도 persistent process에서 재사용한다. 일반 Kanana와 채점기의 GPU 설정이
 서로 영향을 주지 않도록 한 것이며 채점기·자질 계산 코드는 수정하지 않는다.
 기본 설정에서 feature subprocess와 BGE-M3는 CPU를 사용한다. `FEAK_EMBEDDING_DEVICE`로
 임베딩 장치를 변경할 수 있다. 기존 의미 유사도 함수가 임베딩을 사용할 수 없으면 token
@@ -41,6 +42,38 @@ python scripts/run_agent.py --offline-smoke \
 ```
 
 이 모드의 진단·RV·가드는 명시적인 stub이며 품질 평가 결과가 아니다.
+
+## 웹에서 실행 과정 보기
+
+```bash
+python scripts/run_agent_web.py --port 8765
+```
+
+브라우저에서 `http://localhost:8765`를 연다. 원격 서버를 VS Code로 사용한다면 Ports 탭에서
+8765번 포트를 전달한 뒤 연다. 다른 SSH 환경에서는
+`ssh -N -L 8765:127.0.0.1:8765 USER@SERVER`로 전달한다.
+기본 바인딩은 `127.0.0.1`이고 인증 없는 개인용 도구이므로 공개 인터넷에 노출하지 않는다.
+
+1. 과제와 글을 입력하거나 **예제 불러오기**를 누른다. `.txt` 업로드도 가능하다.
+2. 단계·후보 수를 선택하고 **수정 과정 시작**을 누른다. 기본은 실제 Kanana 실행이다.
+3. 현재 처리 단계, 원문 대비 수정 표시, 8개 rubric 점수, 후보별 두 축 RV와 판정 근거를 확인한다.
+4. 타임라인에서 채택·거절·경로 가드·복구를 보고, 후보나 저장 지점을 눌러 전체 글을 비교한다.
+5. **기록 저장**으로 전체 JSON을 내려받는다. **이전 실행 다시 보기**와 새로고침 복원이 지원된다.
+
+**화면 데모 · 모델 없이**는 UI 확인용 stub이다. 화면에 모의 판정으로 표시하며 실제 모델 결과와
+구분한다. 실제 실행은 첫 모델 로딩과 각 후보의 진단에 수 분이 걸릴 수 있다. UI는 토큰 스트리밍이
+아니라 단계·후보 완료 이벤트를 약 1.3초 간격으로 읽는다. 페이지를 닫아도 서버가 살아 있으면 계속 실행된다.
+
+동시에 한 글만 실행한다. 중단하면 이 서버가 시작한 작업과 자식 프로세스만 종료하고, 경로 가드를
+통과한 마지막 글을 보관한다. 검증 전 채택 상태는 최종문으로 반환하지 않는다. 원본·후보·실패 이력은
+`experiments/results/web_runs/<실행 ID>/`의 `request.json`, `result.json`, `result.events.jsonl`,
+`process.log`에 남는다. 서버 재시작 시 기록을 다시 읽는다. 서버를 비정상 종료한 경우에는 이전 GPU
+자식 프로세스가 남아 있는지 확인하고 새 실행을 시작한다.
+
+기존 `experiments/results/local_agent*.json`도 기록으로 표시한다. 과거 Qwen 실행은 Qwen으로
+표시하며 새 Kanana 실행으로 재라벨링하지 않는다. 설정은 `--config`, 저장 위치는 `--runs-dir`,
+기존 기록 위치는 `--history-dir`로 지정한다. 웹 자체는 Python 표준 라이브러리만 사용하며
+Node 빌드나 별도 웹 프레임워크 설치가 필요 없다.
 
 ## 모듈과 결정
 
@@ -100,3 +133,4 @@ best checkpoint는 가드를 통과한 상태 중 FEAK 연속 점수 평균이 �
 한국어 글쓰기 에이전트의 최초성은 별도의 선행연구 검토·비교 실험·사람 평가가 필요하다.
 
 실제 실행과 확인된 한계는 [2026-09-11 실행 기록](LOCAL_AGENT_SMOKE_2026-09-11.md)을 참고한다.
+전체 Kanana 전환 및 웹 검증은 [Kanana 웹 실행 기록](KANANA_WEB_SMOKE_2026-09-11.md)에 정리했다.
