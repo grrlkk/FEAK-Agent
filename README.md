@@ -36,18 +36,23 @@ The axes are judged separately: a revision can hit its goal and still destroy co
 miss its goal while leaving the original intact. Preservation is not string identity —
 errors the request asks to fix and additions it permits are allowed to change.
 
-**RV is the only model trained here.** Scoring and feature computation reuse FEAK; the
-planner, generator, and trajectory guard use off-the-shelf LLMs.
+The current prototype requires **no new training**. Diagnosis uses the existing trained
+Kanana scorer and independent FEAK features. Planning, patch generation, the two-axis RV
+and the trajectory guard share a general local LLM. Individual modules can be trained or
+replaced later, after the complete loop has been evaluated.
 
 ## Status
 
-Design and implementation are deliberately kept apart in this repository.
+The training-free loop under `feak_tc/agent/` runs diagnosis, a concrete revision request,
+multiple local patches, two-axis RV checks, selection against keeping the current text,
+checkpointing, trajectory checks, rollback, replanning and bounded stopping. It saves the
+original, every candidate, verdict reasons and the final essay. The default local model is
+the cached Qwen2.5-7B-Instruct in 4-bit inference; no external LLM API is used.
 
-- Runnable today: a one-step heuristic revision loop under `feak_tc/mvp/`.
-- `feak_tc/rv/` and the RV scripts are tooling for an earlier four-axis data pilot, kept
-  for reuse. Their presence does not mean the final two-axis RV is implemented.
-- Not yet implemented: the two-axis schema end to end, RV training, RAG-backed planning,
-  and the iterative controller.
+Optional exemplar retrieval accepts a curated train-only JSONL. Without a configured
+corpus, the planner runs without exemplars. The earlier one-step heuristic MVP and
+four-axis RV data pilot remain available. No RV training or quality benchmark is implied
+by a successful execution smoke test.
 
 Experiment records and the current state of collected data live in `feak_tc_docs/`.
 
@@ -56,6 +61,7 @@ Experiment records and the current state of collected data live in `feak_tc_docs
 ```text
 feak_tc/diagnose/     FEAK / Kanana / stub scorer bindings
 feak_tc/mvp/          one-step revision, patching, quality scoring, heuristics
+feak_tc/agent/        training-free local revision loop and two-axis runtime RV
 feak_tc/rv/           RV pilot data tooling
 feak_tc/corruption/   corruption generation, inspection, analysis
 feak_tc/data/         AI-Hub JSON normalization
@@ -82,6 +88,21 @@ pip install -r requirements-legacy.txt   # legacy UKTA / KoBERT scorer
 API keys are read from `.env`.
 
 ## Usage
+
+Run the full local loop (existing Kanana assets and cached Qwen weights required):
+
+```bash
+python scripts/run_agent.py \
+  --text-file examples/local_agent_essay.txt \
+  --question "학교에서 휴대전화 사용에 관한 자신의 주장과 이유를 쓰시오." \
+  --output experiments/results/local_agent.json
+```
+
+The default allocation is Kanana on GPU 1 and Qwen on GPU 2. Override with
+`--kanana-device 1 --llm-device cuda:2`. All thresholds, budgets and model settings are in
+[`configs/agent_local.yaml`](configs/agent_local.yaml). Use `--offline-smoke` for a wiring
+check without models. See [the local agent guide](docs/TRAINING_FREE_AGENT.md) for setup,
+output interpretation, optional retrieval and limitations.
 
 Run the tests:
 

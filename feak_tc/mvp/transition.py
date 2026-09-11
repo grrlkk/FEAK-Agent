@@ -6,7 +6,7 @@ import os
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from feak_tc.diagnose import Diagnosis
 from feak_tc.diagnose.constants import RUBRIC_FEATURE_MAP, RUBRIC_KEYS, scores_to_rubric_dict
@@ -31,6 +31,7 @@ def compute_transition(
     after: Diagnosis,
     cand: Candidate,
     elite_stats: Optional[Mapping[str, Mapping[str, float]]] = None,
+    similarity_fn: Optional[Callable[[str, str], tuple[float, dict[str, Any]]]] = None,
 ) -> Transition:
     target = cand.target_rubric
     before_scores, after_scores, score_basis = _transition_rubrics(before, after)
@@ -42,7 +43,8 @@ def compute_transition(
     )
     non_target_drop = max(0.0, non_target_drop)
     target_gap_reduction = _feature_gap_reduction(before, after, target, elite_stats)
-    semantic_similarity, similarity_info = semantic_text_similarity(before.text, after.text)
+    similarity = similarity_fn or semantic_text_similarity
+    semantic_similarity, similarity_info = similarity(before.text, after.text)
     cand.metadata["similarity"] = similarity_info
     cand.metadata["score_basis"] = score_basis
     return Transition(
