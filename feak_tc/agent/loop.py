@@ -55,7 +55,7 @@ def run_pilot(sample, *, scorer, roles, config=None, on_attempt=None, on_event=N
             response = roles.plan(sample.writing_prompt, current, state.scores)
             emit("plan", iteration=iteration, **response.model_dump())
             if response.plan is None:
-                stop_reason = "no_actionable_issue"
+                stop_reason = response.outcome
                 break
             plan = response.plan
             if plan.target_span not in current:
@@ -68,13 +68,28 @@ def run_pilot(sample, *, scorer, roles, config=None, on_attempt=None, on_event=N
                            "text_before": before, "scores_before": before_state.scores,
                            "score_metadata_before": before_state.metadata, "plan": plan.model_dump(),
                            "candidate": None, "rv": None, "rv_checks": [],
+                           "planner_review": {"priority_checks": [c.model_dump() for c in response.priority_checks],
+                                              "reason": response.reason,
+                                              "source_review": (response.source_review.model_dump()
+                                                                if response.source_review else None)},
                            "acceptance_decision": None, "controller_decision": None,
                            "text_after": before, "scores_after": before_state.scores,
                            "scores_candidate": None, "score_baseline": None}
                 emit("phase", iteration=iteration, attempt=attempt, stage="revise")
                 revision = roles.revise(sample.writing_prompt, before, plan, feedback)
+                if revision.outcome == "cannot_revise":
+                    pending.update(acceptance_decision="NOT_GENERATED", controller_decision="STOP",
+                                   revision_outcome=revision.outcome,
+                                   summary_of_change=revision.summary_of_change)
+                    save(pending)
+                    pending = None
+                    emit("revision_unavailable", iteration=iteration, attempt=attempt,
+                         reason=revision.summary_of_change)
+                    break
                 candidate = revision.revised_text
                 pending.update(candidate=candidate, summary_of_change=revision.summary_of_change,
+                               revision_outcome=revision.outcome,
+                               edit_patch=revision.patch.model_dump() if revision.patch else None,
                                text_diff=changed_passages(before, candidate))
                 # Persist the candidate before any verifier/measurement can fail.
                 emit("candidate", iteration=iteration, attempt=attempt, text_before=before,
@@ -132,7 +147,7 @@ def run_pilot(sample, *, scorer, roles, config=None, on_attempt=None, on_event=N
                     break
                 feedback = {"rejected_candidate": candidate, "reasons": reasons}
             if not issue_accepted:
-                stop_reason = "repeated_rejection"
+                stop_reason = "revision_not_feasible" if revision.outcome == "cannot_revise" else "repeated_rejection"
                 break
     except Exception as exc:
         status = "error"

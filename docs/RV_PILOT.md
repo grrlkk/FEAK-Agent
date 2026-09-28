@@ -9,14 +9,46 @@
 | 단계 | 입력 | 출력/동작 |
 |---|---|---|
 | Scorer | 문항·현재 글 | 기존 Kanana의 8개 rubric |
-| Planner | 문항·현재 글·8점수·8기준 설명 | target_rubric, target_span, problem, goal, must_preserve |
-| Reviser | 문항·현재 글·고정된 plan | revised_text, summary_of_change |
+| Planner | 문항·현재 글·8점수·8기준 설명·점수 우선순위·원문 구간 ID | 기준별 진단, 원문 근거, 수정 범위를 포함한 plan 또는 종료 사유 |
+| Reviser | 문항·현재 글·고정된 plan·허용 범위 | 해당 범위의 교체 패치 또는 수정 불가 사유 |
 | RV | 문항·전후 글·goal·must_preserve·diff | 네 criterion 및 decision |
 | Controller | 네 criterion | ACCEPT / RETRY / STOP |
 
-Planner의 `plan=null`은 actionable issue가 없다는 종료 응답이다. target_span은 원문에서
-인용한다. Reviser는 전체 수정본을 반환하되 한 문제에 필요한 변경만 지시받는다.
-문자 diff로 과도한 수정을 점검한다. 편집량으로 의미 보존을 대신 판정하지 않는다.
+2026-09-29 확장(`rv-pilot-2026-09-29-grounded-v4.1`): 사용자가 요청한 **Kanana 점수에 따른
+목표 선택 → 원문에 근거한 수정 계획**의 연결과 편집 범위를 명시한다. 원래 방법론의 한 문제·한
+후보 및 RV에 의한 채택을 유지하고 Planner 내부 처리와 Planner/Reviser의 출력 계약을 확장했다.
+
+- 원래 연속 점수를 변환하지 않고 낮은 순서로 `rubric_priority`를 만든다. 정확히 같은 점수는
+  기존 rubric 순서로 정렬한다. 임의의 점수 cutoff나 후보 점수 차이를 채택 조건으로 쓰지 않는다.
+- Planner의 첫 API 호출은 점수 없이 문항·원문·8개 기준 설명·구간 ID를 받아 `SourceReview`를
+  반환한다. 8개 기준마다 `actionable`, `no_actionable_issue`, `needs_information`과 이유를
+  기록하며 actionable에는 실제 문제·원문 인용·독자에게 미치는 영향·앞뒤 문맥 확인을 포함한다.
+  모델이 낮은 점수에 맞춰 결함을 만들어 내는 것을 줄이기 위한 분리이며, 편향 제거를 보장하지 않는다.
+- 코드는 이 진단 결과를 Kanana 점수 순서로 정렬해 `priority_checks`를 만들고 actionable 중
+  가장 낮은 점수의 항목을 선택한다. 둘째 API 호출은 점수·우선순위·선택된 문제를 받아
+  `RevisionPlan`을 만든다. 이 호출은 선택된 기준과 진단 내용을 바꿀 수 없다. 같은 진단이라도
+  Kanana 점수가 달라지면 선택되는 문제가 달라질 수 있다. 점수는 여전히 목표 선택의 기준이다.
+- 기존 plan의 다섯 필드에 `evidence_spans`(원문 인용 1–3개), `reader_impact`, `context_check`,
+  `operation`, `edit_scope`(시작·끝 구간 ID)를 추가한다. 점수가 낮거나 설명을 더 붙일 수 있다는
+  사실만으로 결함이라고 판단하지 않도록 지시한다. 인용의 존재·순서·범위는 코드로 검증하지만,
+  진단 내용의 타당성이 이 형식 검증으로 보장되는 것은 아니다.
+- 계획이 없으면 `outcome=no_actionable_issue` 또는 `needs_information`, `plan=null`로 종료한다.
+  이 경우 둘째 계획 호출을 생략한다. 정보 부족이 있는 경우와 실제 수정 문제를 확인하지 못한 경우를
+  별도 기록한다. 후자는 글의 완전성이나 품질을 보증하는 판정이 아니다.
+- Reviser API는 `PatchResponse`를 반환한다. 패치는 허용한 시작·끝 구간 ID, 원문의 정확한
+  `expected_text`, 대체할 `replacement`다. 프로그램이 해당 구간만 교체해 내부의
+  `Revision.revised_text`를 구성한다. 범위 밖 문자·공백·줄바꿈은 원문 그대로 유지된다.
+  `text_units`는 주소를 정하기 위한 결정적 구간 분할이며 한국어 문장 분석기나 품질 판정기가 아니다.
+  여러 인접 구간을 하나의 편집 범위로 잡을 수 있어 문장 간·문단 수준 수정도 가능하다.
+- 원문 밖 정보를 만들어야 하거나 계획을 타당하게 실행할 수 없으면 Reviser는
+  `outcome=cannot_revise`, `patch=null`로 이유를 반환한다. 후보·RV·추가 채점 없이
+  `revision_not_feasible`로 STOP하고, 시도에는 `acceptance_decision=NOT_GENERATED`를 남긴다.
+  이를 RV의 REJECT나 성공적인 수정으로 세지 않는다.
+
+패치 검증은 수정 범위와 원문 일치의 검증이며 의미 검증이나 별도 경로 가드가 아니다.
+편집량으로 의미 보존을 대신 판정하지 않는다. RV의 입력·프롬프트·네 판정 규칙은 변경하지 않았다.
+구조화된 출력은 형식을 제한하며 내용의 정확성까지 보장하지 않는다.
+[OpenAI 공식 구조화 출력 문서](https://developers.openai.com/api/docs/guides/structured-outputs)
 
 RV 기준은 goal_achievement, necessity, preservation, global_benefit이다.
 
@@ -52,6 +84,8 @@ sample당 24 calls, 전체 120 calls다. SDK 자동 재시도는 끄고 JSON/sch
 재요청한다. schema 재시도도 호출 예산에 포함한다. API 오류·거절에는 자동 재시도·모델 교체가 없다.
 
 각 역할과 재검증은 별도 Responses 요청이다. previous_response_id나 conversation을 사용하지 않는다.
+Planner는 실제 문제가 있으면 원문 진단과 계획 작성에 두 번, 없으면 진단에 한 번 호출한다.
+두 호출 모두 동일한 예산에 포함하며, 진단 호출에 점수나 우선순위는 전달하지 않는다.
 RV에 점수·자질·이전 판정/근거·iteration·Planner problem·Reviser 변경 요약을 전달하지 않는다.
 앞선 답변을 수정하라는 지시도 추가하지 않는다. 같은 모델이므로 통계적으로 독립된 평가자라는 뜻은 아니다.
 
@@ -90,12 +124,29 @@ iteration은 1부터, attempt는 첫 후보 0, 재수정 1이다. acceptance_dec
 controller_decision은 ACCEPT/RETRY/STOP이다. 재검증도 불확실하면 마지막 rv.decision은
 REVERIFY지만 acceptance_decision은 REJECT다. 두 판정 모두 rv_checks에 남는다.
 
+점수 검토 이유와 점수를 보지 않은 진단(`source_review`)은 plan 이벤트와 시도의 `planner_review`에,
+실제 교체는 `edit_patch`에 기록한다. 둘째 계획 호출이 실패해도 첫 진단 응답은 `llm_calls.jsonl`에 남는다.
+이 추가 기록도 RV에 보내지 않는다. report의 `candidate_attempts`는 실제 후보가 생성된 수이고,
+`attempts`는 수정 불가·오류를 포함한 시도 수다. 원문 유지 종료와 정보 부족·수정 불가를 별도 집계한다.
+
 API/schema 오류는 품질 FAIL과 구분한다. 마지막 채택 글을 반환하며 status=error로 기록하고
 남은 batch를 멈춘다. RV 채택 후 상태 채점만 실패하면 채택을 되돌리지 않고 final_scores=null로
 종료한다. 점수 오류가 채택 여부를 바꾸지 않는다. 각 JSONL 행은 flush한다.
 강제 종료 후에는 완료되지 않은 summary 대신 events/llm_calls를 확인한다.
 
 ## 검증 범위
+
+점수 차단과 편집 범위 제한은 의미 판단의 정확성을 보장하지 않는다. 양보·대조를 불필요하게
+고치거나, 실제 자료가 없는 목표에 내용을 만들어 넣고, RV가 이를 통과시킬 가능성을 별도로
+검증해야 한다. 정보 부족 종료도 모델이 이를 올바로 감지해야 작동한다.
+
+2026-09-29의 실제 실행·통제 검사·실패 사례는 저장소 지침에 따라 로컬 결과로만 보관한다.
+CLI에서 다음 파일로 원문과 수정본, 검증 조건과 남은 한계를 확인할 수 있다.
+
+```bash
+less experiments/results/rv_pilot_grounded_v41_20260929/VALIDATION.md
+less experiments/results/rv_pilot_grounded_v41_20260929/comparison.md
+```
 
 `python -m pytest -q`는 점수와 채택의 분리, 재수정 원문 유지, 재검증 한도, 판정 이력 차단,
 호출 예산, 거절 후보 저장, 오류 시 상태 보존을 검증한다.

@@ -6,9 +6,11 @@ from pydantic import ValidationError
 
 from feak_tc.agent import run_pilot
 from feak_tc.agent.roles import Roles
+from feak_tc.agent.editing import text_units
 from feak_tc.agent.schemas import (
-    CRITERIA, ControllerConfig, Criterion, OpenAIConfig, PlanResponse,
-    Revision, RevisionPlan, RevisionVerdict, Sample,
+    CRITERIA, ControllerConfig, Criterion, EditScope, OpenAIConfig, PatchResponse, PlanResponse,
+    ReplacementPatch, Revision, RevisionPlan, RevisionVerdict, RubricAssessment, RubricCheck,
+    Sample, SourceIssue, SourceReview,
 )
 from feak_tc.agent.scorer import ScoreState, StateScorer
 from feak_tc.diagnose import Diagnosis, RUBRIC_KEYS
@@ -25,7 +27,20 @@ SAMPLE = Sample(sample_id="sample", writing_prompt="학생 의견을 수렴하�
 def plan(text=ORIGINAL):
     return RevisionPlan(target_rubric="content_2", target_span=text,
                         problem="의견을 듣는 방법이 불분명하다", goal="의견 수렴 방법 하나를 제시한다",
-                        must_preserve=["기존 조건은 유지한다"])
+                        must_preserve=["기존 조건은 유지한다"], evidence_spans=[text],
+                        reader_impact="의견을 듣는 방법을 알 수 없다", context_check="다른 문장에 방법이 없다",
+                        operation="replace", edit_scope=EditScope(start_unit="U0001", end_unit=text_units(text)[-1].unit_id))
+
+
+def planning(text=ORIGINAL, outcome="edit"):
+    checks = [RubricCheck(rubric=key, finding="no_actionable_issue", reason="구체적 결함 없음")
+              for key in RUBRIC_KEYS]
+    selected = plan(text) if outcome == "edit" else None
+    if selected:
+        checks[RUBRIC_KEYS.index(selected.target_rubric)].finding = "actionable"
+    elif outcome == "needs_information":
+        checks[0].finding = "needs_information"
+    return PlanResponse(outcome=outcome, priority_checks=checks, plan=selected, reason="한 문제를 검토")
 
 
 def verdict(**labels):
@@ -62,7 +77,7 @@ class FakeRoles:
 
     def plan(self, prompt, text, scores):
         self.plans.append((prompt, text, dict(scores)))
-        return PlanResponse(plan=plan(text), reason="한 문제만 선택")
+        return planning(text)
 
     def revise(self, prompt, text, request, feedback=None):
         self.revisions.append((prompt, text, request.model_dump(), feedback))
@@ -152,11 +167,33 @@ def test_three_iterations_use_only_last_accepted_state_and_then_stop():
 
 def test_planner_stop_never_generates_or_verifies():
     roles = FakeRoles()
-    roles.plan = lambda *args: PlanResponse(plan=None, reason="고칠 문제가 없다")
+    roles.plan = lambda *args: planning(outcome="no_actionable_issue")
     result = run(roles)
     assert result["stop_reason"] == "no_actionable_issue"
     assert result["attempts"] == []
     assert roles.revisions == []
+
+
+def test_missing_information_is_logged_as_a_distinct_planning_stop():
+    roles = FakeRoles()
+    roles.plan = lambda *args: planning(outcome="needs_information")
+    result = run(roles)
+    assert result["stop_reason"] == "needs_information"
+    assert result["final_text"] == ORIGINAL and not roles.revisions
+
+
+def test_reviser_abstention_preserves_original_without_retry_verification_or_scoring():
+    roles, scorer = FakeRoles(), Scorer()
+    roles.revise = lambda *args: Revision(revised_text=ORIGINAL, outcome="cannot_revise",
+                                        summary_of_change="새로운 사실이 필요하여 수정 불가")
+    result = run(roles, scorer)
+    assert result["stop_reason"] == "revision_not_feasible"
+    assert result["status"] == "completed" and result["accepted"] == 0
+    assert result["final_text"] == ORIGINAL and not roles.verifications
+    assert scorer.calls == [ORIGINAL]
+    assert result["attempts"][0]["candidate"] is None
+    assert result["attempts"][0]["acceptance_decision"] == "NOT_GENERATED"
+    assert result["attempts"][0]["controller_decision"] == "STOP"
 
 
 @pytest.mark.parametrize("error", [ResponseError("invalid RV"), CallBudgetExceeded("budget")])
@@ -252,16 +289,26 @@ def test_feedback_is_only_in_reviser_payload_and_planner_gets_eight_definitions(
     calls = []
     def client(**kwargs):
         calls.append(kwargs)
-        if kwargs["schema"] == PlanResponse:
-            return PlanResponse(plan=plan(), reason="계획").model_dump()
-        return Revision(revised_text=FIRST, summary_of_change="변경").model_dump()
+        if kwargs["schema"] is SourceReview:
+            issue = SourceIssue(**{key: getattr(plan(), key) for key in SourceIssue.model_fields})
+            return SourceReview(assessments=[RubricAssessment(**check.model_dump(),
+                issue=issue if check.finding == "actionable" else None)
+                for check in planning().priority_checks]).model_dump()
+        if kwargs["schema"] is RevisionPlan:
+            return plan().model_dump()
+        return PatchResponse(outcome="revised", patch=ReplacementPatch(
+            **plan().edit_scope.model_dump(), expected_text=ORIGINAL, replacement=FIRST),
+            summary_of_change="변경").model_dump()
     roles = Roles(client)
     roles.plan("문항", ORIGINAL, {key: 5.0 for key in RUBRIC_KEYS})
     roles.revise("문항", ORIGINAL, plan(), {"reasons": ["보존 실패"]})
     payload = json.loads(calls[0]["user"])
     assert set(payload["rubric_definitions"]) == set(RUBRIC_KEYS)
-    assert set(payload) == {"writing_prompt", "current_draft", "rubric_scores", "rubric_definitions"}
-    assert json.loads(calls[1]["user"])["rejection_feedback"]["reasons"] == ["보존 실패"]
+    assert set(payload) == {"writing_prompt", "current_draft", "rubric_definitions", "text_units"}
+    planning_payload = json.loads(calls[1]["user"])
+    assert set(planning_payload["rubric_scores"]) == set(RUBRIC_KEYS)
+    assert "rejection_feedback" not in planning_payload
+    assert json.loads(calls[2]["user"])["rejection_feedback"]["reasons"] == ["보존 실패"]
 
 
 def test_scorer_preserves_native_continuous_values_final_grades_and_caches():
