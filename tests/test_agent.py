@@ -6,11 +6,11 @@ import pytest
 from pydantic import ValidationError
 import yaml
 
-from feak_tc.agent import run_agent
-from feak_tc.agent.local_llm import LocalCallBudgetExceeded, LocalJSONClient, parse_json_object
-from feak_tc.agent.retrieval import ExemplarStore
-from feak_tc.agent.roles import LocalRoles
-from feak_tc.agent.schemas import (
+from feak_tc.legacy.agent import run_agent
+from feak_tc.legacy.agent.local_llm import LocalCallBudgetExceeded, LocalJSONClient, parse_json_object
+from feak_tc.legacy.agent.retrieval import ExemplarStore
+from feak_tc.legacy.agent.roles import LocalRoles
+from feak_tc.legacy.agent.schemas import (
     AxisVerdict, GuardVerdict, LocalModelConfig, PlanResponse, RevisionRequest, RevisionVerdict,
 )
 from feak_tc.diagnose import Diagnosis, RUBRIC_KEYS
@@ -362,7 +362,7 @@ def test_missing_local_weights_are_logged_without_api_fallback(cfg):
 
 
 def test_kanana_worker_reuses_one_diagnoser_and_reports_errors(monkeypatch):
-    from feak_tc.agent.observer import _worker
+    from feak_tc.runtime.kanana import _worker
 
     inputs = iter([ORIGINAL, "broken", ORIGINAL, None])
     replies = []

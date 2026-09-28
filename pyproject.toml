@@ -9,7 +9,7 @@ description = "FEAK-guided Transition Control research utilities"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "openai>=1.0",
+    "openai>=2.0",
     "pydantic>=2.0",
     "python-dotenv",
     "PyYAML>=6.0",
