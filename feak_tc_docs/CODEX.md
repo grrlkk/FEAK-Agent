@@ -8,6 +8,9 @@
 이 지시는 과거 `FEAK_TC_METHOD_FINAL.md`, `PILOT_BRIEF.md`, 2축 RV·경로 가드보다 우선한다.
 
 - 새 진입점: `scripts/run_pilot.py`. 현재 알고리즘: `feak_tc/agent/`.
+- 사람 블라인드 평가: `scripts/run_pilot_review.py`, `feak_tc/review/`, `../docs/HUMAN_REVIEW.md`.
+  모델 호출 없이 저장 후보를 사용한다. 현재 네 기준을 유지하고 모델·점수·기존 판정·예상 정답은
+  평가자 API에 전달하지 않는다. 참여 코드·사람 답변·원본 연결표는 실험 결과로 로컬 보관한다.
 - Planner → Reviser → 4기준 RV → Controller. 한 번에 한 문제, 최대 3 iterations.
 - RV: goal_achievement, necessity, preservation, global_benefit의 PASS/FAIL/UNCERTAIN.
 - 모두 PASS만 ACCEPT, FAIL 우선 REJECT. FAIL 없이 UNCERTAIN이면 fresh context로 1회 재검증.

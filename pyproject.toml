@@ -31,6 +31,7 @@ include = ["feak_tc*"]
 
 [tool.setuptools.package-data]
 "feak_tc.web" = ["static/*.html", "static/*.css", "static/*.js"]
+"feak_tc.review" = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

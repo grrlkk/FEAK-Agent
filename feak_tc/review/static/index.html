@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FEAK · 글 수정 평가</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login-shell">
+    <div class="login-card">
+      <div class="brand"><span class="brand-mark">F</span> FEAK <span class="brand-divider">/</span> REVIEW</div>
+      <div class="eyebrow">한국어 글쓰기 연구</div>
+      <h1>글의 변화를,<br>차분히 살펴보세요.</h1>
+      <p class="login-description">수정 전후의 글을 읽고 네 가지 기준으로 평가합니다.<br>작성 중인 평가는 자동으로 임시 저장됩니다.</p>
+      <form id="login-form">
+        <label for="access-code">참여 코드</label>
+        <input id="access-code" type="password" autocomplete="off" spellcheck="false" placeholder="전달받은 참여 코드를 입력하세요" required>
+        <button type="submit" class="primary full" id="login-button">평가 시작하기 <span aria-hidden="true">→</span></button>
+        <p id="login-error" class="error-text" role="alert"></p>
+      </form>
+      <p class="login-foot">개별 평가 링크를 받았다면 해당 링크로 바로 접속할 수 있습니다.</p>
+    </div>
+    <div class="login-note">원문을 존중하고, 변경을 검토합니다.</div>
+  </section>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">F</span> FEAK <span class="brand-divider">/</span> REVIEW</div>
+      <div class="study-block"><span class="eyebrow">평가 세션</span><h2 id="study-title">글 수정 평가</h2><span id="rater-label" class="rater-tag"></span></div>
+      <div class="progress-block">
+        <div class="progress-label"><span>평가 완료</span><strong id="progress-text">0 / 0</strong></div>
+        <progress id="progress" max="1" value="0" aria-label="평가 완료 진행률"></progress>
+        <p id="progress-hint">각 기준의 판정과 근거를 작성해 주세요.</p>
+      </div>
+      <nav aria-label="평가 항목"><div class="nav-heading">평가 항목 <span id="case-total"></span></div><div id="case-list" class="case-list"></div></nav>
+      <div class="sidebar-bottom"><button id="download" class="secondary full">내 평가 내보내기 <span aria-hidden="true">↗</span></button><button id="logout" class="text-button full">참여 코드 바꾸기</button></div>
+    </aside>
+
+    <main>
+      <header class="page-header"><div><span class="eyebrow">수정 전후 비교</span><h1 id="case-title" tabindex="-1">평가 항목</h1></div><span id="case-state" class="state-tag">미작성</span></header>
+      <div id="error-banner" class="error-banner" role="alert" hidden><span id="error-message"></span><button id="reload-case" class="secondary" hidden>현재 항목 다시 불러오기</button></div>
+      <div id="complete-banner" class="complete-banner" role="status" hidden>모든 항목의 평가를 저장했습니다. 필요하면 이전 항목을 다시 확인하거나 내 평가를 내보낼 수 있습니다.</div>
+      <section class="context-card" aria-label="문항과 수정 목표">
+        <div class="context-row"><span class="context-label">글쓰기 문항</span><p id="writing-prompt"></p></div>
+        <div class="context-row goal-row"><span class="context-label">수정 목표</span><p id="planner-goal"></p></div>
+        <details class="preserve-details"><summary>유지해야 할 내용</summary><ul id="preserve-list"></ul></details>
+      </section>
+      <section class="essay-grid" aria-label="수정 전후 글">
+        <article class="essay-card"><div class="essay-heading"><h2><span class="step-dot">01</span> 수정 전</h2><span id="before-length" class="char-count"></span></div><div id="before-text" class="essay-text"></div></article>
+        <article class="essay-card revised"><div class="essay-heading"><h2><span class="step-dot">02</span> 수정 후</h2><span id="after-length" class="char-count"></span></div><div id="after-text" class="essay-text"></div></article>
+      </section>
+      <section class="review-section" aria-labelledby="review-heading">
+        <div class="section-heading"><div><span class="eyebrow">나의 평가</span><h2 id="review-heading">이번 수정은 적절했나요?</h2></div><p>각 기준을 독립적으로 판단해 주세요.</p></div>
+        <div class="guide"><strong>판정 안내</strong><span><b>PASS</b> 기준을 충족함</span><span><b>FAIL</b> 기준을 충족하지 못함</span><span><b>UNCERTAIN</b> 판단할 근거가 부족함</span></div>
+        <p class="review-note">수정 목표가 제시되어 있어도 그 수정이 꼭 필요한지는 별도로 판단해 주세요. 원래 있던 문제와 수정으로 새로 생긴 문제를 구분해 주세요.</p>
+        <form id="review-form">
+          <div id="criteria-grid" class="criteria-grid"></div>
+          <details class="notes-details"><summary>추가 메모 <span>선택</span></summary><label for="notes" class="sr-only">추가 메모</label><textarea id="notes" rows="3" maxlength="5000" placeholder="기준별 근거 외에 남기고 싶은 내용을 적어 주세요."></textarea></details>
+        </form>
+      </section>
+      <footer class="action-bar"><div class="save-info"><span id="save-indicator" class="save-dot"></span><span id="save-status" role="status" aria-live="polite">아직 작성하지 않았습니다</span></div><div class="actions"><button id="previous" class="secondary">← 이전</button><button id="save-draft" class="secondary">임시 저장</button><button id="next" class="secondary">나중에 평가 →</button><button id="submit-review" class="primary">저장하고 다음 →</button></div></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
