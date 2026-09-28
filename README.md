@@ -38,10 +38,22 @@ python -m pytest -q
 출력은 매번 새 경로를 지정합니다. 예제 5편은 직접 작성한 실행 확인용 글이며 논문 성능 평가
 데이터가 아닙니다. API 실행은 문항과 글을 OpenAI로 전송합니다.
 
+## 사람 블라인드 평가
+
+저장된 파일럿 후보를 사람이 평가하려면 [블라인드 평가 화면](docs/HUMAN_REVIEW.md)을 사용합니다.
+네 기준의 판정·근거를 평가자별로 저장하며 모델/API 호출 없이 실행됩니다.
+
+```bash
+python scripts/run_pilot_review.py prepare --run-dir experiments/results/rv_pilot_real --study-dir experiments/results/human_review_study --raters 2
+python scripts/run_pilot_review.py serve --study-dir experiments/results/human_review_study
+python scripts/run_pilot_review.py links --study-dir experiments/results/human_review_study
+```
+
 ## 구조
 
 ```text
 feak_tc/agent/          현재 4기준 RV: 계획·수정·검증·제어·점수 어댑터
+feak_tc/review/         현재 파일럿의 사람 블라인드 평가 화면·저장
 feak_tc/runtime/        공용 Kanana 프로세스·GPT 구조화 출력 통신
 feak_tc/diagnose/       기존 채점기 연결
 configs/pilot_gpt.yaml  현재 설정과 호출 예산
@@ -50,7 +62,7 @@ examples/              실행 확인용 예제
 feak_tc/legacy/agent/   과거 2축 RV·점수 선택·경로 가드 구현
 ```
 
-mvp/, rv/, corruption/, 데이터 도구와 기존 웹은 이전 실험 재현용입니다.
+mvp/, rv/, corruption/, 데이터 도구와 기존 에이전트 웹은 이전 실험 재현용입니다.
 scripts/run_agent.py와 scripts/run_agent_web.py는 과거 루프를 실행합니다.
 이전 설명은 [보관된 README](docs/LEGACY_AGENT_README.md), 이번 변경은
 [정리 기록](docs/CLEANUP_2026-09-28.md)을 참고하세요.
