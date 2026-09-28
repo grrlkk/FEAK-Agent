@@ -12,6 +12,12 @@
   모델 호출 없이 저장 후보를 사용한다. 현재 네 기준을 유지하고 모델·점수·기존 판정·예상 정답은
   평가자 API에 전달하지 않는다. 참여 코드·사람 답변·원본 연결표는 실험 결과로 로컬 보관한다.
 - Planner → Reviser → 4기준 RV → Controller. 한 번에 한 문제, 최대 3 iterations.
+- 2026-09-29 사용자 요청: Kanana 점수에 따른 목표 선택과 원문 근거를 갖춘 수정 계획을 명시한다.
+  Planner의 첫 호출은 점수 없이 원문을 진단한다. 코드는 actionable 중 Kanana 점수가 가장 낮은
+  항목을 선택하고, 둘째 호출은 그 고정된 문제에 대한 계획을 만든다. 둘 다 Planner 내부 단계다.
+  Reviser는 지정 범위의 패치만 생성하고 전체 수정본은 코드로 조립한다. 출력 계약은 RV_PILOT.md 참고.
+  plan=null의 수정 불필요·정보 부족과 Reviser의 수정 불가를 구분해 기록한다.
+  이 확장은 RV의 입력·프롬프트·채택 기준을 변경하지 않는다.
 - RV: goal_achievement, necessity, preservation, global_benefit의 PASS/FAIL/UNCERTAIN.
 - 모두 PASS만 ACCEPT, FAIL 우선 REJECT. FAIL 없이 UNCERTAIN이면 fresh context로 1회 재검증.
 - 거절하면 같은 원문·plan에서 이유와 후보를 받아 최대 1회 재수정. 또 거절되면 STOP.

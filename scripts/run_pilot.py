@@ -57,7 +57,11 @@ def build_report(results, records, offline):
              for key in ("input_tokens", "output_tokens", "total_tokens")}
     return {"mode": "offline_smoke" if offline else "real", "samples": len(results),
             "completed": sum(row["status"] == "completed" for row in results),
-            "accepted": sum(row["accepted"] for row in results), "candidate_attempts": len(attempts),
+            "accepted": sum(row["accepted"] for row in results), "attempts": len(attempts),
+            "candidate_attempts": sum(row.get("candidate") is not None for row in attempts),
+            "planner_no_action": sum(row["stop_reason"] == "no_actionable_issue" for row in results),
+            "needs_information": sum(row["stop_reason"] == "needs_information" for row in results),
+            "revision_abstentions": sum(row.get("revision_outcome") == "cannot_revise" for row in attempts),
             "rejected": sum(row.get("acceptance_decision") == "REJECT" for row in attempts),
             "revision_retries": sum(row["attempt"] > 0 for row in attempts),
             "reverifications": sum(max(0, len(row["rv_checks"]) - 1) for row in attempts),
