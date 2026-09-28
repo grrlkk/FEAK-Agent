@@ -1,74 +1,43 @@
-# FEAK-TC 작업 지침
+# FEAK-Agent 작업 지침
 
-## 먼저 읽을 문서
+## 현재 기준 — 2026-09-28
 
-사용자가 확정한 최종 문서는 `paper_docs/`에 있다.
+사용자가 지정한 `paper_docs/FEAK_RV_PILOT_IMPLEMENTATION.md`가 현재 방법론이다.
+원본은 `/home/chanwoo/FEAK_RV_PILOT_IMPLEMENTATION.md`, 저장소 사본도 로컬 보관한다.
+실행과 구현 계약은 `../docs/RV_PILOT.md`를 읽는다.
+이 지시는 과거 `FEAK_TC_METHOD_FINAL.md`, `PILOT_BRIEF.md`, 2축 RV·경로 가드보다 우선한다.
 
-1. [최종 방법론](paper_docs/FEAK_TC_METHOD_FINAL.md)
-2. [로컬 전체 루프 실행 지침](../docs/TRAINING_FREE_AGENT.md) — 현재 구현·실행
-3. [RV 데이터 생성 및 학습 지침](paper_docs/FEAK_TC_RV_DATA_GENERATION.md) — 향후 학습 재개 시
-4. [서론·관련연구](paper_docs/FEAK_TC_INTRO_RELATED_2026-09-09.md)
-5. [기존 데이터 진행 현황](중간정리/RV_DATA_STATUS_2026-09-08.md) — 실제 보유 파일과 과거 완료 여부
+- 새 진입점: `scripts/run_pilot.py`. 현재 알고리즘: `feak_tc/agent/`.
+- Planner → Reviser → 4기준 RV → Controller. 한 번에 한 문제, 최대 3 iterations.
+- RV: goal_achievement, necessity, preservation, global_benefit의 PASS/FAIL/UNCERTAIN.
+- 모두 PASS만 ACCEPT, FAIL 우선 REJECT. FAIL 없이 UNCERTAIN이면 fresh context로 1회 재검증.
+- 거절하면 같은 원문·plan에서 이유와 후보를 받아 최대 1회 재수정. 또 거절되면 STOP.
+- 기존 essay_scoring_llm의 채점기·보정기·자질 계산은 그대로 호출한다. 학습하지 않는다.
+- 사용자 확정: 현재 점수 체계 유지. 기본은 RF 보정 연속값이며 최종 1–9 등급과 soft mean/std도 기록.
+  0–10 환산, clipping, 임의 반올림을 하지 않는다.
+- 사용자 확정: GPT API를 쓰되 비싼 모델은 피한다. 기본 gpt-5-mini, reasoning low.
+  더 비싼 모델로 자동 전환하지 않는다. 호출 예산·출력 길이·사용량을 기록한다.
+- 점수와 자질은 RV에 주지 않는다. 점수는 상태·계획·비교용 로그에만 쓰고 채택에 관여하지 않는다.
+- RV 입력: 문항, 전후 글, goal, must_preserve, diff만. 이전 RV 판단·근거·iteration·변경 요약은 금지.
+- RV 학습, RAG, 다중 후보 탐색, memory, 경로 가드, rollback을 새 루프에 추가하지 않는다.
 
-구현·학습 판단에서는 최종 방법론과 데이터 지침이 과거 초안·실험 메모보다 우선한다.
-서론의 개념 설명과 세부 모델 출력이 다르게 읽히면 최종 방법론의 명시적 정의를 따른다.
-논문 원고는 로컬 보관이므로 누락된 환경에서는 임의로 복원하지 말고 해당 사실을 알린다.
+## 보관·검증
 
-## 현재 확정된 방향
+- 과거 루프: feak_tc/legacy/agent/. 공통 모델 실행: feak_tc/runtime/.
+- scripts/run_agent.py와 기존 웹은 과거 루프 전용. 최신 방법론으로 소개하지 않는다.
+- mvp/, rv/, corruption/과 데이터 도구는 과거 실험 재현용이다.
+  rv/의 과거 4축 라벨도 새 기준과 다르므로 혼용하지 않는다.
+- 정리 전 소스·로컬 문서 백업: .cleanup_archive/2026-09-28-rv-pilot/.
+- 원문·후보·실패 기록·모델·데이터·결과를 보존한다. 삭제/이동 전 사용처·복구 방법을 확인한다.
+- 후보별 JSONL을 즉시 flush하고 원시 API 출력도 기록한다.
+- 테스트: python -m pytest -q. 실제 실행 전: python scripts/check_env.py.
+- offline-smoke와 examples/pilot_samples.jsonl은 실행 확인용. 후자는 직접 작성한 합성 예제다.
+- 실행 성공을 사람 평가, held-out 성능, 품질 향상, RV 정확도의 근거로 주장하지 않는다.
 
-- FEAK-TC는 한국어 글쓰기의 반복 수정과 경로 제어를 연구한다.
-- 2026-09-11 사용자 지시: 신규 학습을 보류하고 전체 루프 실행을 먼저 완성한다.
-- 진단기만 기존 학습된 Kanana를 사용한다. Planner·Generator·RV·경로 가드도 일반 Kanana로
-  통일한다. 기본은 캐시된 `kakaocorp/kanana-1.5-8b-instruct-2505` 4비트 추론이며,
-  이 역할들에는 진단기 adapter를 적용하지 않는다. 외부 LLM API를 호출하지 않는다.
-- 개별 모듈의 학습·교체는 루프 실행 및 평가 이후의 선택 사항이다. 기존 TVM의 추가 개발은 종료했다.
-- RV 입력은 과제, 수정 전 글, 수정 요구·보존 조건, 수정 후 글이다.
-- RV 출력은 `target_fulfillment`와 `preservation`의 두 축이며 각 축은 pass/partial/fail이다.
-- `action_consistency`와 `edit_appropriateness`를 별도 학습 출력으로 추가하지 않는다.
-- FEAK는 기존 채점기와 독립 자질 계산기를 사용한다.
-- RAG는 train에서 선별한 rubric별 우수 사례를 계획에 제공한다.
-- Planner·Generator·경로 가드는 기존 LLM을 사용한다. 별도 policy·Planner 학습은 하지 않는다.
-- Controller는 채택, 거절·재계획, checkpoint 복구, 종료를 구분한다.
+## Git/GitHub
 
-## 설계와 구현 상태
-
-현재 실행 진입점은 `scripts/run_agent.py`, 반복 controller는 `feak_tc/agent/`다.
-`scripts/run_agent_web.py`는 같은 CLI를 실행하는 로컬 웹 UI이며, 단계·후보·RV·복구 이력을 보여준다.
-기존 `feak_tc/mvp/`의 patch·validity·transition·heuristic을 재사용한다.
-국소 RV의 두 축, 재계획, checkpoint 복구, 경로 가드, 종료 예산을 연결한다.
-`feak_tc/rv/`와 `configs/rv_*.yaml`은 기존 4축 파일럿을 재사용하기 위해 보존한 코드·설정이다.
-이 파일들의 존재를 최종 2축 RV 구현 완료로 해석하지 않는다.
-
-기존 corruption 1,000 transition과 RV v2의 227개 선택 후보는 보존한다.
-227개는 사람 검수 완료 데이터가 아니다. 최종 지침의 첨부 36편 샘플과도 별도 집합이다.
-최종 2축 데이터와 RV 학습은 이번 범위 밖이다. 선택적인 train-only 사례 검색은 제공하지만
-실제 corpus가 없으면 사례 없이 계획하며, 예제 실행 성공을 품질 개선이나 최초성 입증으로 해석하지 않는다.
-
-## 데이터 및 구현 원칙
-
-- 원문, 생성 후보, 판정 출처와 실패 이력을 보존한다.
-- 원본·유사·파생 글의 split을 먼저 고정하고, 평가 글을 RAG 저장소에 넣지 않는다.
-- 학습 데이터 구성에 쓴 전문가 피드백을 최종 에이전트 평가의 운영 입력으로 제공하지 않는다.
-- 생성 유형, 참고 복원문, FEAK gain과 기존 judge 라벨을 RV 입력에 넣지 않는다.
-- 생성 의도와 FEAK 점수 상승을 성공 라벨로 자동 확정하지 않는다.
-- 판정 불가는 partial로 바꾸지 않고 해당 축의 label mask로 처리한다.
-- 같은 실패 유형을 얻으려는 반복 생성·전수 재판정은 원인과 종료 기준 없이 재개하지 않는다.
-- 기존 채점기·자질 계산 코드는 수정하지 않고 호출한다.
-- LLM의 구조화 출력은 schema로 검사하고, 설정은 `configs/`에서 관리한다.
-- 먼저 stub과 작은 검수 세트로 검증한다. 기존 데이터·모델·환경을 이유 없이 다시 만들지 않는다.
-
-## 코드·이력 찾기
-
-- [저장소 README](../README.md): 실행·폴더·보존한 진입점
-- [기존 MVP 스펙](docs/IMPLEMENTATION_MVP.md): 현재 한 단계 코드의 역사적 설명
-- [과거 실험 안내](중간정리/README.md): 결과 근거. 과거 ‘다음 작업’은 현재 지시가 아님
-- [정리·복구 기록](../docs/CLEANUP_2026-09-08.md): 제거한 경로와 백업
-
-## Git/GitHub 흐름
-
-- 사용자가 명시적으로 요청하지 않는 한 main에 직접 push하지 않는다.
-- topic branch에서 변경하고 검증한 뒤 해당 브랜치만 원격에 push한다.
-- main 반영은 GitHub PR로 진행한다. 필요한 PR 생성과 병합은 검증 후 gh CLI로 수행한다.
-- 기존 작업 브랜치에 이어지는 정리는 그 브랜치를 PR base로 사용하여,
-  관련 없는 미병합 작업을 함께 main에 반영하지 않는다.
-- 논문 원고와 로컬 데이터·모델·백업은 명시적 업로드 요청 없이는 커밋하지 않는다.
+- 명시적 요청 없이는 main에 직접 push하지 않는다.
+- topic branch에서 변경·검증하고 그 브랜치만 push한다. 검증 후 gh CLI로 PR 생성·병합한다.
+- 기존 미병합 작업에 이어지는 변경은 기존 작업 브랜치를 PR base로 사용한다.
+- 논문 원고·데이터·모델·백업·실험 결과·키는 명시적 업로드 요청 없이는 커밋하지 않는다.
+- push 전에 git status와 git diff --cached로 staged 내용을 확인한다.

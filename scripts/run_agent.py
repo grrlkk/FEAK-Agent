@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run the full revision loop with trained Kanana and a general local LLM."""
+"""Legacy two-axis loop. For the current methodology use scripts/run_pilot.py."""
 
 import argparse
 import json
@@ -12,12 +12,12 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from feak_tc.agent import run_agent
-from feak_tc.agent.local_llm import LocalJSONClient
-from feak_tc.agent.observer import KananaWorker
-from feak_tc.agent.retrieval import ExemplarStore
-from feak_tc.agent.roles import LocalRoles, OfflineRoles
-from feak_tc.agent.schemas import ControllerConfig, LocalModelConfig
+from feak_tc.legacy.agent import run_agent
+from feak_tc.legacy.agent.local_llm import LocalJSONClient
+from feak_tc.runtime.kanana import KananaWorker
+from feak_tc.legacy.agent.retrieval import ExemplarStore
+from feak_tc.legacy.agent.roles import LocalRoles, OfflineRoles
+from feak_tc.legacy.agent.schemas import ControllerConfig, LocalModelConfig
 from feak_tc.diagnose import get_diagnoser
 
 

@@ -1,177 +1,66 @@
 # FEAK-Agent
 
-Research code for **FEAK-TC**, a writing agent that revises Korean essays iteratively while
-managing two things at once: whether each revision achieves what it was asked to do, and
-whether it preserves the content that had to stay.
+한국어 글의 상태를 **기존 Kanana 채점기**로 측정하고, **수정 전후 직접 비교(RV)**로
+수정본의 채택을 결정하는 학습 없는 연구 파일럿입니다.
 
-FEAK-TC is the successor to [FEAK](#relation-to-feak) (SAC'26), which turns rubric-linked
-linguistic features into evidence for LLM feedback. FEAK stops at the feedback; FEAK-TC
-asks what comes after it — once feedback becomes an actual edit, how do we verify the edit
-and decide whether to keep it, retry, roll back, or stop?
-
-> **Work in progress.** This repository accompanies a paper in preparation, targeted for
-> conference submission in 2026. Interfaces and data formats are still moving.
-
-## Overview
-
-Verification is split into two levels. The **Revision Verifier (RV)** judges a single
-revision. The **Trajectory Guard** checks whether the essay as a whole degrades as edits
-accumulate.
-
-| Step | What happens | Output |
-|---|---|---|
-| 1. Diagnose, retrieve, plan | FEAK locates weaknesses; RAG supplies traits of relevant high-quality essays | A concrete revision request and its preservation constraints |
-| 2. Generate | An LLM produces several candidate revisions for the fixed request | Revised text and its change set |
-| 3. Verify (RV) | Each candidate is judged on goal attainment and content preservation | Two-axis verdict |
-| 4. Trajectory guard | The full essay and edit history are checked for accumulated damage | Flow-level problems with evidence |
-| 5. Control | FEAK quality change and verdicts are combined | Accept, replan, restore, or stop |
-
-RV takes `(task, essay before, revision request, essay after)` and emits two independent
-axes, each `pass` / `partial` / `fail`:
-
-- `target_fulfillment` — was the requested problem actually solved?
-- `preservation` — were the claims, conditions, and evidence that had to stay kept intact?
-
-The axes are judged separately: a revision can hit its goal and still destroy content, or
-miss its goal while leaving the original intact. Preservation is not string identity —
-errors the request asks to fix and additions it permits are allowed to change.
-
-The current prototype requires **no new training**. Diagnosis uses the existing trained
-Kanana scorer and independent FEAK features. Planning, patch generation, the two-axis RV
-and the trajectory guard share a general local LLM. Individual modules can be trained or
-replaced later, after the complete loop has been evaluated.
-
-## Status
-
-The training-free loop under `feak_tc/agent/` runs diagnosis, a concrete revision request,
-multiple local patches, two-axis RV checks, selection against keeping the current text,
-checkpointing, trajectory checks, rollback, replanning and bounded stopping. It saves the
-original, every candidate, verdict reasons and the final essay. The default local model is
-the cached `kakaocorp/kanana-1.5-8b-instruct-2505` in 4-bit inference; no external LLM API
-is used. Only the diagnoser uses the trained scorer adapter; all other roles use general Kanana.
-
-Optional exemplar retrieval accepts a curated train-only JSONL. Without a configured
-corpus, the planner runs without exemplars. The earlier one-step heuristic MVP and
-four-axis RV data pilot remain available. No RV training or quality benchmark is implied
-by a successful execution smoke test.
-
-Experiment records and the current state of collected data live in `feak_tc_docs/`.
-
-## Repository layout
+현재 구현 기준은 사용자가 지정한 **FEAK_RV_PILOT_IMPLEMENTATION.md**입니다.
+[파일럿 안내](docs/RV_PILOT.md)에 실행·점수 척도·로그 계약이 있습니다.
 
 ```text
-feak_tc/diagnose/     FEAK / Kanana / stub scorer bindings
-feak_tc/mvp/          one-step revision, patching, quality scoring, heuristics
-feak_tc/agent/        training-free local revision loop and two-axis runtime RV
-feak_tc/web/          local visual console, history and candidate comparison
-feak_tc/rv/           RV pilot data tooling
-feak_tc/corruption/   corruption generation, inspection, analysis
-feak_tc/data/         AI-Hub JSON normalization
-feak_tc/schemas/      source data schemas
-src/apps/             Korean linguistic analysis and scoring
-scripts/              entry points for runs and data reuse
-configs/              run configuration
-tests/                regression tests
-feak_tc_docs/         specifications and experiment records
-data/                 source corpora (not tracked)
-experiments/results/  generated data and experiment output (not tracked)
+Current draft → Kanana → Planner: 문제 하나 → Reviser: 후보 하나
+       ↑                                      ↓
+       └──────── ACCEPT ← Controller ← RV: 네 기준
 ```
 
-## Setup
+RV는 목표 달성, 수정 필요성, 의미 보존, 문서 전체의 이득을 PASS/FAIL/UNCERTAIN으로
+판정합니다. 모두 PASS인 후보만 채택합니다. 점수 상승은 채택 조건이 아닙니다.
+거절 후보의 재수정 1회, 불확실 판정의 독립 재검증 1회, 반복 최대 3회입니다.
 
-Pick the dependency set that matches your runtime.
+## 실행
 
-```bash
-pip install -r requirements.txt          # core / dev
-pip install -r requirements-kanana.txt   # Kanana scorer
-pip install -r requirements-legacy.txt   # legacy UKTA / KoBERT scorer
-```
-
-API keys are read from `.env`.
-
-## Usage
-
-Open the local visual console:
+기존 feak_agent 환경과 형제 저장소 essay_scoring_llm의 채점기·보정 모델을 사용합니다.
+GPT 기본 모델은 gpt-5-mini, reasoning low입니다. .env의 OPENAI_API_KEY 또는
+FEAK_ENV_FILE을 사용합니다. 모델 가중치·키·결과는 커밋하지 않습니다.
 
 ```bash
-python scripts/run_agent_web.py --port 8765
-```
+conda activate feak_agent
+python scripts/check_env.py
 
-Visit `http://localhost:8765` (forward port 8765 if using a remote server). Enter a task
-and essay, then watch diagnosis, revision plans, candidate edits, two-axis RV decisions
-and rollback. Compare versions, revisit saved runs or download the full JSON. The default
-is a real Kanana run; the explicitly labeled demo mode does not load models. The server
-binds to loopback and is intended for personal use, not public deployment.
+# 모델/API 없는 전체 제어 흐름 확인
+python scripts/run_pilot.py --input examples/pilot_samples.jsonl --offline-smoke --output-dir experiments/results/rv_pilot_offline
 
-Run the same loop from the CLI (existing trained Kanana assets and cached base weights required):
+# 실제 Kanana + GPT: 합성 예제 5편, 최대 3 iterations
+python scripts/run_pilot.py --input examples/pilot_samples.jsonl --output-dir experiments/results/rv_pilot_real
 
-```bash
-python scripts/run_agent.py \
-  --text-file examples/local_agent_essay.txt \
-  --question "학교에서 휴대전화 사용에 관한 자신의 주장과 이유를 쓰시오." \
-  --output experiments/results/local_agent.json
-```
-
-The default allocation is trained Kanana on GPU 1 and general Kanana on GPU 2. Override with
-`--kanana-device 1 --llm-device cuda:2`. All thresholds, budgets and model settings are in
-[`configs/agent_local.yaml`](configs/agent_local.yaml). Use `--offline-smoke` for a wiring
-check without models. See [the local agent guide](docs/TRAINING_FREE_AGENT.md) for setup,
-output interpretation, optional retrieval and limitations.
-
-Run the tests:
-
-```bash
 python -m pytest -q
 ```
 
-Run the one-step MVP against the stub diagnoser, with no model download:
+출력은 매번 새 경로를 지정합니다. 예제 5편은 직접 작성한 실행 확인용 글이며 논문 성능 평가
+데이터가 아닙니다. API 실행은 문항과 글을 OpenAI로 전송합니다.
 
-```bash
-HF_HUB_OFFLINE=1 python scripts/run_mvp.py \
-  --diagnoser stub \
-  --text "인권은 인간이 가지는 기본적인 권리이다. 우리는 서로의 권리를 존중해야 한다." \
-  --proposer-mode deterministic \
-  --patcher-mode deterministic \
-  --surface-normalizer off
+## 구조
+
+```text
+feak_tc/agent/          현재 4기준 RV: 계획·수정·검증·제어·점수 어댑터
+feak_tc/runtime/        공용 Kanana 프로세스·GPT 구조화 출력 통신
+feak_tc/diagnose/       기존 채점기 연결
+configs/pilot_gpt.yaml  현재 설정과 호출 예산
+scripts/run_pilot.py    현재 CLI 진입점
+examples/              실행 확인용 예제
+feak_tc/legacy/agent/   과거 2축 RV·점수 선택·경로 가드 구현
 ```
 
-This exercises the heuristic loop, not a trained RV or the full controller. For wiring a
-real scorer, see [Diagnoser Integration](docs/DIAGNOSER_INTEGRATION.md).
+mvp/, rv/, corruption/, 데이터 도구와 기존 웹은 이전 실험 재현용입니다.
+scripts/run_agent.py와 scripts/run_agent_web.py는 과거 루프를 실행합니다.
+이전 설명은 [보관된 README](docs/LEGACY_AGENT_README.md), 이번 변경은
+[정리 기록](docs/CLEANUP_2026-09-28.md)을 참고하세요.
 
-## Relation to FEAK
+## 연구 배경
 
-FEAK is the preceding system and has its own repository at
-[grrlkk/FEAK](https://github.com/grrlkk/FEAK). FEAK-TC reuses its scorers and feature
-computation as the diagnostic layer and adds revision verification and trajectory control
-on top.
+[FEAK](https://github.com/grrlkk/FEAK)의 채점·자질 계산을 재사용합니다.
 
-> **From Evaluation to Feedback: A Feature-Based and LLM-Constrained Tool for Korean Writing Assessment**
-> Chanwoo Jang, Ganghee Go, Jinyong Yun, Seokho Ahn, Myungsun Shin, Ho-Hyun Kil,
-> Sungmin Chang, Do-Guk Kim, Young-Duk Seo.
-> *The 41st ACM/SIGAPP Symposium on Applied Computing (SAC'26)*, Thessaloniki, Greece.
-> [doi:10.1145/3748522.3780021](https://doi.org/10.1145/3748522.3780021)
+> From Evaluation to Feedback: A Feature-Based and LLM-Constrained Tool for Korean Writing Assessment.
+> Chanwoo Jang et al., ACM SAC 2026. [DOI](https://doi.org/10.1145/3748522.3780021)
 
-FEAK dynamically identifies rubric-linked linguistic features with low values and uses them
-as evidence for LLM-based feedback generation, grounding generated feedback in measurable
-diagnostic signals so that it stays interpretable and verifiable.
-
-Cite FEAK when referring to that diagnostic layer:
-
-```bibtex
-@inproceedings{jang2026feak,
-  title     = {From Evaluation to Feedback: A Feature-Based and LLM-Constrained Tool
-               for Korean Writing Assessment},
-  author    = {Jang, Chanwoo and Go, Ganghee and Yun, Jinyong and Ahn, Seokho and
-               Shin, Myungsun and Kil, Ho-Hyun and Chang, Sungmin and Kim, Do-Guk and
-               Seo, Young-Duk},
-  booktitle = {Proceedings of the 41st ACM/SIGAPP Symposium on Applied Computing (SAC '26)},
-  year      = {2026},
-  publisher = {ACM},
-  address   = {New York, NY, USA},
-  doi       = {10.1145/3748522.3780021}
-}
-```
-
-## License
-
-MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for third-party components.
+실행 성공은 품질 향상이나 수정 판정 정확도를 입증하지 않습니다.
+라이선스: MIT. 서드파티 고지: [NOTICE](NOTICE).
