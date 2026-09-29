@@ -1,5 +1,9 @@
 # FEAK-Agent
 
+2026-09-29 추가: [VERAK P1](verak/README.md)은 목표·후보를 한 번 생성하고 같은 수정 쌍을
+`criteria_only / surface_diff / korean` 세 판단 입력 조건으로 비교하는 별도 CLI입니다.
+바른 분석기·기존 Kanana FT·GPT API를 사용하며, 실행은 `python -m verak.src.run_single`입니다.
+
 한국어 글의 상태를 **기존 Kanana 채점기**로 측정하고, **수정 전후 직접 비교(RV)**로
 수정본의 채택을 결정하는 학습 없는 연구 파일럿입니다.
 
