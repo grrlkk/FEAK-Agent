@@ -1,5 +1,18 @@
 # FEAK-Agent 작업 지침
 
+## 현재 추가 작업 — VERAK P1 (2026-09-29)
+
+- 사용자 지정 `imple/VERAK_CLI_TASK_P1.md`가 이번 구현 범위이며 `VERAK_IMPL_SPEC_v2.md`보다 우선한다.
+- 새 코드는 `verak/`, 실행은 `python -m verak.src.run_single`. 기존 파일럿을 바꾸지 않는다.
+- 목표 하나·후보 하나를 고정하고 criteria_only/surface_diff/korean의 입력 정보만 바꿔 판단한다.
+  반복 루프·재수정·누적 점검·checkpoint·rollback·RAG·기준선은 P1에 추가하지 않는다.
+- 사용자 확정: 바른 형태소 분석, `data/data_jsonl/valid.jsonl`, 키워드 미사용.
+- 사용자 확정: 현재 GPT API 사용. 수정·판단 모두 gpt-5-mini/low이며 다른 계열 조건의 예외를 기록한다.
+- 바른 CorrectError를 맞춤법 근거로만 사용한다. 실패는 unavailable이며 자동 기각하지 않는다.
+- 익명화 `#@종류#` 전체를 보존한다. 결과·쌍·캐시는 `verak/outputs`, `verak/data`에 로컬 보관한다.
+- 원시 정수 점수·피드백 생성은 기존 Kanana FT 로더를 재사용한다. 아래 파일럿의 RF 보정 점수와 다르다.
+- `verak/README.md`, `verak/NOTES.md`에 실행·출력·검증 계약을 기록한다.
+
 ## 현재 기준 — 2026-09-28
 
 사용자가 지정한 `paper_docs/FEAK_RV_PILOT_IMPLEMENTATION.md`가 현재 방법론이다.

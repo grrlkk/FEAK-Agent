@@ -19,6 +19,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+verak = [
+    "bareunpy==1.6.6",
+]
 g2 = [
     "lightgbm>=4.0",
     "pandas>=2.0",
@@ -27,12 +30,13 @@ g2 = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["feak_tc*"]
+include = ["feak_tc*", "verak", "verak.src"]
 
 [tool.setuptools.package-data]
 "feak_tc.web" = ["static/*.html", "static/*.css", "static/*.js"]
 "feak_tc.review" = ["static/*.html", "static/*.css", "static/*.js"]
+"verak" = ["config.yaml", "prompts/*.txt", "lexicons/*.yaml"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "verak/tests"]
 pythonpath = ["."]

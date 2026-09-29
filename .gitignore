@@ -41,3 +41,8 @@ docs/*.pdf
 
 # 정리 백업
 .cleanup_archive/
+
+# VERAK private inputs, fixed pairs, model outputs and API caches.
+verak/data/
+verak/outputs/
+verak/config.local.yaml
