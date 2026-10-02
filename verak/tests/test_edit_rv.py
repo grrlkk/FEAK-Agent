@@ -96,10 +96,23 @@ def test_add_is_anchored_and_split_into_actual_sentences_without_relocating_repe
 @pytest.mark.parametrize('reason,maximum', [
     ('한 문장을 추가한다', 1), ('하나의 문장을 추가한다', 1), ('문장 하나만 추가', 1),
     ('한두 문장으로 보강', 2), ('1~2 sentences', 2), ('1~2문장 추가', 2),
-    ('두 문장으로 분리', 2), ('문장만 고친다', 1),
+    ('두 문장으로 분리', 2), ('문장만 고친다', None),
 ])
 def test_budget_from_existing_plan_without_new_planner_fields(reason, maximum):
     assert plan_edit_budget(plan('원문이다.', reason=reason))['max_sentences'] == maximum
+
+
+@pytest.mark.parametrize('reason', [
+    '하나 이상의 완결된 예시 문장을 추가한다', '한 문장 이상을 추가한다',
+    '문장 하나 이상을 추가한다', '최소 두 문장을 추가한다', '적어도 2문장이 필요하다',
+    '2 sentences or more', 'at least 2 sentences',
+])
+def test_lower_bound_or_unspecified_budget_never_becomes_an_invented_cap(reason):
+    before = '원문이다. 뒤다.'
+    contract = plan(before, 'ADD', reason=reason)
+    data = info(before, '원문이다. 예시다. 설명이다. 뒤다.', contract)
+    assert data['budget']['max_sentences'] is None
+    assert 'sentence_budget_exceeded' not in data['hard_reasons']
 
 
 def test_five_sentences_violate_one_or_two_sentence_add_before_llm():
@@ -148,7 +161,7 @@ def test_ambiguous_style_is_not_guessed_into_a_hard_violation():
 
 @pytest.mark.parametrize('action,after', [
     ('ADD', '다른 원문이다. 추가다. 뒤다.'),
-    ('REWRITE', '원문이다. 바뀐 뒤다.'),
+    ('REWRITE', '원문이다. 다른 문장이다.'),
     ('DELETE', '새로 쓴 글이다. 뒤다.'),
 ])
 def test_scope_and_action_violations_never_reach_llm(action, after):

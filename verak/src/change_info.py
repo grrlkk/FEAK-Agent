@@ -314,23 +314,32 @@ def plan_edit_budget(plan):
     """
     text = plan.goal + '\n' + plan.minimal_scope_reason
     values = []
+    def upper_bound(match, number):
+        # A lower bound is not an upper bound. Scope describes the source target,
+        # not the amount of new text; never invent a limit from scope alone.
+        tail = text[match.end():]
+        prefix = text[max(0, match.start()-12):match.start()]
+        if re.match(r'\s*(?:이상|초과|넘|or\s+more|and\s+more)', tail, re.I):
+            return
+        if re.search(r'(?:최소|적어도|at\s+least)\s*$', prefix, re.I):
+            return
+        values.append(number)
     for match in re.finditer(r'(\d+)\s*(?:[~～–-]|에서)\s*(\d+)\s*(?:개(?:의)?\s*)?(?:문장|sentences?)', text, re.I):
-        values.append(int(match[2]))
+        upper_bound(match, int(match[2]))
     for match in re.finditer(r'(\d+)\s*(?:개(?:의)?\s*)?(?:문장|sentences?)', text, re.I):
-        values.append(int(match[1]))
-    if re.search(r'한\s*두\s*(?:개의\s*)?문장', text):
-        values.append(2)
+        upper_bound(match, int(match[1]))
+    for match in re.finditer(r'한\s*두\s*(?:개의\s*)?문장', text):
+        upper_bound(match, 2)
     for word, number in (('한', 1), ('하나의', 1), ('두', 2), ('세', 3), ('네', 4)):
-        if re.search(rf'(?<![가-힣]){word}\s*(?:개의\s*)?문장', text):
-            values.append(number)
-    for word, number in (('하나', 1), ('둘', 2), ('둘째', 2)):
-        if re.search(rf'문장\s*{word}(?:만|를|을|로|가|이|\s|$)', text):
-            values.append(number)
-    explicit = max(values) if values else None
-    maximum = explicit if explicit is not None else 1 if plan.scope == 'sentence' else None
+        for match in re.finditer(rf'(?<![가-힣]){word}\s*(?:개의\s*)?문장', text):
+            upper_bound(match, number)
+    for word, number in (('하나', 1), ('둘', 2)):
+        for match in re.finditer(rf'문장\s*{word}(?=만|를|을|로|가|이|\s|$)', text):
+            upper_bound(match, number)
+    maximum = max(values) if values else None
     edit_limits = [int(m[1]) for m in re.finditer(r'(?:변경|수정)\s*(?:개수\s*[:=]?\s*)?(\d+)\s*(?:개|곳|회)', text)]
-    return {'max_sentences': maximum, 'sentence_budget_source': 'explicit_plan_text' if explicit is not None
-            else 'sentence_scope_default' if maximum else 'unspecified',
+    return {'max_sentences': maximum, 'sentence_budget_source': 'explicit_plan_text' if maximum is not None
+            else 'unspecified',
             'max_edits': min(edit_limits) if edit_limits else None}
 
 
