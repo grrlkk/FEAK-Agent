@@ -1,5 +1,21 @@
 # FEAK-Agent 작업 지침
 
+## 현재 추가 작업 — Scope-aware loop (2026-10-02)
+
+- 사용자의 최신 지시가 아래 P1의 단일 후보·반복 금지 조건보다 우선한다.
+- 새 실행 모듈 없이 기존 `verak/src` 안에 범위 기반 Planner, 행동 제한 Reviser, 네 기준 RV, 루프를 구현한다.
+- 기본 실행은 `python -m verak.src.run_single --mode loop`. `--mode single`과 `--pairs`는 기존 P1 재현용이다.
+- Planner: Goal/Scope/Target/Action/Preserve, 최소 충분 범위, 원문 근거. Kanana 낮은 항목부터 실행 가능한 문제를 검토한다.
+- Reviser: ADD는 삽입만, DELETE는 삭제만, REWRITE는 지정 구간만, REORDER는 원문 단위의 순열만 허용한다.
+  글 전체 REWRITE는 기본 금지이며 paragraph/span으로 전체 글을 지정해도 동일하다.
+- RV는 goal/selectivity/preservation/korean_consistency 네 항목을 한 요청으로 검사한다.
+  전체 전후 글·문항·계획·diff와 변경 부분의 바른 정보만 전달한다. 점수·이전 판정·전체 프로필은 제외한다.
+- 네 항목 모두 pass이고 기계 제약을 만족할 때만 채택한다. fail/unknown은 현재 상태를 유지하고 다른 계획을 시도한다.
+- 후보 점수는 RV 이후에 측정하며 채택에 관여하지 않는다. 거절 후보 점수와 실제 채택 상태 점수를 구분한다.
+- 모든 step과 STOP/오류를 trajectory.jsonl에 flush하고, 후보/채택 결정은 후속 점수 계산 전에도 events.jsonl에 저장한다.
+- 명확한 수정 없음, 반복 계획, 호출 예산, 최대 step에서 종료한다. 기본 5 step이며 마지막 채택 글을 반환한다.
+- 기존 모델·바른·입력 경로·키워드 제외 설정을 유지한다. 루프는 맞춤법 API 및 P1의 세 조건/전역 비교를 추가 호출하지 않는다.
+
 ## 현재 추가 작업 — VERAK P1 (2026-09-29)
 
 - 사용자 지정 `imple/VERAK_CLI_TASK_P1.md`가 이번 구현 범위이며 `VERAK_IMPL_SPEC_v2.md`보다 우선한다.

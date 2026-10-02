@@ -98,6 +98,85 @@ class GlobalJudgment(Strict):
     issues: list[GlobalIssue]
 
 
+# The active loop uses these contracts; P1 schemas remain available for replay.
+Scope = Literal["morpheme", "sentence", "span", "paragraph", "document"]
+Action = Literal["ADD", "DELETE", "REWRITE", "REORDER"]
+
+
+class TargetSelection(Strict):
+    first_id: str = Field(min_length=1)
+    last_id: str = Field(min_length=1)
+    position: Literal["before", "after", "replace"]
+
+
+class ScopePlanSelection(Strict):
+    rubric: Rubric
+    goal: str = Field(min_length=1)
+    scope: Scope
+    target: TargetSelection
+    action: Action
+    preserve_ids: list[str]
+    evidence_ids: list[str] = Field(min_length=1, max_length=4)
+    minimal_scope_reason: str = Field(min_length=1)
+
+
+class ScopePlanResponse(Strict):
+    plan: Optional[ScopePlanSelection]
+    reason: str = Field(min_length=1)
+
+
+class SourcePiece(Strict):
+    id: str
+    start: int
+    end: int
+    text: str
+
+
+class ResolvedTarget(Strict):
+    start: int
+    end: int
+    text: str
+    insertion_at: Optional[int]
+    pieces: list[SourcePiece]
+
+
+class ScopePlan(Strict):
+    rubric: Rubric
+    goal: str
+    scope: Scope
+    target: ResolvedTarget
+    action: Action
+    preserve: list[str]
+    evidence: list[Evidence]
+    minimal_scope_reason: str
+
+    @property
+    def span_before(self):
+        if self.action == "ADD":
+            return [self.target.insertion_at, self.target.insertion_at]
+        return [self.target.start, self.target.end]
+
+
+class ReorderResponse(Strict):
+    order: list[str] = Field(min_length=2)
+
+
+class ScopeIssue(Strict):
+    requirement: Literal["goal", "selectivity", "preservation", "korean_consistency"]
+    location: str = Field(min_length=1)
+    before_quote: str
+    after_quote: str
+    reason: str = Field(min_length=1)
+
+
+class ScopeJudgment(Strict):
+    goal: Label
+    selectivity: Label
+    preservation: Label
+    korean_consistency: Label
+    issues: list[ScopeIssue]
+
+
 @dataclass
 class Token:
     form: str

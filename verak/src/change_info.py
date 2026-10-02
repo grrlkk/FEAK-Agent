@@ -149,3 +149,34 @@ def extract(before, after, before_profile, after_profile, focus_lexicon=None):
                               labels, [{"kind": "surface_only", **edit}], [],
                               ["not_fully_covered_by_sentence_alignment"], "surface", [edit]))
     return units
+
+
+def changed_korean_info(before_profile, after_profile, diff):
+    """Only morphology overlapping actual edits, plus affected-sentence style candidates.
+
+    For a zero-width insertion/deletion anchor, include touching morphemes. The
+    full source/revision texts supply discourse context; no full profile or
+    unrelated antecedent lists are sent to the RV.
+    """
+    result = {}
+    for side, profile in (("before", before_profile), ("after", after_profile)):
+        spans = [edit[f"{side}_span"] for edit in diff]
+
+        def touched(start, end):
+            return any((start <= a <= end) if a == b else (start < b and a < end)
+                       for a, b in spans)
+
+        sentences = []
+        for sentence in profile.sentences:
+            if not touched(sentence.start, sentence.end):
+                continue
+            sentences.append({
+                "id": sentence.id, "span": [sentence.start, sentence.end],
+                "tokens": [asdict(t) for t in sentence.tokens if touched(t.start, t.end)],
+                "style_candidates": sentence.style_candidates,
+                "connectives": [c for c in sentence.connectives if touched(*c["span"])],
+                "subjects": [s for s in sentence.subjects if touched(*s["span"])],
+                "uncertain": sentence.uncertain,
+            })
+        result[side] = sentences
+    return result

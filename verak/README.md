@@ -1,4 +1,56 @@
-# VERAK P1
+# VERAK 범위 제한 수정 루프
+
+현재 기본 실행은 **Kanana + 바른 → Planner → Reviser → RV → 채택/유지 → 반복**이다.
+기존 소스 모듈 안에 구현했으며 P1 비교 실험은 `--mode single`로 재현한다.
+
+```bash
+conda activate feak_agent
+python scripts/check_env.py
+python -m verak.src.run_single --limit 5 --max-steps 5 --output-dir verak/outputs/logs/scope_run1
+less verak/outputs/logs/scope_run1/summary.md
+```
+
+기본 입력은 `data/data_jsonl/valid.jsonl`, 계획·수정·검증 모델은 `gpt-5-mini/low`다.
+점수는 기존 Kanana FT가 생성하는 1–9 정수 8개다. 문항과 에세이를 전달하며 키워드는 제외한다.
+
+## 현재 역할과 제약
+
+- **Planner:** `goal`, `scope`, `target`, `action`, `preserve`와 원문 근거를 정한다.
+  Kanana의 낮은 항목부터 실제로 고칠 문제를 검토한다. 점수가 낮아도 근거가 없으면 다른 항목을 본다.
+  문제를 해결할 수 있는 가장 작은 범위를 지시하고 그 이유를 기록한다. 최소성 자체는 의미 판단이며 기계적 증명이 아니다.
+  `morpheme`은 바른 표면 오프셋, `sentence`는 한 문장, `span`은 연속된 여러 문장,
+  `paragraph`는 줄바꿈 기준 문단, `document`는 전체 글이다. 모델은 출처 ID를 선택하고 코드가 오프셋을 계산한다.
+- **Reviser:** `ADD`는 지정 구간 앞/뒤에 새 내용만 삽입하고, `DELETE`는 구간만 삭제한다.
+  `REWRITE`는 그 구간만 교체한다. 전체 글을 포함한 REWRITE는 기본 금지다.
+  `REORDER`는 span/paragraph의 문장 또는 document의 문단(한 문단이면 문장)을 순열로 재배열한다.
+  문장 내용·공백 구분자·범위 밖 글은 코드가 보존한다. 익명화 표지의 종류별 개수도 검사한다.
+- **RV:** `goal`, `selectivity`, `preservation`, `korean_consistency`를 pass/fail/unknown으로 판정한다.
+  전후 전체 글과 문항으로 문맥을 확인하되, 바른 정보는 실제 diff에 걸친 형태소와 해당 문장의 문체 후보만 제공한다.
+  전체 프로필·다른 문장의 형태소·선행사 목록·점수·이전 판정은 제공하지 않는다. 전역 비교 호출은 별도로 추가하지 않는다.
+- **Loop:** 기계 제약과 RV 네 항목이 모두 통과하면 채택한다. 실패/불확실이면 직전 채택 상태에서 다른 계획을 시도한다.
+  후보는 RV 전에 바른으로 분석하고, 그 프로필을 채택 시 다음 상태에서 재사용한다.
+  RV 후 Kanana로 후보를 채점한다. 거절 후보도 분석용 점수를 남기지만 현재 상태 점수로 사용하지 않는다.
+  동일 텍스트의 점수는 실행 중 재사용한다. 점수 증감은 RV 결정을 바꾸지 않는다.
+
+`plan=null`, 동일 상태의 반복 계획, 호출 예산, 최대 step에서 STOP한다. 이전 채택 상태로 돌아가는 후보도 거절한다.
+기본 최대 5 step(계획 실패·거절 포함), 기본 글 전체 재작성 금지다. 설정은 `config.yaml`의 `loop`에 있다.
+API·인용 형식 오류의 동일 요청 재시도는 RV에만 최대 2회이며, 실패하면 unknown으로 기록한다.
+후속 분석/점수 오류가 나도 마지막 채택 글을 원문으로 되돌리지 않는다. 점수 실패는 누락과 오류로 명시한다.
+
+## 단계별 기록
+
+- `trajectory.jsonl`: 현재 글, 계획, 후보, 실제 diff, 변경 부분 바른 정보, RV, 채택 결정, 다음 상태.
+  `kanana_before/candidate/after`에는 피드백까지, `scores_before/candidate/after`에는 8개 점수를 기록한다.
+  **candidate는 거절된 후보도 포함하고 after는 실제 채택 상태다.** STOP/오류 단계의 미실행 항목은 null이다.
+- `events.jsonl`: 후보 생성과 채택 결정을 즉시 저장하므로 후속 채점 도중 중단돼도 확인할 수 있다.
+- `calls.jsonl`: sample/step, 실제 요청·원시 응답·사용량·재요청 기록.
+- `results.jsonl`, `report.json`, `summary.md`: 최종 채택 글, 단계별 전후 비교, 종료 이유, 호출 집계.
+- `manifest.json`: 입력·설정·프롬프트·소스 해시. 출력은 Git에 포함하지 않는다.
+
+맞춤법 API와 아래 P1의 세 조건 비교는 loop에서 호출하지 않는다. 바른 형태소 분석과 네 기준 RV만 사용한다.
+자동 테스트나 RV 통과율은 사람 평가·실제 품질 향상·held-out 성능의 증거가 아니다.
+
+## 보관된 P1 비교 실험
 
 한 글에서 목표 하나와 후보 하나를 만들고, **같은 수정 쌍**을 세 판단 입력 조건으로 비교한다.
 반복 수정이나 실제 채택은 하지 않는다. 기존 `feak_tc/agent` 파일럿과 별도로 실행한다.
@@ -12,7 +64,7 @@
 ```bash
 conda activate feak_agent
 python scripts/check_env.py
-python -m verak.src.run_single --limit 5 --output-dir verak/outputs/logs/p1_run1
+python -m verak.src.run_single --mode single --limit 5 --output-dir verak/outputs/logs/p1_run1
 less verak/outputs/logs/p1_run1/summary.md
 ```
 
