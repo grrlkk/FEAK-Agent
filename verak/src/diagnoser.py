@@ -3,7 +3,8 @@
 import re
 import time
 
-from .schemas import AllowedChange, Evidence, Goal, GoalDraft, GoalResponse, RUBRICS
+from .schemas import (AllowedChange, Evidence, Goal, GoalDraft, GoalResponse, RUBRICS,
+                      ResolvedTarget, ScopePlan, ScopePlanResponse, SourcePiece)
 
 SYSTEM_PROMPT = (
     "에세이 채점기. 8개 루브릭(과제충실성, 설명명료성, 설명구체성, 설명적절성, "
@@ -174,3 +175,106 @@ def set_goal(question, text, diagnosis, profile, *, llm, prompt):
     goal = (validate_goal(expand_goal_range(response.goal, profile, question), question, text, profile, selected)
             if response.goal is not None else None)
     return goal, response.reason
+
+
+def target_catalog(text, profile):
+    """Let the planner select IDs; source offsets are always computed by code."""
+    catalog = {"document": {"kind": "document", "start": 0, "end": len(text), "text": text}}
+    paragraphs = {}
+    for sentence in profile.sentences:
+        catalog[f"s:{sentence.id}"] = {"kind": "sentence", "start": sentence.start,
+                                      "end": sentence.end, "text": sentence.text}
+        paragraphs.setdefault(sentence.paragraph, []).append(sentence)
+        for index, token in enumerate(sentence.tokens):
+            if token.start == token.end:
+                continue
+            catalog[f"m:{sentence.id}:{index}"] = {
+                "kind": "morpheme", "start": token.start, "end": token.end,
+                "text": text[token.start:token.end], "form": token.form, "tag": token.tag,
+            }
+    for number, sentences in paragraphs.items():
+        start, end = sentences[0].start, sentences[-1].end
+        catalog[f"p:{number}"] = {"kind": "paragraph", "start": start,
+                                "end": end, "text": text[start:end]}
+    return catalog
+
+
+def resolve_scope_plan(selection, question, text, profile, *, allow_document_rewrite=False):
+    catalog = target_catalog(text, profile)
+    first_id, last_id = selection.target.first_id, selection.target.last_id
+    if first_id not in catalog or last_id not in catalog:
+        raise ValueError("Target ID does not exist in the current text")
+    first, last = catalog[first_id], catalog[last_id]
+    if selection.scope == "span":
+        sentence_ids = [f"s:{s.id}" for s in profile.sentences]
+        if first_id not in sentence_ids or last_id not in sentence_ids:
+            raise ValueError("A span uses sentence endpoints")
+        if sentence_ids.index(first_id) >= sentence_ids.index(last_id):
+            raise ValueError("A span must cover at least two ordered sentences")
+    elif first_id != last_id or first["kind"] != selection.scope:
+        raise ValueError("Scope must match the selected source unit")
+    start, end = first["start"], last["end"]
+    if not 0 <= start < end <= len(text):
+        raise ValueError("Invalid target bounds")
+    position = selection.target.position
+    if selection.action == "ADD":
+        if position not in {"before", "after"}:
+            raise ValueError("ADD requires a before/after insertion anchor")
+        insertion_at = start if position == "before" else end
+    else:
+        if position != "replace":
+            raise ValueError("Only ADD uses before/after positioning")
+        insertion_at = None
+    if (selection.action == "REWRITE" and not allow_document_rewrite
+            and not (text[:start] + text[end:]).strip()):
+        raise ValueError("Whole-document REWRITE is disabled; choose a smaller edit or ADD")
+    if not selection.goal.strip() or not selection.minimal_scope_reason.strip():
+        raise ValueError("Goal and smallest-sufficient-scope justification are required")
+    if any(key not in catalog for key in selection.preserve_ids):
+        raise ValueError("Preserve ID does not exist in the current text")
+    evidence = evidence_catalog(question, profile)
+    if any(key not in evidence for key in selection.evidence_ids):
+        raise ValueError("Evidence must reference the question or current original sentences")
+    # Preserve sentence/paragraph contents exactly during a REORDER, including punctuation.
+    kind = "paragraph" if selection.scope == "document" else "sentence"
+    pieces = [SourcePiece(id=key, start=value["start"], end=value["end"], text=value["text"])
+              for key, value in catalog.items() if value["kind"] == kind
+              and start <= value["start"] < value["end"] <= end]
+    if selection.scope == "document" and len(pieces) < 2:
+        pieces = [SourcePiece(id=f"s:{s.id}", start=s.start, end=s.end, text=s.text)
+                  for s in profile.sentences]
+    pieces.sort(key=lambda piece: piece.start)
+    if selection.action == "REORDER" and (selection.scope not in {"span", "paragraph", "document"}
+                                          or len(pieces) < 2):
+        raise ValueError("REORDER requires at least two sentences or paragraphs")
+    return ScopePlan(rubric=selection.rubric, goal=selection.goal, scope=selection.scope,
+        action=selection.action,
+        target=ResolvedTarget(start=start, end=end, text=text[start:end], insertion_at=insertion_at,
+                              pieces=pieces if selection.action == "REORDER" else []),
+        preserve=[catalog[key]["text"] for key in dict.fromkeys(selection.preserve_ids)],
+        evidence=[Evidence(**evidence[key]) for key in dict.fromkeys(selection.evidence_ids)],
+        minimal_scope_reason=selection.minimal_scope_reason)
+
+
+def plan_scoped(question, text, diagnosis, profile, history, *, llm, prompt,
+                allow_document_rewrite=False):
+    scores = diagnosis["scores"]
+    if set(scores) != set(RUBRICS) or any(type(v) is not int or not 1 <= v <= 9 for v in scores.values()):
+        raise ValueError("Planner requires the eight native integer Kanana scores")
+    ranked = sorted(RUBRICS, key=lambda key: scores[key])
+
+    def validate(response):
+        if response.plan is not None:
+            resolve_scope_plan(response.plan, question, text, profile,
+                               allow_document_rewrite=allow_document_rewrite)
+
+    response = llm.request(ScopePlanResponse, prompt, {
+        "question": question, "draft": text, "rubric_priority": ranked,
+        "rubric_feedback": diagnosis["feedback"], "targets": target_catalog(text, profile),
+        "source_evidence": evidence_catalog(question, profile), "previous_attempts": history,
+        "allow_document_rewrite": allow_document_rewrite,
+    }, role="planner", retries=0, validate=validate)
+    plan = (resolve_scope_plan(response.plan, question, text, profile,
+                               allow_document_rewrite=allow_document_rewrite)
+            if response.plan is not None else None)
+    return plan, response.reason

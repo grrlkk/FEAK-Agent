@@ -8,7 +8,7 @@ from feak_tc.runtime.openai import CallBudgetExceeded
 from .change_info import surface_diff
 from .llm import JSONFailure
 from .reviser import hard_checks
-from .schemas import CONDITIONS, GlobalJudgment, UnitJudgment
+from .schemas import CONDITIONS, GlobalJudgment, UnitJudgment, ScopeJudgment
 
 REQUIREMENTS = {
     "goal": "목표의 정당성과 개선",
@@ -107,3 +107,29 @@ def judge_pair(pair_id, question, before, after, goal, units, spelling, *, llm,
         result["accept"] = acceptance(result)
         results[condition] = result
     return results
+
+
+LOOP_REQUIREMENTS = ("goal", "selectivity", "preservation", "korean_consistency")
+
+
+def judge_scoped(question, before, after, plan, diff, korean_changes, *, llm, prompt,
+                 hard_ok=True, hard_reasons=None):
+    reasons = list(hard_reasons or [])
+    result = {key: "unknown" for key in LOOP_REQUIREMENTS}
+    result.update(issues=[], errors=[], hard_ok=hard_ok, hard_reasons=reasons, accept=False)
+    if not hard_ok:
+        result["skipped"] = "action_or_source_constraint"
+        return result
+    try:
+        response = llm.request(ScopeJudgment, prompt, {
+            "question": question, "before": before, "after": after,
+            "plan": plan.model_dump(), "diff": diff, "korean_changes": korean_changes,
+        }, role="rv", retries=2,
+            validate=lambda output: _validate_quotes(output.issues, before, after,
+                                                     ("before_quote", "after_quote")))
+        result.update(response.model_dump())
+        result["accept"] = all(result[key] == "pass" for key in LOOP_REQUIREMENTS)
+    except JSONFailure as exc:
+        result["errors"].append({"stage": "rv", "error_type": type(exc).__name__})
+    # Budget exhaustion is handled by the loop, which retains the last accepted state.
+    return result

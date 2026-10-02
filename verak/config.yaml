@@ -1,4 +1,8 @@
-version: verak-p1-20260929
+version: verak-scope-loop-20261002
+mode: loop
+loop:
+  max_steps: 5
+  allow_document_rewrite: false
 models:
   scorer:
     package_path: /home/chanwoo/essay_scoring_llm
