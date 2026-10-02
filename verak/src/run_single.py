@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import yaml
 
 from .analyzer import Analyzer, BareunBackend
-from .change_info import extract, surface_diff, changed_korean_info
+from .change_info import extract, surface_diff, edit_verification_info
 from .diagnoser import Diagnoser, LocalKanana, set_goal, plan_scoped
 from .judge import judge_pair, judge_scoped, LOOP_REQUIREMENTS
 from .llm import LLM
@@ -178,7 +178,7 @@ def process_loop(sample, *, analyzer, diagnoser, generator, judge_llm, config, p
 
     for number in range(1, settings["max_steps"] + 1):
         row = {"step": number, "question": question, "current_text": current, "planner": None, "candidate_text": None,
-               "edit": None, "diff": [], "korean_changes": None, "rv": None,
+               "edit": None, "diff": [], "korean_changes": None, "edit_verification": None, "rv": None,
                "kanana_before": diagnosis, "kanana_candidate": None,
                "scores_before": diagnosis["scores"], "scores_candidate": None,
                "decision": "REJECT", "errors": []}
@@ -213,15 +213,17 @@ def process_loop(sample, *, analyzer, diagnoser, generator, judge_llm, config, p
                 config["anonymization_pattern"], sample.get("constraints", []))
             if candidate != current and candidate in seen_texts:
                 hard_ok, reasons = False, [*reasons, "previously_accepted_state"]
-            candidate_profile, korean_changes = None, {}
+            candidate_profile = None
             if hard_ok:
                 active_stage = "barun_candidate"
                 candidate_profile = analyzer.profile(candidate)
-                korean_changes = changed_korean_info(profile, candidate_profile, diff)
-            row["korean_changes"] = korean_changes
+            verification = edit_verification_info(current, candidate, plan, profile, candidate_profile)
+            row['edit_verification'] = verification
+            row['korean_changes'] = {e['id']: e['transitions'] for e in verification['edits']}
             active_stage = "rv"
-            rv = judge_scoped(question, current, candidate, plan, diff, korean_changes,
-                llm=judge_llm, prompt=prompts["rv_loop"], hard_ok=hard_ok, hard_reasons=reasons)
+            rv = judge_scoped(question, current, candidate, plan, diff, verification,
+                llm=judge_llm, prompt=prompts["rv_loop"], hard_ok=hard_ok, hard_reasons=reasons,
+                planned_edit=edit, allow_document_rewrite=allow_rewrite)
             row["rv"] = rv
             # Adoption is determined BEFORE post-revision scoring. Scores cannot override the RV.
             if rv["accept"]:
@@ -442,7 +444,18 @@ def render_loop_summary(results, report):
                           f"    전: {edit['before_text']}", f"    후: {edit['after_text']}", ""]
             rv = step.get("rv")
             if rv:
-                lines += ["판정: " + ", ".join(f"{key}={rv[key]}" for key in LOOP_REQUIREMENTS), ""]
+                verification = step.get('edit_verification') or {}
+                lines += [f"RV: {rv.get('verifier', 'legacy')} / {rv.get('verdict', '')}",
+                          f"변경 개수: {verification.get('edit_count', '')} / 분량 검사: {verification.get('counts', {})}", ""]
+                for edit in verification.get('edits', []):
+                    lines += [f"{edit['id']} {edit['operation']} {edit['before_span']} → {edit['after_span']}",
+                              f"    전: {edit['before_text']}", f"    후: {edit['after_text']}",
+                              f"    형태소 변화: {edit['transitions']}"]
+                for verdict in rv.get('edits', []):
+                    lines += [f"{verdict['edit_id']} → {verdict['verdict']}: {verdict['reason']}",
+                              "    " + ', '.join(f"{key}={verdict[key]}" for key in
+                              ('necessity', 'preservation', 'groundedness', 'meaning', 'korean_consistency'))]
+                lines += ["집계: " + ", ".join(f"{key}={rv[key]}" for key in LOOP_REQUIREMENTS), ""]
                 lines += [f"- {issue['requirement']}: {issue['reason']}" for issue in rv["issues"]]
                 lines += [f"- 기계 제약: {reason}" for reason in rv["hard_reasons"]]
             lines += ["", f"수정 전 점수: {step['scores_before']}",
