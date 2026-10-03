@@ -14,7 +14,8 @@ from verak.src.judge import judge_scoped
 from verak.src.reviser import apply_scoped_edit, hard_checks
 from verak.src.run_single import process_loop, render_loop_summary, load_config
 from verak.src.schemas import (Profile, Sentence, Token, RUBRICS, ScopePlanSelection,
-                               TargetSelection, ScopePlanResponse, Replacement, ScopeJudgment)
+                               TargetSelection, ScopePlanResponse, Replacement, EditJudgments,
+                               EditJudgment, EditIssue)
 
 
 class AnalysisFixture:
@@ -53,8 +54,11 @@ def resolve(text, draft=None, **kwargs):
 
 
 def verdict(label="pass"):
-    return ScopeJudgment(goal="pass", selectivity="pass", preservation=label,
-                         korean_consistency="pass", issues=[])
+    issues = [] if label == 'pass' else [EditIssue(requirement='preservation',
+        before_quote='', after_quote='', reason='기존 주장 보존을 확인하지 못함')]
+    return EditJudgments(edits=[EditJudgment(edit_id='E1', necessity='pass',
+        preservation=label, groundedness='pass', meaning='pass', korean_consistency='pass',
+        reason='개별 변경의 목표 기여와 근거를 확인', issues=issues)])
 
 
 def test_add_inserts_only_and_preserves_every_original_character():
@@ -211,7 +215,8 @@ def test_rejection_keeps_state_then_different_plan_adopts_then_stops():
     for role, payload in llm.calls:
         if role == "rv":
             assert payload["question"] == "발표에 대해 쓰시오"
-            assert set(payload) == {"question", "before", "after", "plan", "diff", "korean_changes"}
+            assert set(payload) == {"question", "plan", "edits", "edit_count", "raw_diff_count", "budget"}
+            assert 'before' not in payload and 'after' not in payload
             assert "profile" not in payload and "scores" not in payload and "previous_attempts" not in payload
     assert rows == [{"sample_id": "case", **r} for r in result["trajectory"]]
 
@@ -289,11 +294,9 @@ def test_new_four_criteria_and_summary_do_not_invent_p1_acceptance_results():
 
 
 def test_rv_quote_validation_does_not_accept_fabricated_evidence():
-    from verak.src.schemas import ScopeIssue
     before, after = "학생들이가 발표했다. 뒤다.", "학생들이 발표했다. 뒤다."
-    bad = verdict()
-    bad.issues = [ScopeIssue(requirement="preservation", location="문장", before_quote="없는 인용",
-                            after_quote="", reason="검증되지 않은 근거")]
+    bad = verdict('fail')
+    bad.edits[0].issues[0].before_quote = '없는 인용'
     llm = ScriptedLLM(judgments=[bad])
     with pytest.raises(ValueError, match="quote"):
         judge_scoped("문항", before, after, resolve(before), surface_diff(before, after), {},

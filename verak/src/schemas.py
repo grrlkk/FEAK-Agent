@@ -177,6 +177,31 @@ class ScopeJudgment(Strict):
     issues: list[ScopeIssue]
 
 
+EditRequirement = Literal["necessity", "preservation", "groundedness", "meaning", "korean_consistency"]
+
+
+class EditIssue(Strict):
+    requirement: EditRequirement
+    before_quote: str
+    after_quote: str
+    reason: str = Field(min_length=1)
+
+
+class EditJudgment(Strict):
+    edit_id: str = Field(min_length=1)
+    necessity: Label
+    preservation: Label
+    groundedness: Label
+    meaning: Label
+    korean_consistency: Label
+    reason: str = Field(min_length=1)
+    issues: list[EditIssue]
+
+
+class EditJudgments(Strict):
+    edits: list[EditJudgment] = Field(min_length=1)
+
+
 @dataclass
 class Token:
     form: str

@@ -5,10 +5,10 @@ import json
 
 from feak_tc.runtime.openai import CallBudgetExceeded
 
-from .change_info import surface_diff
+from .change_info import surface_diff, edit_verification_info
 from .llm import JSONFailure
-from .reviser import hard_checks
-from .schemas import CONDITIONS, GlobalJudgment, UnitJudgment, ScopeJudgment
+from .reviser import hard_checks, apply_scoped_edit
+from .schemas import CONDITIONS, GlobalJudgment, UnitJudgment, EditJudgments
 
 REQUIREMENTS = {
     "goal": "목표의 정당성과 개선",
@@ -110,25 +110,100 @@ def judge_pair(pair_id, question, before, after, goal, units, spelling, *, llm,
 
 
 LOOP_REQUIREMENTS = ("goal", "selectivity", "preservation", "korean_consistency")
+EDIT_REQUIREMENTS = ("necessity", "preservation", "groundedness", "meaning", "korean_consistency")
 
 
-def judge_scoped(question, before, after, plan, diff, korean_changes, *, llm, prompt,
-                 hard_ok=True, hard_reasons=None):
+def _aggregate(labels):
+    values = list(labels)
+    return 'fail' if 'fail' in values else 'unknown' if not values or 'unknown' in values else 'pass'
+
+
+def _validate_edit_judgments(response, edits):
+    expected = {edit['id']: edit for edit in edits}
+    ids = [item.edit_id for item in response.edits]
+    if len(ids) != len(set(ids)) or set(ids) != set(expected):
+        raise ValueError('RV must judge every edit exactly once, without invented IDs')
+    for item in response.edits:
+        edit = expected[item.edit_id]
+        texts = [edit['context'][side]['text'] for side in ('before', 'after')]
+        _validate_quotes(item.issues, *texts, ('before_quote', 'after_quote'))
+        covered = {issue.requirement for issue in item.issues}
+        for requirement in EDIT_REQUIREMENTS:
+            if getattr(item, requirement) != 'pass' and requirement not in covered:
+                raise ValueError('Every FAIL/UNKNOWN needs edit-specific evidence and a reason')
+        if any(getattr(item, issue.requirement) == 'pass' for issue in item.issues):
+            raise ValueError('Issue contradicts its PASS label')
+        if not item.reason.strip() or any(not issue.reason.strip() for issue in item.issues):
+            raise ValueError('Edit verdict needs a nonblank reason')
+
+
+def judge_scoped(question, before, after, plan, diff, verification, *, llm, prompt,
+                 hard_ok=True, hard_reasons=None, planned_edit=None, allow_document_rewrite=False):
+    """Batch independent edit verdicts; aggregate them exclusively in code."""
     reasons = list(hard_reasons or [])
+    _, source_reasons = hard_checks(before, after, plan)
+    reasons.extend(source_reasons)
+    if plan.action == 'DELETE' and after != before[:plan.target.start] + before[plan.target.end:]:
+        reasons.append('delete_added_or_replaced_content')
+    if planned_edit is not None:
+        try:
+            if apply_scoped_edit(before, plan, planned_edit,
+                                 allow_document_rewrite=allow_document_rewrite) != after:
+                reasons.append('candidate_does_not_match_planned_edit')
+        except (KeyError, ValueError):
+            reasons.append('invalid_action_edit')
+    if 'edits' not in verification:
+        verification = edit_verification_info(before, after, plan, None, None)
+    if diff != surface_diff(before, after):
+        reasons.append('diff_does_not_match_texts')
+    reasons.extend(verification['hard_reasons'])
+    reasons = list(dict.fromkeys(reasons))
+    hard_ok = hard_ok and not reasons
     result = {key: "unknown" for key in LOOP_REQUIREMENTS}
-    result.update(issues=[], errors=[], hard_ok=hard_ok, hard_reasons=reasons, accept=False)
+    result.update(issues=[], errors=[], hard_ok=hard_ok, hard_reasons=reasons, accept=False,
+                  verifier='edit_level_v1', verdict='unknown', edits=[],
+                  edit_count=verification['edit_count'], mechanical_checks={
+                      key: verification[key] for key in ('counts', 'budget', 'style_checks')})
     if not hard_ok:
-        result["skipped"] = "action_or_source_constraint"
+        result.update(verdict='fail', skipped='mechanical_constraint')
+        result['selectivity'] = 'fail'
+        if 'speech_level_changed' in reasons:
+            result['korean_consistency'] = 'fail'
+        return result
+    if not verification['edits']:
+        result.update(verdict='fail', hard_ok=False, hard_reasons=['no_detected_edits'], skipped='mechanical_constraint')
         return result
     try:
-        response = llm.request(ScopeJudgment, prompt, {
-            "question": question, "before": before, "after": after,
-            "plan": plan.model_dump(), "diff": diff, "korean_changes": korean_changes,
+        # Neither complete before/after essays nor a flattened morphological
+        # fragment list is sent. Only bounded contexts accompany each edit.
+        contract = plan.model_dump()
+        contract['target'].pop('text')
+        contract['target'].pop('pieces')
+        response = llm.request(EditJudgments, prompt, {
+            'question': question, 'plan': contract, 'edits': verification['edits'],
+            'edit_count': verification['edit_count'], 'raw_diff_count': verification['raw_diff_count'],
+            'budget': verification['budget'],
         }, role="rv", retries=2,
-            validate=lambda output: _validate_quotes(output.issues, before, after,
-                                                     ("before_quote", "after_quote")))
-        result.update(response.model_dump())
-        result["accept"] = all(result[key] == "pass" for key in LOOP_REQUIREMENTS)
+            validate=lambda output: _validate_edit_judgments(output, verification['edits']))
+        # Keep the prior four keys as derived summaries for the unchanged
+        # Planner/history interface, never as an LLM essay-level judgment.
+        judgments = {item.edit_id: item for item in response.edits}
+        for edit in verification['edits']:
+            item = judgments[edit['id']]
+            row = item.model_dump()
+            row['verdict'] = _aggregate(getattr(item, key) for key in EDIT_REQUIREMENTS)
+            result['edits'].append(row)
+            for issue in item.issues:
+                requirement = {'necessity': 'selectivity', 'groundedness': 'preservation',
+                               'meaning': 'preservation'}.get(issue.requirement, issue.requirement)
+                result['issues'].append({**issue.model_dump(), 'requirement': requirement,
+                                         'edit_requirement': issue.requirement, 'location': item.edit_id})
+        result['goal'] = result['selectivity'] = _aggregate(item.necessity for item in response.edits)
+        result['preservation'] = _aggregate(getattr(item, key) for item in response.edits
+                                            for key in ('preservation', 'groundedness', 'meaning'))
+        result['korean_consistency'] = _aggregate(item.korean_consistency for item in response.edits)
+        result['verdict'] = _aggregate(item['verdict'] for item in result['edits'])
+        result['accept'] = result['verdict'] == 'pass'
     except JSONFailure as exc:
         result["errors"].append({"stage": "rv", "error_type": type(exc).__name__})
     # Budget exhaustion is handled by the loop, which retains the last accepted state.
