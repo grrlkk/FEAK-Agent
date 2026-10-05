@@ -9,6 +9,7 @@ from threading import local
 from .common import file_sha, read_json, sha_text, write_json
 from .data_policy import load_examples, stratified_sample
 from .ko import KoreanStructure, annotate, render
+from .ko.structural import annotate_structural
 from .ko.annotation import LEXICONS, read_lexicons
 from .phase2 import restore_profile
 
@@ -18,7 +19,8 @@ def view_fingerprint(config):
     files = sorted(ko.glob("*.py")) + sorted(LEXICONS.glob("*.yaml"))
     return sha_text(json.dumps({"files": {str(path.relative_to(ko)): file_sha(path) for path in files},
                                "tokenizer": file_sha(config["paths"]["policy_base"] / "tokenizer.json"),
-                               "view": config["view"], "budget": config["view_token_budget"]}, sort_keys=True))
+                               "view": config["view"], "budget": config["view_token_budget"],
+                               "structure_mode": config.get("structure_policy", {}).get("mode", "legacy")}, sort_keys=True))
 
 
 def percentiles(values):
@@ -83,7 +85,9 @@ def prepare_views(config, workers=4, *, output=None, cache_dir=None, frozen_revi
             profile = state.ko.analyzer.profile(example.text)
             write_json(path, {"essay_hash": example.essay_hash, "profile": profile.to_dict()})
             state.ko.analyzer.cache.clear()
-        return annotate(example.text, profile, lexicons)
+        reader = (annotate_structural if config.get("structure_policy", {}).get("mode") == "structural_dependency"
+                  else annotate)
+        return reader(example.text, profile, lexicons)
 
     def measure(job):
         split, example = job

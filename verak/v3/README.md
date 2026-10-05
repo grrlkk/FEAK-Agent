@@ -1,4 +1,9 @@
-# VERAK v3 — Phase 1 / 1b / 2
+# VERAK v3 — through Phase 2c
+
+현재 활성 구조는 아래 **Phase 2c** 절의 `StructuralAnalyzer` / `annotate_structural`이다.
+Phase 2/2b의 `KoreanStructure`, `annotate`, REF/TOPIC 규칙과 검증 프롬프트는 과거 결과
+재현·디버깅 전용으로 보존한다. 새 데이터 준비는 config의 `structural_dependency` 모드로
+DEP와 coarse 관계를 사용한다. Phase 3 이후 연산자·복원·학습은 아직 시작하지 않았다.
 
 Phase 1과 1b의 데이터·채점·노이즈 보정에 Phase 2의 바른 기반 한국어 구조,
 렌더링, EC 검증 도구를 추가한다. 단계별 실측 결과와 한계는 로컬 Phase 2 보고서에 기록한다.
@@ -234,3 +239,59 @@ HIGH/LOW 등급은 모델에 보여주지 않는다. `human_ok`는 비워 둔다
 SENTENCE HIGH 선행사 70% 및 문두 관계 85%, TEXT 문체 90%다. LOW는 진단용이다.
 검증 항목의 표본 구성과 문맥 길이가 다르므로 세 수준의 단순 순위나 일반 정확도로
 해석하지 않는다. 결정과 잔여 문제는 로컬 `imple/reports/V3_PHASE_2b.md`를 확인한다.
+
+## Phase 2c: 구조적 의존성과 거친 관계
+
+`ko.StructuralAnalyzer.from_config(config).analyze(text)` 또는 캐시용
+`ko.annotate_structural(text, profile)`을 사용한다. `sentence_ids`를 전달하면 문장 이동
+후에도 같은 ID를 보존한다. 이 인터페이스에는 선행사 정체성에 관한 활성 필드/연결이 없다.
+`include_debug=True`와 `to_dict(include_debug=True)`를 모두 명시한 경우에만 과거 분석이
+`debug.phase2b_antecedents_debug_only` 아래에 나온다. judge나 compact 뷰에는 넣지 않는다.
+
+- WORD: CONDITION / CAUSE / ADVERSATIVE / PURPOSE. 대조와 양보를 합친다. AUX,
+  고정 표현, 허가 구성은 제외하며 같은 coarse class 안의 교환을 허용하지 않는다.
+  `-기 때문에`는 EC로 위장하지 않고 ETN+NNB+JKB construction으로 보존한다.
+  기존 주절 polarity/modality 패턴은 그대로 사용한다.
+- SENTENCE: NP+이/가/은/는/도, 익명화 표지, 지시·대명사를 보존한다. ETM 필터를 쓰지 않는다.
+  생략이 불확실하면 `subject_omitted=false`, `omission_uncertain=true`다. 내포 명사구가
+  있으면 주절 생략을 놓칠 수 있는 보수적 관측이며 완전한 구문 분석이라고 주장하지 않는다.
+  `predecessor_id`는 문서 순서상 직전 문장이다. 문단 경계에서는 `cross_paragraph=true`,
+  문서 첫 문장은 predecessor가 null이고 뷰에서는 START다. 생략 문장마다 DEP를 만든다.
+  `dependency_changes(source, current)`는 stable ID를 비교해 직전 문장 변경 사실만 알린다.
+  특정 인물이 선행사라거나 연결이 깨졌다고 단정하지 않는다.
+- SENTENCE의 문두 접속어는 사용자 지정 17개 표현의 5개 coarse class만 검증용 REL에 쓴다.
+  사전의 나머지 접속어는 `?관찰용`으로 표시하며 관계 복원에 쓰지 않는다.
+- TEXT: 인용·내포 EF를 제외한 마지막 주절 EF의 문체만 사용한다. 모호한 -ㄹ까/-니는
+  앞 문장 최종 문체가 해/한다일 때 이를 사용하고, 불명확하면 unknown이다.
+  EF가 여러 개라는 `multi_unit`은 별도 플래그이며 문체 판정에 섞지 않는다.
+  대표 문체는 알려진 문장 문체의 최빈값(동률은 unknown), off-style은 그와 다른 확정 문체다.
+
+수준별 가중치는 모두 1이다. 후속 corruption의 대상은 계속 비복수 단위에 한정한다.
+**Phase 4 복원 계약만 기록**했다: 원래 predecessor를 되돌리거나 명시 주어를 넣으면 DEP 복원이다.
+아직 Phase 3 연산자, Phase 4 reward/recovery 실행기, Phase 5 환경을 구현하지 않는다.
+초점조사·관찰용 접속어는 이번 검증 gate의 성공 항목으로 취급하지 않는다.
+
+```bash
+python -m verak.v3.cli.prepare_phase2c --workers 4
+python -m verak.v3.cli.judge_phase2c --stage pilot --max-api-calls 470 --workers 4
+# 체크당 5개 × 2회 = 40회 파일럿의 예상 총비용이 $10 미만일 때만:
+python -m verak.v3.cli.judge_phase2c --stage remaining --max-api-calls 470 --workers 4
+python -m pytest -q tests verak/tests verak/v3/tests
+```
+
+seed 31로 생략 80(각 bool 40), 닫힌 집합 접속어 40(문단 첫 문장 10), coarse EC 50,
+문체 60(15편×4, 내포 의문/인용 포함 최소 15) 문장을 고정한다. 이전 EC/Phase 2b 표본과
+새 네 검증 사이의 문장 중복을 금지한다. 문맥은 문단 경계를 포함해 직전 두 문장이다.
+문체에는 대표 문체도 제공한다. 새 데이터는 `data/structure_check_phase2c.jsonl`,
+검증·렌더링·비용 기록은 `outputs/phase2c/`에 로컬로 저장한다.
+
+`phase2c_judge`만 gpt-6.1-sol/high이며 기존 teacher/EC/Phase 2b 모델 설정은 유지한다.
+두 실행은 파일럿을 포함한 **470회 공유 장부**를 쓴다. 정상 완료에는 460회가 필요하며,
+SDK 재시도는 없고 실패도 예약 횟수에 포함한다. 키는 프로세스 환경변수에서만 읽는다.
+두 요청은 같은 prompt hash를 사용하고 상대 응답을 받지 않는다. 모든 `human_ok`는 null이다.
+비용은 input $2/M, output $10/M으로 계산하고 reasoning을 output에 중복 가산하지 않는다.
+
+gate는 WORD coarse 관계 85%, SENTENCE 생략 90% 및 접속 관계 85%, TEXT 문체 90%다.
+**LLM-verified 양쪽 true 비율**이며 사람 정확도가 아니다. 생략 주어의 referent_type은
+진단 분포로만 보고하고 gate에 넣지 않는다. 두 bool의 일치율과 이 진단 분류의 일치율은
+따로 보고한다. 결과와 남은 한계는 로컬 `imple/reports/V3_PHASE_2c.md`에 기록한다.

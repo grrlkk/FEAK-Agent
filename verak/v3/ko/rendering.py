@@ -90,6 +90,9 @@ def compact_flags(ann, structure):
 
 
 def render(structure, *, compact=True, max_line_chars=200):
+    if getattr(structure, "schema_version", None) == "phase2c_structural":
+        from .structural_rendering import render_structural
+        return render_structural(structure, compact=compact, max_line_chars=max_line_chars)
     lines = [f"[주문체:{structure.dominant_style}]"] if compact else []
     paragraph = None
     for ann in structure.annotations:
