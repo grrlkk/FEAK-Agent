@@ -1,4 +1,4 @@
-version: verak-v3-phase1
+version: verak-v3-phase1b
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -17,9 +17,29 @@ scorer:
   load_in_4bit: true
   seed: 42
   cache: true
+  average_k: 1
+  average_seed: 13
 teacher:
   model: gpt-5-mini
   reasoning_effort: low
   phase_api_ceiling: 700
   max_output_tokens: 4096
   timeout_s: 90
+reward:
+  quality:
+    enabled_from_phase: 4
+    scorer_method: score_averaged
+    average_k_key: scorer.average_k
+    noise_floor: 0.5294307612337095
+    noise_floor_file: verak/v3/data/scorer_noise_averaged.json
+    noise_floor_scope: overall_paraphrase_for_selected_k
+    dead_zone: true
+    divisor: 2.0
+    clip: false
+    formula: "sign(delta_q) * max(0, abs(delta_q) - noise_floor) / 2"
+check:
+  enabled_from_phase: 5
+  quality_source: score_averaged
+  average_k_key: scorer.average_k
+  show_noise_floor: true
+  noise_floor_key: reward.quality.noise_floor

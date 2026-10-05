@@ -12,8 +12,10 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import time
 
 from ..common import file_sha, pair_key, read_json, sha_text
+from .averaging import AveragedScoreResult, average_prefix, whitespace_probes
 
 SYSTEM_PROMPT = (
     "에세이 채점기. 8개 루브릭(과제충실성, 설명명료성, 설명구체성, 설명적절성, "
@@ -121,7 +123,10 @@ class KananaScorer:
                 raise ValueError("Scorer tokenizer does not match the approved digit IDs")
         self.model.eval()
         fingerprints = {"version": SCORER_VERSION, "system": SYSTEM_PROMPT,
-            "settings": config["scorer"], "base": str(paths["policy_base"]),
+            # Averaging changes the caller's aggregation, not an individual score.
+            "settings": {k: v for k, v in config["scorer"].items()
+                         if k not in ("average_k", "average_seed")},
+            "base": str(paths["policy_base"]),
             "adapter": str(paths["scorer_adapter"])}
         for name, path in (("adapter_weights", paths["scorer_adapter"] / "adapter_model.safetensors"),
                            ("adapter_config", paths["scorer_adapter"] / "adapter_config.json"),
@@ -191,6 +196,24 @@ class KananaScorer:
         if self.cache:
             self.cache.put(result)
         return result
+
+    def score_averaged(self, question, text, k=None, *, use_cache=True):
+        k = self.config["scorer"].get("average_k", 1) if k is None else k
+        seed = self.config["scorer"].get("average_seed", 13)
+        started = time.perf_counter()
+        probes = whitespace_probes(text, k, seed=seed)
+        # Reject the whole request before inference if any component is too long.
+        for probe in probes:
+            self.input_tokens(question, probe.text)
+        members, seconds = [], []
+        for probe in probes:
+            before = time.perf_counter()
+            result = self.score(question, probe.text, use_cache=use_cache)
+            seconds.append(time.perf_counter() - before)
+            members.append(result.to_dict())
+        return AveragedScoreResult(average_prefix(members, k), members[0]["genre"],
+            k, seed, [probe.position for probe in probes], members, seconds,
+            time.perf_counter() - started)
 
     def close(self):
         if self.cache:
