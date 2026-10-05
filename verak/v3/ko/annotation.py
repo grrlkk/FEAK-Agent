@@ -8,13 +8,11 @@ import yaml
 
 from verak.src.analyzer import Analyzer, BareunBackend
 from .patterns import predicate_features
-from .types import Annotation, AnteInfo, ConjInfo, ConnInfo, Edge, Structure, SubjInfo
+from .types import Annotation, AnteInfo, ConjInfo, Edge, Structure, SubjInfo
+from .subjects import subject_candidates
+from .word_text import connectives as read_connectives, ending_styles, focus_particles
 
 LEXICONS = Path(__file__).with_name("lexicons")
-STYLES = {"해라체": "한다", "하십시오체": "합니다", "해요체": "해요", "해체": "해"}
-RELATIONS = {"원인": "CAUSE", "순서": "SEQUENCE", "나열": "ADDITION", "대조": "CONTRAST",
-             "양보": "CONCESSION", "조건": "CONDITION", "발견": "DISCOVERY",
-             "배경": "BACKGROUND", "목적": "PURPOSE", "동시": "SIMULTANEOUS"}
 
 
 def read_lexicons():
@@ -26,38 +24,10 @@ def initial_conjunction(text, lexicon):
     # Longest-first, whole phrase matching; 그래서인지 must not match 그래서.
     text = text.lstrip(' \t\"\'“‘([{')
     for form in sorted(lexicon, key=lambda value: (-len(value), value)):
-        pattern = r"\s+".join(re.escape(part) for part in form.split())
+        pattern = r"\s*".join(re.escape(part) for part in form.split())
         if re.match(pattern + r"(?=$|\s|[,，:;])", text):
             return ConjInfo(form, lexicon[form])
     return None
-
-
-def subject_candidates(sentence):
-    result = []
-    for candidate in sentence.subjects:  # Reuse v2's JKS / topic NP boundaries.
-        start, end = candidate["span"]
-        # The legacy NP walk stops at XPN. Keep an attached lexical prefix:
-        # 불/XPN + 평등/NNG must never be normalized to the opposite concept 평등.
-        prefixes = [token for token in sentence.tokens if token.tag == "XPN" and token.end == start]
-        if prefixes:
-            start = prefixes[-1].start
-        nouns = [token for token in sentence.tokens if start <= token.start < end and
-                 token.tag in {"NNG", "NNP", "NNB", "NP", "NR", "XPN"}]
-        if not nouns:
-            continue
-        surface = sentence.text[start - sentence.start:end - sentence.start]
-        result.append(SubjInfo(True, surface,
-                              "JKS" if candidate["kind"] == "subject_candidate" else "TOPIC",
-                              "".join(token.form for token in nouns), [start, end]))
-    # Explicit unmarked quantifier subjects are not ellipsis. This is a narrow
-    # syntactic fallback, not a general inference from every sentence-initial noun.
-    if not result:
-        tokens = sentence.tokens
-        if len(tokens) >= 3 and tokens[0].tag in {"NR", "NP"} and tokens[1].form in {"다", "모두"} and tokens[1].tag == "MAG":
-            start, end = tokens[0].start, tokens[1].end
-            result.append(SubjInfo(True, sentence.text[start - sentence.start:end - sentence.start],
-                                  "NONE", tokens[0].form, [start, end]))
-    return result
 
 
 def annotate(text, profile, lexicons=None):
@@ -70,15 +40,11 @@ def annotate(text, profile, lexicons=None):
         if text[sentence.start:sentence.end] != sentence.text:
             raise ValueError("Profile and original source text disagree")
         uncertain = []
-        endings = [token for token in sentence.tokens if token.tag == "EF"]
-        styles = {STYLES[label] for label in lexicons["style"].get(endings[-1].form, [])} if endings else set()
-        style = next(iter(styles)) if len(styles) == 1 else "mixed" if styles else "unknown"
+        style, final_endings = ending_styles(sentence.tokens, lexicons["style"])
         if style in {"unknown", "mixed"}:
             uncertain.append("style")
-        connectives = [ConnInfo(f"M{i + 1}", token.form, [token.start, token.end],
-                               [RELATIONS[label] for label in lexicons["connective"].get(token.form, [])])
-                       for i, token in enumerate(sentence.tokens) if token.tag == "EC"]
-        if any(len(conn.candidates) != 1 for conn in connectives):
+        connectives = read_connectives(sentence.tokens, lexicons["connective"])
+        if any(conn.classification == "AMBIGUOUS" for conn in connectives):
             uncertain.append("connectives")
         candidates = subject_candidates(sentence)
         # Last JKS candidate is nearest the main predicate. Retain *all* candidates
@@ -98,7 +64,8 @@ def annotate(text, profile, lexicons=None):
             topics[-1] if topics else None,
             AnteInfo("realized") if selected.realized else AnteInfo(),
             polarity, modality, sorted(set(uncertain)), sentence.text, sentence.start, sentence.end,
-            sentence.tokens, candidates))
+            sentence.tokens, candidates, len(final_endings) >= 2, final_endings,
+            focus_particles(sentence.tokens)))
 
     edges = []
     narrator = next((ann for ann in annotations if any(
@@ -123,19 +90,25 @@ def annotate(text, profile, lexicons=None):
             if ann.antecedent.status == "resolved":
                 target = ann.antecedent.targets[0]
                 label = ann.antecedent.candidates[0]
-                edges.append(Edge("REF", ann.sid, target, label))
+                earlier = next(value for value in annotations if value.sid == target)
+                confidence = "HIGH" if (len(by_lemma) == 1 and not ann.multi_unit and
+                                         not earlier.multi_unit and len(earlier.subject_candidates) == 1) else "LOW"
+                edges.append(Edge("REF", ann.sid, target, label, confidence))
                 if by_lemma:
                     earlier = next(iter(by_lemma.values()))[0]
                     if earlier.topic == label:
-                        edges.append(Edge("TOPIC", ann.sid, target, label))
+                        edges.append(Edge("TOPIC", ann.sid, target, label, confidence))
         if ann.topic:
             earlier = next((value for value in reversed(annotations[:index])
                             if value.paragraph == ann.paragraph and value.topic == ann.topic), None)
             if earlier:
-                edges.append(Edge("TOPIC", ann.sid, earlier.sid, ann.topic))
+                distinct = {candidate.lemma for value in previous for candidate in value.subject_candidates}
+                confidence = "HIGH" if (earlier in previous and len(distinct) == 1 and
+                    len(ann.subject_candidates) == 1 and not ann.multi_unit and not earlier.multi_unit) else "LOW"
+                edges.append(Edge("TOPIC", ann.sid, earlier.sid, ann.topic, confidence))
         if ann.initial_conj:
             if index:
-                edges.append(Edge("REL", ann.sid, annotations[index - 1].sid, ann.initial_conj.relation))
+                edges.append(Edge("REL", ann.sid, annotations[index - 1].sid, ann.initial_conj.relation, "HIGH"))
             else:
                 ann.uncertain.append("relation_target")
 

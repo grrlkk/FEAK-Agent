@@ -56,13 +56,14 @@ def load_episode_examples(config, split="agent_dev"):
     return filter_episode_examples(load_examples(config, split), index["essays"], config["view_token_budget"])
 
 
-def prepare_views(config, workers=4):
+def prepare_views(config, workers=4, *, output=None, cache_dir=None, frozen_review_path=None):
     if config["view"]["format"] != "compact" or config["view_token_budget"] != 3000:
         raise ValueError("User decision: compact-only, hard budget 3000, no truncation")
     source = {split: load_examples(config, split) for split in ("agent_train", "agent_dev")}
     jobs = [(split, example) for split, examples in source.items() for example in examples]
-    output = config["paths"]["phase2_output"]
-    cache = output / "bareun_profiles"
+    output = output or config["paths"]["phase2_output"]
+    output.mkdir(parents=True, exist_ok=True)
+    cache = cache_dir or output / "bareun_profiles"
     cache.mkdir(parents=True, exist_ok=True)
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(str(config["paths"]["policy_base"]), local_files_only=True)
@@ -125,9 +126,11 @@ def prepare_views(config, workers=4):
         "rows": [row for row in index["essays"].values() if not row["eligible"]]})
 
     eligible_dev = filter_episode_examples(source["agent_dev"], records)
-    frozen_path = output / "preparation.json"
+    frozen_path = frozen_review_path or output / "preparation.json"
     frozen_ids = [item["id"] for item in read_json(frozen_path)["render_review"]] if frozen_path.exists() else []
-    by_id = {example.id: example for example in eligible_dev}
+    by_id = {example.id: example for example in (source["agent_dev"] if frozen_review_path else eligible_dev)}
+    if frozen_review_path and (len(frozen_ids) != 20 or not all(sid in by_id for sid in frozen_ids)):
+        raise ValueError("All twenty original review essays must be re-rendered")
     review_examples = ([by_id[sid] for sid in frozen_ids] if len(frozen_ids) == 20 and all(sid in by_id for sid in frozen_ids)
                        else stratified_sample(eligible_dev, 20, seed=23))
     if sum(example.genre == "논증" for example in review_examples) < 7:
