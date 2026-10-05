@@ -1,6 +1,7 @@
 """Balanced, deterministic curriculum construction with private restoration records."""
 
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 import json
 import random
 
@@ -13,8 +14,21 @@ from .operators import LEVELS, apply, candidates, exact_restoration_satisfies, r
 from .sources import select_sources
 
 
+@dataclass(frozen=True)
+class BuildPolicy:
+    """Versioned candidate policy; the Phase 3 reproduction defaults stay frozen."""
+    operators: tuple = tuple(LEVELS)
+    candidate_factory: object = candidates
+    per_essay: int = 2
+    variant_stride: int = 2
+    episode_prefix: str = ""
+    schema_version: str = "phase3_surface_records_v1"
+    use_vague_cache: bool = True
+
+
 class BuildStats:
-    def __init__(self):
+    def __init__(self, operators=tuple(LEVELS)):
+        self.operators = operators
         self.attempts, self.passed, self.failures = Counter(), Counter(), Counter()
         self.ineligible, self.kept = Counter(), Counter()
 
@@ -23,7 +37,7 @@ class BuildStats:
             "discarded": self.attempts[op]-self.passed[op],
             "verification_rate": self.passed[op]/self.attempts[op] if self.attempts[op] else None,
             "no_eligible_site": self.ineligible[op], "kept_records": self.kept[op]}
-            for op in LEVELS}, "failure_reasons": dict(self.failures)}
+            for op in self.operators}, "failure_reasons": dict(self.failures)}
 
 
 def load_sources(config, split, bank):
@@ -75,7 +89,8 @@ def source_coupled_changes(changes, structure):
 
 
 def build_episode(example, source, score, *, split, episode_id, level, seed, bank,
-                  enabled, donors, vague_cache, stats, level_counts, count_tokens):
+                  enabled, donors, vague_cache, stats, level_counts, count_tokens,
+                  candidate_factory=candidates):
     rng = random.Random(seed)
     source_structure = source.structure()
     globals_n, locals_n = composition(level, rng)
@@ -88,7 +103,7 @@ def build_episode(example, source, score, *, split, episode_id, level, seed, ban
                                      stats.kept[op] + sum(r["op"] == op for r in records), jitter[op]))
         accepted = False
         for op in choices:
-            variants = candidates(doc, op, donors=donors, vague_cache=vague_cache,
+            variants = candidate_factory(doc, op, donors=donors, vague_cache=vague_cache,
                                   question_hash=example.question_hash)
             variants = [p for p in variants if not used.intersection(p.sids)]
             if not variants:
@@ -145,19 +160,19 @@ def build_episode(example, source, score, *, split, episode_id, level, seed, ban
 
 
 def build_dataset(config, split, out, *, seed=13, per_essay=2, levels=("L1", "L2", "L3", "L4"),
-                  disabled=(), bank=None):
-    if per_essay != 2 or not levels or set(levels)-{"L1", "L2", "L3", "L4"}:
-        raise ValueError("Phase 3 requires two variants and known curriculum levels")
+                  disabled=(), bank=None, policy=BuildPolicy()):
+    if per_essay != policy.per_essay or not levels or set(levels)-{"L1", "L2", "L3", "L4"}:
+        raise ValueError("Candidate count or curriculum disagrees with the versioned build policy")
     bank = bank or BareunBank(config)
     sources = load_sources(config, split, bank)
     donors = donor_pool(sources)  # Same split only; a different question is mandatory.
     vague_path = config["paths"]["phase3_output"] / "vague_cache.json"
-    vague = read_json(vague_path) if vague_path.exists() else {}
-    enabled = sorted(set(LEVELS)-set(disabled))
+    vague = read_json(vague_path) if policy.use_vague_cache and vague_path.exists() else {}
+    enabled = sorted(set(policy.operators)-set(disabled))
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(str(config["paths"]["policy_base"]), local_files_only=True)
     count_tokens = lambda text: len(tokenizer.encode(text, add_special_tokens=False))
-    stats, level_counts, rows, exclusions = BuildStats(), Counter(), [], []
+    stats, level_counts, rows, exclusions = BuildStats(policy.operators), Counter(), [], []
     shuffled = list(sources)
     random.Random(seed).shuffle(shuffled)
     for i, (example, source, score) in enumerate(shuffled):
@@ -168,20 +183,22 @@ def build_dataset(config, split, out, *, seed=13, per_essay=2, levels=("L1", "L2
         nearby_donors = nearby_donors[:8]
         pair, hashes = [], set()
         for variant in range(per_essay):
-            requested_level = levels[(i + 2*variant) % len(levels)]
-            episode_id = f"{split}:{example.source_line}:v{variant+1}"
+            requested_level = levels[(i + policy.variant_stride*variant) % len(levels)]
+            episode_id = f"{policy.episode_prefix}{split}:{example.source_line}:v{variant+1}"
             attempts = curriculum_attempts(requested_level, levels)
             for level, retry, fallback in attempts:
                 try:
                     row = build_episode(example, source, score, split=split, episode_id=episode_id,
                         level=level, seed=seed + example.source_line*1000 + variant*100 + retry + fallback*10000000,
                         bank=bank, enabled=enabled, donors=nearby_donors, vague_cache=vague,
-                        stats=stats, level_counts=level_counts, count_tokens=count_tokens)
+                        stats=stats, level_counts=level_counts, count_tokens=count_tokens,
+                        candidate_factory=policy.candidate_factory)
                     if row["corrupted_hash"] in hashes:
                         raise ValueError("Duplicate variants for one source")
                     row["generation_retry"] = retry
                     row["requested_level"] = requested_level
                     row["curriculum_fallback"] = level != requested_level
+                    row["schema_version"] = policy.schema_version
                     pair.append(row)
                     hashes.add(row["corrupted_hash"])
                     break
@@ -189,7 +206,7 @@ def build_dataset(config, split, out, *, seed=13, per_essay=2, levels=("L1", "L2
                     stats.failures[str(error)] += 1
             else:
                 exclusions.append({"source_id": example.id, "requested_level": requested_level,
-                    "reason": "cannot_build_two_complete_distinct_variants", "attempts": len(attempts)})
+                    "reason": f"cannot_build_{per_essay}_complete_distinct_variants", "attempts": len(attempts)})
                 break
         if len(pair) == per_essay:
             rows.extend(pair)
@@ -202,7 +219,7 @@ def build_dataset(config, split, out, *, seed=13, per_essay=2, levels=("L1", "L2
             print(f"Build {split} {i+1}/{len(shuffled)}; episodes={len(rows)}; exclusions={len(exclusions)}", flush=True)
             write_jsonl(out, rows)
             write_json(out.with_suffix(".stats.json"), {**stats.export(), "exclusions": exclusions,
-                "source_essays": len(sources), "kept_sources": len(rows)//2, "episodes": len(rows),
+                "source_essays": len(sources), "kept_sources": len(rows)//per_essay, "episodes": len(rows),
                 "operator_levels": dict(Counter(r["level"] for x in rows for r in x["records"])),
                 "curriculum_levels": dict(Counter(r["level"] for r in rows)), "local_level_counts": dict(level_counts),
                 "genres": dict(Counter(r["genre"] for r in rows)), "disabled": list(disabled),

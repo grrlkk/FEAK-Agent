@@ -1,4 +1,4 @@
-# VERAK v3 — through Phase 3
+# VERAK v3 — Phase 3b instance-filtering pilot
 
 현재 활성 구조는 아래 **Phase 2c** 절의 `StructuralAnalyzer` / `annotate_structural`이다.
 Phase 2/2b의 `KoreanStructure`, `annotate`, REF/TOPIC 규칙과 검증 프롬프트는 과거 결과
@@ -11,7 +11,44 @@ Phase 1과 1b의 데이터·채점·노이즈 보정에 Phase 2의 바른 기반
 기존 `verak/src/`, 프롬프트와 테스트는 바꾸지 않는다. 이후 단계의 수정 에이전트,
 reward, 학습과 최종 평가는 실행하지 않는다.
 
-## Phase 3: surface corruption과 데이터 QC
+## Phase 3b: 개별 변경 필터링 파일럿 (현재)
+
+현재 후보 생성은 `corrupt/instance_policy.py`를 사용한다. `G_VAGUE`,
+`L_TRANSLATIONESE`를 제외한 10개 연산자를 유지하며, 낮은 QC 비율만으로 연산자를
+끄지 않는다. 극성 표는 `수밖에 없다/않을 수 없다` 계열만 사용한다. 비첫 문장을
+삭제하려면 바로 다음 문장이 `이처럼/이러한/이와 같이/따라서/그래서/이 때문에`로
+시작해야 한다. 다음 문장은 문단 경계를 넘을 수 있으며 이 사실을 record에 저장한다.
+나머지 연산자·바른 분석기·복원 계약은 Phase 3과 같다.
+
+기존 1,011개 적격 원천과 저장된 source Q를 재사용해 원천당 후보 세 개를 만든다.
+생성 시 WORD/SENTENCE/TEXT를 균등하게 배정한다. Phase 3 출력·판정·원장은 보존하고
+새 출력은 `outputs/phase3b/`에 저장한다. 기존 Bareun cache는 읽기 전용으로 재사용한다.
+
+seed 41로 두 split과 L1–L4, 모든 연산자를 포함하는 100편만 추출한다.
+층은 `(split, curriculum, 후보에 등장한 가장 드문 연산자)`이며, 층 안에서 비복원
+무작위 추출한다. 추출 확률을 저장해 전체 코퍼스의 잔존 규모·수준별 비중·비용을
+가중 추정한다. 판정 결과를 보고 표본을 바꾸지 않는다.
+
+`gpt-6.1-sol/high`에 기존 Phase 3 QC 프롬프트 그대로 에세이당 한 요청을 보낸다.
+각 record의 `damage_real`과 `original_is_fix`가 모두 true여야 통과하고,
+모든 record가 통과한 에세이만 유지한다. 전체 후보의 추가 판정에는 사용자 승인이
+필요하다. 이 CLI는 고정 100편만 처리하며 재실행으로 이미 판정한 글을 다시 호출하지 않는다.
+
+```bash
+python -m verak.v3.cli.build_corruption_candidates --split both
+python -m verak.v3.cli.verify_corruption_candidates
+python -m verak.v3.cli.filter_corruption_pilot prepare --max-api-calls 0
+python -m verak.v3.cli.filter_corruption_pilot judge --max-api-calls 100 --workers 4
+python -m pytest -q tests verak/tests verak/v3/tests
+```
+
+Phase 3b 요청 전체는 별도 단계의 단일 공유 원장 `phase3b/api_budget.json`에
+호출 직전 기록한다. SDK 자동 재시도는 0이며 실패한 요청도 예산에 포함한다.
+API 원시 출력, usage/cache 토큰, 표본·후보 hash와 프롬프트 hash를 저장한다.
+`pilot_kept.jsonl`도 파일럿 결과일 뿐 최종 학습 코퍼스가 아니다. 모든 후보의
+`q_corrupted`는 null로 유지한다. Phase 4는 시작하지 않는다.
+
+## Phase 3: 이전 연산자 단위 QC (재현 전용)
 
 `corrupt/`는 분석기 규칙을 바꾸지 않는다. WORD/SENTENCE/TEXT를 동등하게 표집하고,
 DEP는 직전 문장 변경이라는 위치 힌트로만 기록한다. 후속 coupled 복원의 상대 가중치

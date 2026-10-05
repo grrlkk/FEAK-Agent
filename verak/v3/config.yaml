@@ -1,4 +1,4 @@
-version: verak-v3-phase3
+version: verak-v3-phase3b-pilot
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -8,6 +8,7 @@ paths:
   phase2b_output: verak/v3/outputs/phase2b
   phase2c_output: verak/v3/outputs/phase2c
   phase3_output: verak/v3/outputs/phase3
+  phase3b_output: verak/v3/outputs/phase3b
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -100,6 +101,19 @@ corruption:
   vague_output_usd_per_million: 2.0
   judge_input_usd_per_million: 2.0
   judge_output_usd_per_million: 10.0
+corruption_pilot:
+  filtering: instance_all_records_pass
+  seed: 13
+  per_essay: 3
+  sample_seed: 41
+  sample_size: 100
+  phase_api_ceiling: 100
+  judge_model: gpt-6.1-sol
+  judge_reasoning_effort: high
+  removed_operators: [L_TRANSLATIONESE, G_VAGUE]
+  local_level_weights: {WORD: 1, SENTENCE: 1, TEXT: 1}
+  score_corrupted: false
+  full_filter_requires_approval: true
 reward:
   quality:
     enabled_from_phase: 4
