@@ -56,21 +56,30 @@ def compact_flags(ann, structure):
     if not ann.subject.realized:
         targets = ",".join(ann.antecedent.targets)
         flags.append("주어∅:" + ann.antecedent.status + ("→" + targets if targets else ""))
-    topics = list(dict.fromkeys(candidate.surface for candidate in ann.subject_candidates
+    topics = list(dict.fromkeys(candidate.surface + (
+                               "@" + candidate.entity_id.rsplit("@", 1)[1] if candidate.entity_id else "")
+                               for candidate in ann.subject_candidates
                                if candidate.marker == "TOPIC"))
     if topics:
         flags.append("화제:" + ",".join(topics))
     if ann.style != structure.dominant_style:
         flags.append("문체:" + ann.style)
-    relations = [f"{conn.token_id}:{conn.form}({','.join(conn.candidates)})"
+    if ann.multi_unit:
+        flags.append("복수종결?")
+    relations = [f"{conn.token_id}:{conn.form}({','.join(conn.candidates)})" +
+                 ("?" if conn.classification == "AMBIGUOUS" else "")
                  for conn in ann.connectives if conn.candidates]
     if relations:
         flags.append("EC:" + ";".join(relations))
     if ann.initial_conj:
         flags.append(f"접속:{ann.initial_conj.form}({ann.initial_conj.relation})")
-    edges = [f"{edge.kind}→{edge.dst}({edge.label})"
+    edges = [f"{edge.kind}→{edge.dst}({edge.label})" + ("?" if edge.confidence == "LOW" else "")
              for edge in structure.edges if edge.src == ann.sid]
     flags.extend(edges)
+    focus = [f"{p['token_id']}:{p['form']}({p['function']})" for p in ann.focus_particles
+             if p["function"] != "TOPIC_CONTRAST"]
+    if focus:
+        flags.append("초점:" + ";".join(focus))
     if ann.polarity != "POS":
         flags.append("극성:" + ann.polarity)
     if ann.modality is not None:

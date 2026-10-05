@@ -1,10 +1,11 @@
-version: verak-v3-phase2
+version: verak-v3-phase2b
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
   metadata: verak/v3/data
   output: verak/v3/outputs/phase1
   phase2_output: verak/v3/outputs/phase2
+  phase2b_output: verak/v3/outputs/phase2b
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -43,6 +44,23 @@ ec_judge:
   input_usd_per_million: 2.0
   output_usd_per_million: 10.0
   projected_cost_limit_usd: 20.0
+structure_judge:
+  model: gpt-6.1-sol
+  reasoning_effort: high
+  phase_api_ceiling: 560
+  max_output_tokens: 4096
+  timeout_s: 180
+  sample_seed: 29
+  pilot_per_check: 5
+  input_usd_per_million: 2.0
+  output_usd_per_million: 10.0
+  projected_cost_limit_usd: 15.0
+structure_policy:
+  level_weights: {WORD: 1, SENTENCE: 1, TEXT: 1}
+  ec_relations: UNAMBIGUOUS_only
+  dependent_edges: HIGH_only
+  exclude_multi_unit_corruption_targets: true
+  phase3_gate_required: true
 reward:
   quality:
     enabled_from_phase: 4

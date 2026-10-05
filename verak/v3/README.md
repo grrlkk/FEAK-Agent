@@ -179,3 +179,58 @@ python -m verak.v3.cli.judge_ec --stage remaining --max-api-calls 220 --workers 
 집계는 LLM-verified로 표기한다. 두 판정의 문장/토큰별 bool 일치율, 필드별 양측 true 비율,
 불일치 문장 ID를 기록하며 자유로운 note 문장의 일치 여부는 세지 않는다.
 실행 현황과 [ASK]는 로컬 `imple/reports/V3_PHASE_2.md`를 확인한다.
+
+## Phase 2b: WORD / SENTENCE / TEXT 동등 검증
+
+세 수준의 가중치는 `structure_policy.level_weights`에 각각 1로 기록한다.
+WORD는 EC 관계·극성/양태·초점조사, SENTENCE는 REF/TOPIC과 문두 REL,
+TEXT는 문장 종결과 글의 대표 문체다. structured output의 `field_levels`와
+`cohesion_change_levels`에 수준을 명시하며, 렌더링에는 수준 이름을 추가하지 않는다.
+여러 수준에 걸친 `uncertain`은 구성 필드마다 수준을 기록한다.
+
+EC 다음 VX(허용 조사 경유 포함)는 AUX이며 관계 후보가 없다. 한 후보 EC는
+UNAMBIGUOUS, 복수/미등재 후보는 AMBIGUOUS다. 문두 접속어에는 띄어쓰기 변형을 허용하되
+접속어 다음 단어까지 붙인 모든 입력을 임의 분리하지 않는다. 어미 사전은 의문형·구어형과
+EF 뒤 요/JX를 지원한다. 한 바른 문장에 EF가 2개 이상이면 `multi_unit=true`이며,
+각 EF의 관측을 저장한다. 서로 다른 EF 문체가 있으면 mixed다. 내포 EF까지 세는 한계는
+검토 보고서에 남기며, 이를 사람 정확도라고 해석하지 않는다.
+
+형식명사·시간/담화 표현 목록과 관형절 규칙으로 주어 후보를 걸러낸다. 익명 표지는
+표면 문자열이 같아도 발생 위치별 개체 ID를 부여한다. 동일인을 추정해 합치지 않는다.
+REF/TOPIC의 HIGH는 단일 후보·같은 문단·앞 2문장·비복수 단위라는 규칙을 만족한 뜻이며,
+의미상 정확성을 보장하지 않는다. LOW는 compact에서 `?`로 표시한다.
+
+후속 사용 계약은 `ko/levels.py`에 둔다. 관계에는 UNAMBIGUOUS EC와 문두 접속어만,
+의존 연결에는 HIGH만, corruption 대상에는 비복수 단위만 허용한다. 실제 Phase 3
+연산자·피드백·복원 학습은 아직 구현하지 않는다. 이 조건을 만족해도 아래 LLM gate를
+통과하지 못한 필드를 후속 연산자로 활성화하면 안 된다. 초점조사의 의미 분류는 이번
+LLM gate의 검증 항목이 아니므로 검증된 필드로 취급하지 않는다.
+
+```bash
+python -m verak.v3.cli.prepare_phase2b --workers 4
+python -m verak.v3.cli.judge_structure --stage pilot --max-api-calls 560 --workers 4
+# 세 수준 각 5개 × 2회 파일럿의 예상 총비용이 $15 미만인 경우에만:
+python -m verak.v3.cli.judge_structure --stage remaining --max-api-calls 560 --workers 4
+```
+
+준비 CLI는 Phase 2 판단 파일·장부·보고서의 SHA-256을 보존하고, 기존 바른 캐시로
+compact 예산 색인을 갱신한다. 같은 20편은 `outputs/phase2b/compact_review/`에 다시 쓴다.
+새 표본은 seed 29로 고정한 `data/structure_check_phase2b.jsonl`이다. 원래 Phase 2
+100문장과 겹치지 않으며 세 검증 사이에도 중복 문장을 두지 않는다.
+
+- WORD 80문장: 관계 후보 포함 40개와 비기본 극성/양태 포함 40개를 중복 없이 추출한다.
+  두 필드가 모두 적용되는 문장은 두 필드를 함께 판정하며, 비적용 필드는 null이다.
+- SENTENCE 120문장: 주어 생략 HIGH REF 60개, LOW REF 20개, 문두 접속어 40개.
+- TEXT 80문장: 의문/구어 종결을 포함하는 20편에서 4개씩 뽑는다. 최소 20개는 해당 종결이다.
+
+judge는 별도 `structure_judge` 설정의 gpt-6.1-sol/high다. 대상 문장과 같은 문단의
+앞 2문장만 공통 문맥으로 제공한다. 두 요청에 동일한 prompt hash를 기록하고 이전 판단이나
+HIGH/LOW 등급은 모델에 보여주지 않는다. `human_ok`는 비워 둔다.
+`outputs/phase2b/api_budget.json`의 **560회는 파일럿을 포함한 두 실행의 공유 한도**다.
+완전 표본에 정확히 560회가 필요하므로 자동 재시도는 없으며, 실패 시 예산을 늘리지 않는다.
+
+`outputs/phase2b/results.json`은 양쪽 true 비율, bool 일치율, 불일치 ID, 토큰/비용,
+필드·수준별 Phase 3 gate를 저장한다. gate는 WORD 관계/극성·양태 각각 85%,
+SENTENCE HIGH 선행사 70% 및 문두 관계 85%, TEXT 문체 90%다. LOW는 진단용이다.
+검증 항목의 표본 구성과 문맥 길이가 다르므로 세 수준의 단순 순위나 일반 정확도로
+해석하지 않는다. 결정과 잔여 문제는 로컬 `imple/reports/V3_PHASE_2b.md`를 확인한다.
