@@ -1,13 +1,19 @@
-version: verak-v3-phase1b
+version: verak-v3-phase2
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
   metadata: verak/v3/data
   output: verak/v3/outputs/phase1
+  phase2_output: verak/v3/outputs/phase2
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
 split: {seed: 13, train_fraction: 0.8}
+view_token_budget: 3000
+view:
+  format: compact
+  full_view_debug_only: true
+  overflow: exclude_essay
 bareun: {host: 127.0.0.1, port: 5656, api_key_env: BAREUN_API_KEY, timeout_s: 30}
 scorer:
   mode: expected
@@ -25,21 +31,38 @@ teacher:
   phase_api_ceiling: 700
   max_output_tokens: 4096
   timeout_s: 90
+ec_judge:
+  model: gpt-6.1-sol  # Confirmed by the account's GET /v1/models on 2026-10-05.
+  reasoning_effort: high
+  phase_api_ceiling: 220
+  max_output_tokens: 8192
+  timeout_s: 180
+  sample_seed: 23
+  sample_size: 100
+  pilot_size: 10
+  input_usd_per_million: 2.0
+  output_usd_per_million: 10.0
+  projected_cost_limit_usd: 20.0
 reward:
   quality:
     enabled_from_phase: 4
-    scorer_method: score_averaged
+    scorer_method: score
     average_k_key: scorer.average_k
     noise_floor: 0.5294307612337095
+    noise_floor_by_genre:
+      설명: 0.71466138
+      논증: 0.21266690
+      정서: 0.52354468
     noise_floor_file: verak/v3/data/scorer_noise_averaged.json
-    noise_floor_scope: overall_paraphrase_for_selected_k
+    noise_floor_scope: genre_paraphrase_k1_with_overall_fallback
     dead_zone: true
     divisor: 2.0
     clip: false
-    formula: "sign(delta_q) * max(0, abs(delta_q) - noise_floor) / 2"
+    formula: "sign(delta_q) * max(0, abs(delta_q) - noise_floor_by_genre.get(genre, noise_floor)) / 2"
 check:
   enabled_from_phase: 5
-  quality_source: score_averaged
+  quality_source: score
   average_k_key: scorer.average_k
   show_noise_floor: true
   noise_floor_key: reward.quality.noise_floor
+  noise_floor_by_genre_key: reward.quality.noise_floor_by_genre

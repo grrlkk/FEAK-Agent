@@ -21,10 +21,11 @@ class StrictResponse(BaseModel):
 
 
 class PhaseBudget:
-    def __init__(self, path, max_api_calls, *, authorized_ceiling=700):
+    def __init__(self, path, max_api_calls, *, authorized_ceiling=700, phase="v3_phase1"):
         if not isinstance(max_api_calls, int) or not 0 <= max_api_calls <= authorized_ceiling:
             raise ValueError("max-api-calls must be between zero and the authorized phase ceiling")
         self.path, self.limit, self.ceiling = Path(path), max_api_calls, authorized_ceiling
+        self.phase = phase
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock_path = self.path.with_suffix(".lock")
 
@@ -36,11 +37,11 @@ class PhaseBudget:
         with self.lock_path.open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             data = read_json(self.path) if self.path.exists() else {
-                "phase": "v3_phase1", "authorized_ceiling": self.ceiling, "reserved_calls": 0}
-            if data["phase"] != "v3_phase1" or data["authorized_ceiling"] != self.ceiling:
+                "phase": self.phase, "authorized_ceiling": self.ceiling, "reserved_calls": 0}
+            if data["phase"] != self.phase or data["authorized_ceiling"] != self.ceiling:
                 raise ValueError("Budget ledger belongs to another phase or authorization")
             if data["reserved_calls"] >= min(self.limit, data["authorized_ceiling"]):
-                raise CallBudgetExceeded("Phase 1 GPT request budget exhausted")
+                raise CallBudgetExceeded(f"{self.phase} GPT request budget exhausted")
             data["reserved_calls"] += 1
             write_json(self.path, data)  # Reserve before any network request, including retries.
             return data["reserved_calls"]
