@@ -26,13 +26,57 @@ def feedback_headings(assistant: str) -> tuple[str, ...]:
     return tuple(sorted(re.findall(r"(?m)^\s*-\s*([^:\n]+):", assistant)))
 
 
-def split_questions(question_hashes, *, seed=13, train_fraction=0.8):
+def split_questions(question_hashes, *, seed=13, train_fraction=0.8, genres=None):
     values = sorted(set(question_hashes))
     if len(values) < 2 or not 0 < train_fraction < 1:
         raise ValueError("Need two or more questions and a fraction in (0, 1)")
-    random.Random(seed).shuffle(values)
-    count = max(1, min(len(values) - 1, round(len(values) * train_fraction)))
-    return {"agent_train": sorted(values[:count]), "agent_dev": sorted(values[count:])}
+    rng = random.Random(seed)
+    groups = {"ALL": values}
+    if genres is not None:
+        if set(values) != set(genres) or not set(genres.values()) <= set(GENRES):
+            raise ValueError("Genre labels must cover every question exactly")
+        groups = {genre: [q for q in values if genres[q] == genre]
+                  for genre in GENRES if genre in genres.values()}
+    train, dev = [], []
+    for group in groups.values():
+        if len(group) < 2:
+            raise ValueError("Need at least two questions in each genre")
+        rng.shuffle(group)
+        count = max(1, min(len(group) - 1, round(len(group) * train_fraction)))
+        train.extend(group[:count])
+        dev.extend(group[count:])
+    return {"agent_train": sorted(train), "agent_dev": sorted(dev)}
+
+
+def resplit_by_genre(config):
+    """Replace the split only, retaining its original bytes; never read train/test."""
+    directory = config["paths"]["metadata"]
+    path, backup = directory / "splits.json", directory / "splits_v1.json"
+    original = read_json(path)
+    examples = load_examples(config, "agent_train") + load_examples(config, "agent_dev")
+    labels = read_json(directory / "genres.json")["questions"]
+    row_counts = Counter(e.question_hash for e in examples)
+    split = split_questions(row_counts, **config["split"],
+                            genres={q: labels[q]["genre"] for q in row_counts})
+    assert_split_integrity(split, row_counts)
+    counts = {name: {"questions": len(values), "essays": sum(row_counts[q] for q in values),
+        "genres_questions": dict(Counter(labels[q]["genre"] for q in values)),
+        "genres_essays": dict(sum((Counter({labels[q]["genre"]: row_counts[q]}) for q in values), Counter()))}
+        for name, values in split.items()}
+    if original.get("method") == "genre_stratified_question":
+        if not backup.exists() or any(original[key] != split[key] for key in split) or original["counts"] != counts:
+            raise ValueError("Existing stratified split or its backup differs")
+        return original
+    if backup.exists() and backup.read_bytes() != path.read_bytes():
+        raise ValueError("Refusing to replace a different splits_v1 backup")
+    if not backup.exists():
+        with backup.open("xb") as handle:
+            handle.write(path.read_bytes())
+    manifest = {**original, **split, **config["split"], "schema_version": 2,
+        "method": "genre_stratified_question", "genre_order": list(GENRES),
+        "previous_split_sha256": file_sha(backup), "counts": counts}
+    write_json(path, manifest)
+    return manifest
 
 
 def assert_split_integrity(splits, all_questions=None):
@@ -90,6 +134,8 @@ def prepare_metadata(config, *, phase0_audit, classify=None):
     """Audit train/test as hashes only; labels and split contents come from valid only."""
     paths = config["paths"]
     directory = paths["metadata"]
+    if (directory / "splits.json").exists() and read_json(directory / "splits.json").get("method") == "genre_stratified_question":
+        raise ValueError("Phase 1b split is already prepared; refusing legacy preparation")
     previous = read_json(phase0_audit)
     train_path = paths["repo"] / "data/data_jsonl/train.jsonl"
     test_path = paths["repo"] / "data/data_jsonl/test.jsonl"
@@ -167,7 +213,10 @@ def prepare_metadata(config, *, phase0_audit, classify=None):
     manifest = {"schema_version": 1, "source": str(paths["valid"]), "source_sha256": valid_sha,
                 "question_hash": "sha256(exact extracted UTF-8 question)", **config["split"],
                 "counts": counts, **split}
-    write_json(directory / "splits.json", manifest)
+    existing_split = directory / "splits.json"
+    if existing_split.exists() and read_json(existing_split) != manifest:
+        raise ValueError("Refusing to replace an existing split; use the explicit resplit CLI")
+    write_json(existing_split, manifest)
     assert_data_tree_clean(directory, deny)
     return manifest
 

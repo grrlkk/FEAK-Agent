@@ -1,6 +1,7 @@
-# VERAK v3 — Phase 1
+# VERAK v3 — Phase 1 / 1b
 
-Phase 1의 데이터 분할, 장르 메타데이터, 점수 전용 Kanana, 노이즈 보정만 구현한다.
+Phase 1과 1b의 데이터 분할, 장르 메타데이터, 점수 전용 Kanana, 노이즈 보정과
+평균 채점 비교를 구현한다.
 기존 `verak/src/`, 프롬프트와 테스트는 바꾸지 않는다. 이후 단계의 수정 에이전트,
 corruption, reward, 학습과 최종 평가는 실행하지 않는다.
 
@@ -81,3 +82,40 @@ API 응답·변형·채점 결과는 중간 저장하며 같은 표본으로 재
 | `tests/` | split 누수·train 본문 배제·숫자 분포·결정성·예산·보정 계약 |
 
 최종 결과는 로컬 `imple/reports/V3_PHASE_1.md`에 기록한다.
+
+## Phase 1b: 장르별 분할과 평균 채점
+
+Phase 1을 승인한 뒤에는 다음 명령으로 분할을 한 번 갱신한다.
+
+```bash
+python -m verak.v3.cli.resplit_by_genre
+python -m pytest -q verak/v3/tests
+python -m verak.v3.cli.calibrate_averaged --repeat 20
+```
+
+재분할은 원래 `splits.json`의 바이트를 `splits_v1.json`에 보존하고, seed 13으로
+각 장르의 문항을 약 80/20으로 나눈다. 원천 valid는 유지하며 train/test를 읽지 않는다.
+이후에는 기존 `prepare_phase1`이 새 분할을 덮어쓰지 못하도록 거절한다.
+
+`KananaScorer.score_averaged(question, text, k)`는 원문과 k−1개의 공백 변형을 각각
+기존 `score`로 채점한 Q의 평균을 반환한다. 변형은 익명화 표지 밖의 서로 다른 단어
+경계에 공백 하나만 추가한다. 문단 경계는 유지한다. seed 13으로 모든 후보 위치를
+섞은 뒤 앞에서 선택하므로 k=1,3,5는 중첩 집합이다. 경계가 부족하면 오류이며
+같은 입력을 중복해서 채워 k를 늘리지 않는다. 개별 score의 계산 방식은 유지한다.
+
+실험은 새 dev를 뽑지 않고 **기존 보정 100편과 저장된 변형**을 그대로 사용한다.
+재분할 뒤 소속이 달라진 표본도 원래 실험의 쌍을 유지하고 소속 이동을 기록한다.
+GPT·바른을 호출하거나 새 바꿔쓰기를 생성하지 않는다. 각 입력의 다섯 점수를
+캐시 없이 한 번 계산하고, 앞 1/3/5개의 평균으로 noise를 비교한다.
+
+시간은 같은 100편 원문의 처음 k개 실제 채점 호출 시간을 합산해 보고한다.
+모델 로딩과 공백 후보 생성·집계의 작은 부가 시간은 제외한다. 20편은 다시 캐시
+없이 계산하며 기대점수 벡터와 k별 Q가 일치해야 한다. 이전 Phase 1의 k=1 점수도
+모든 원문·변형에서 일치하는지 확인한다.
+
+실험과 재개 기록은 `outputs/phase1b/`, 집계는 `data/scorer_noise_averaged.json`에
+저장한다. 원래 `scorer_noise.json`은 변경하지 않는다. k=5의 전체 paraphrase noise
+floor가 k=1보다 25% 이상 줄고 결정성 검사가 통과해야 Phase 2를 진행한다.
+통과하면 k=5 noise floor의 110% 이하인 가장 작은 k를 선택한다. 실패하면 k=1을
+유지하고 보고한 뒤 멈춘다. 후속 reward와 CHECK 결정은 config에 기록하고 실제
+reward·환경 구현은 각각 Phase 4·5에 맡긴다.
