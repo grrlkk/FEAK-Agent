@@ -1,4 +1,4 @@
-# VERAK v3 — Phase 3b instance-filtering pilot
+# VERAK v3 — Phase 3b instance filtering
 
 현재 활성 구조는 아래 **Phase 2c** 절의 `StructuralAnalyzer` / `annotate_structural`이다.
 Phase 2/2b의 `KoreanStructure`, `annotate`, REF/TOPIC 규칙과 검증 프롬프트는 과거 결과
@@ -11,7 +11,49 @@ Phase 1과 1b의 데이터·채점·노이즈 보정에 Phase 2의 바른 기반
 기존 `verak/src/`, 프롬프트와 테스트는 바꾸지 않는다. 이후 단계의 수정 에이전트,
 reward, 학습과 최종 평가는 실행하지 않는다.
 
-## Phase 3b: 개별 변경 필터링 파일럿 (현재)
+## Phase 3b: 승인된 전체 후보 판정과 코퍼스 확정
+
+파일럿 승인 후 진입점은 `verak.v3.cli.finalize_corruptions`다. 기존 100편의 판정과
+비용을 재사용하고, 나머지 2,933편에 같은 QC 프롬프트와 `gpt-6.1-sol/high`를 적용한다.
+파일럿 파일은 덮어쓰지 않는다. 누적 원장 `outputs/phase3b/full/cost_ledger.json`이
+파일럿의 hash·100회·비용을 포함하여 총 3,033회 및 $45 상한을 관리한다.
+
+```bash
+python -m verak.v3.cli.finalize_corruptions judge --max-api-calls 3033 --max-cost-usd 45 --workers 1
+python -m verak.v3.cli.finalize_corruptions audit --max-api-calls 0
+# 모든 후보의 유효한 판정이 완료된 뒤에만:
+python -m verak.v3.cli.finalize_corruptions balance --max-api-calls 0
+python -m verak.v3.cli.finalize_corruptions score --max-api-calls 0 --scorer-workers 1
+python -m verak.v3.cli.finalize_corruptions verify --max-api-calls 0
+```
+
+키는 환경변수에서만 읽는다. 원시 응답·usage를 요청별로 즉시 저장하고, 재시작 시
+완료된 판정을 복구한다. SDK 자동 재시도는 없으며 오류 요청은 QC 불합격과 구분한다.
+사용량이 없는 요청은 무료로 간주하지 않고 보수적 요청 상한을 별도로 예약한다.
+로그의 `usage_cost`는 응답 사용량 기반 비용, `unknown_cost_upper`는 미확인 비용의
+상한이다. 원장의 `cost_usd`는 둘의 합인 예산 검사값이며 실제 청구액이 아니다.
+다음 요청의 최대 비용까지 감당할 수 없으면 전송 전에 중단한다.
+
+중단 시 `audit`가 `full/partial/`에 완료된 판정, 통과한 부분집합, 실패/미시도 ID와
+집계를 저장한다. 이 파일들은 최종 코퍼스가 아니다. 미판정 후보를 몰래 제외하여
+균형 표집하거나 채점하지 않으며, 재시도·비용 정산 결정이 필요한 상황을 보고한다.
+
+전체 판정 완료 후 `balance`는 모든 record가 통과한 글을 split별
+`full/kept_agent_{train,dev}.jsonl`에 보존한다. WORD/SENTENCE/TEXT 국소 record 수로
+비중을 계산하고, 각 28–38%가 되도록 글 단위로 비복원 표집한다. TEXT 비중이 1/3을
+넘는 글을 우선 줄인다. 정수 최적화로 그 외 글의 제거를 최소화하고, 같은 조건에서
+전체 잔존 수를 최대화한 뒤 같은 record 구성 안에서는 seed 41로 표집한다.
+GLOBAL record는 세 국소 수준의 비중 계산에서 제외한다.
+
+표집 결과를 채점 전에 hash로 고정한다. `score`는 기존 Phase 1 `KananaScorer`를
+호출하여 k=1 expected score를 기록한다. GPU·모델·프롬프트·digit 계산은 설정과
+기존 채점기를 그대로 사용한다. 모든 점수가 저장된 경우에만
+`data/corrupt/agent_train.jsonl`, `agent_dev.jsonl`을 출력한다. `verify`는 원문/판정
+불변성, split 분리, 학습 글 hash 배제, 국소 비중, 점수 provenance를 검사한다.
+실측 진행 상태와 미완료 항목은 로컬 `imple/reports/V3_PHASE_3b.md`에 기록한다.
+Phase 4는 실행하지 않는다.
+
+## Phase 3b: 개별 변경 필터링 파일럿 (보존)
 
 현재 후보 생성은 `corrupt/instance_policy.py`를 사용한다. `G_VAGUE`,
 `L_TRANSLATIONESE`를 제외한 10개 연산자를 유지하며, 낮은 QC 비율만으로 연산자를
@@ -42,7 +84,7 @@ python -m verak.v3.cli.filter_corruption_pilot judge --max-api-calls 100 --worke
 python -m pytest -q tests verak/tests verak/v3/tests
 ```
 
-Phase 3b 요청 전체는 별도 단계의 단일 공유 원장 `phase3b/api_budget.json`에
+파일럿 요청은 별도 단계의 단일 공유 원장 `phase3b/api_budget.json`에
 호출 직전 기록한다. SDK 자동 재시도는 0이며 실패한 요청도 예산에 포함한다.
 API 원시 출력, usage/cache 토큰, 표본·후보 hash와 프롬프트 hash를 저장한다.
 `pilot_kept.jsonl`도 파일럿 결과일 뿐 최종 학습 코퍼스가 아니다. 모든 후보의
