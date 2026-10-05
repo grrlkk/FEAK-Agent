@@ -118,9 +118,10 @@ class BareunBank:
     Stable unit boundaries come from corruption records, not a post-move sentence
     alignment heuristic. Offsets are recomputed before frozen 2c annotation.
     """
-    def __init__(self, config, *, analyzer=None):
+    def __init__(self, config, *, analyzer=None, cache_dir=None, read_cache_dirs=()):
         self.config, self.analyzer = config, analyzer
-        self.cache = config["paths"]["phase3_output"] / "bareun_units"
+        self.cache = cache_dir or config["paths"]["phase3_output"] / "bareun_units"
+        self.read_cache_dirs = tuple(read_cache_dirs)
         self.cache.mkdir(parents=True, exist_ok=True)
         self.memory = {}
 
@@ -132,8 +133,9 @@ class BareunBank:
         if text in self.memory:
             return copy.deepcopy(self.memory[text])
         path = self.cache / (sha_text(text) + ".json")
-        if path.exists():
-            saved = read_json(path)
+        cached = next((p for p in [path] + [d / path.name for d in self.read_cache_dirs] if p.exists()), None)
+        if cached is not None:
+            saved = read_json(cached)
             if saved["text"] != text:
                 raise ValueError("Bareun cache mismatch")
             profile = restore_profile(saved["profile"])
