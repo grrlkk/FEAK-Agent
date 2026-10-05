@@ -1,7 +1,7 @@
-# VERAK v3 — Phase 1 / 1b
+# VERAK v3 — Phase 1 / 1b / 2
 
-Phase 1과 1b의 데이터 분할, 장르 메타데이터, 점수 전용 Kanana, 노이즈 보정과
-평균 채점 비교를 구현한다.
+Phase 1과 1b의 데이터·채점·노이즈 보정에 Phase 2의 바른 기반 한국어 구조,
+렌더링, EC 검증 도구를 추가한다. 단계별 실측 결과와 한계는 로컬 Phase 2 보고서에 기록한다.
 기존 `verak/src/`, 프롬프트와 테스트는 바꾸지 않는다. 이후 단계의 수정 에이전트,
 corruption, reward, 학습과 최종 평가는 실행하지 않는다.
 
@@ -117,5 +117,65 @@ GPT·바른을 호출하거나 새 바꿔쓰기를 생성하지 않는다. 각 �
 저장한다. 원래 `scorer_noise.json`은 변경하지 않는다. k=5의 전체 paraphrase noise
 floor가 k=1보다 25% 이상 줄고 결정성 검사가 통과해야 Phase 2를 진행한다.
 통과하면 k=5 noise floor의 110% 이하인 가장 작은 k를 선택한다. 실패하면 k=1을
-유지하고 보고한 뒤 멈춘다. 후속 reward와 CHECK 결정은 config에 기록하고 실제
-reward·환경 구현은 각각 Phase 4·5에 맡긴다.
+유지하고 보고한 뒤 멈춘다. 이 중단 이후 사용자가 Phase 1b를 승인하고 Phase 2 진행을
+명시적으로 허용했다. 현재 설정은 `average_k=1`, `score`이며 평균 채점을 사용하지 않는다.
+품질 보상과 CHECK는 장르별 noise floor를 쓰고, 미상 장르는 기존 전체 값으로 fallback한다.
+실제 reward·환경 구현은 각각 Phase 4·5에 맡긴다.
+
+## Phase 2: 한국어 구조와 EC 검증
+
+`ko.KoreanStructure.from_config(config).analyze(text)`는 기존 바른 profile 위에
+문장 ID, 문단, 문체, EC 후보, 접속부사, 주어·화제·선행사, 주절 극성·양태를 붙인다.
+선행사는 같은 문단의 앞 두 문장을 확인하며, REF/TOPIC/REL 연결과 불확실성 표시를 만든다.
+사람 정답으로 보장하는 구문·담화 분석기가 아니며, 모든 후보와 원본 offset을 보존한다.
+`render`는 기본으로 모든 에세이에 compact 형식 하나만 제공한다. 대표 문체는 머리말에
+한 번만 쓰고, 개별 문체 차이·생략 주어의 상태/대상·은/는 화제·관계 있는 EC·문두 접속어·
+모든 REF/TOPIC/REL 연결·비기본 극성/양태·불확실성 `?`를 보존한다. compact는 절단하지 않는다.
+`render(..., compact=False)`의 full 뷰는 디버깅 전용이며 표시용 줄임표가 원문을 바꾸지 않는다.
+
+```bash
+python -m verak.v3.cli.discover_ec_judge --max-api-calls 220
+python -m verak.v3.cli.prepare_phase2
+python -m verak.v3.cli.prepare_views --workers 4
+VERAK_LIVE_TAGS=1 python -m pytest -q verak/v3/tests/test_ko_annotation.py
+python -m pytest -q tests verak/tests verak/v3/tests
+```
+
+모델 조회는 성공 응답을 캐시하고 GPT-6.1 Sol, GPT-6 Sol 순으로 **실제 목록에 있는 ID**만
+선택한다. 다른 모델로 대체하지 않는다. 바른 외 분석기와 새 패키지를 설치하지 않는다.
+새 agent_dev 전체에서 EC 문장 모집단을 만들고 seed 23으로 100문장을 추출한다.
+`data/ec_check.jsonl`은 EC를 강조한 형태소·태그와 사전 관계 후보를 담는다.
+20편 compact 검토 자료(논증 최소 7편)는 `outputs/phase2/compact_review/`에 저장한다.
+`outputs/phase2/renders/`의 full 뷰는 디버깅용이며 episode에 사용하지 않는다.
+
+§6.3의 [ASK]는 사용자 결정으로 해결했다. `view_token_budget=3000`은 compact 뷰의
+hard limit이다. `prepare_views`는 valid에서 파생된 agent_train/dev 전체를 검사하고
+`data/view_eligibility.json`, `data/view_exclusions.json`을 작성한다. 원천 valid와
+문항 split은 유지한다. 토큰 수 분포는 제외 전 모집단에서 측정한다.
+
+Phase 3 이후 v3 데이터 구성에는 **`view_data.load_episode_examples(config, split)`**를 사용한다.
+이 로더는 한도 초과 원문을 제외하고, 색인 누락·소스/분할/annotation/렌더러/토크나이저 변경 시
+오류를 낸다. `data_policy.load_examples`는 기존 Phase 1 재현과 원천 감사용이며 8,000편을 유지한다.
+새 변형도 `render_with_budget`의 `eligible`을 확인해야 하며 초과한 뷰를 절단해 통과시키면 안 된다.
+
+EC 태깅 검증은 episode 뷰 예산과 독립적이다. 고정된 원래 100문장 표본을 유지하고
+아래 두 단계를 진행한다.
+
+```bash
+python -m verak.v3.cli.judge_ec --stage pilot --max-api-calls 220 --workers 4
+# 첫 10문장의 두 판정에서 산정한 예상 총비용이 $20 미만일 때만:
+python -m verak.v3.cli.judge_ec --stage remaining --max-api-calls 220 --workers 4
+```
+
+두 판정은 같은 프롬프트를 별도 요청에 보내며 이전 응답은 입력하지 않는다.
+모든 EC의 세 bool이 양쪽 모두 true일 때만 `llm_ok=true`다. `human_ok`는 코드가 채우지 않는다.
+판정 모델은 `ec_judge.model`, reasoning은 high로 별도 설정한다. teacher는 계속 gpt-5-mini/low다.
+
+`outputs/phase2/api_budget.json`의 220회 한도를 모델 조회·파일럿·나머지 판정·실패 요청이
+공유한다. Phase 1 장부와 분리하며 재시작해도 누적한다. SDK 자동 재시도는 꺼져 있다.
+파일럿/실제 비용은 요청한 $2/M input, $10/M output으로 계산하며 reasoning은 output에
+이미 포함되어 있으므로 이중 가산하지 않는다. 캐시 할인은 반영하지 않은 계산값이다.
+
+집계는 LLM-verified로 표기한다. 두 판정의 문장/토큰별 bool 일치율, 필드별 양측 true 비율,
+불일치 문장 ID를 기록하며 자유로운 note 문장의 일치 여부는 세지 않는다.
+실행 현황과 [ASK]는 로컬 `imple/reports/V3_PHASE_2.md`를 확인한다.
