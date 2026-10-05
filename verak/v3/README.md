@@ -16,10 +16,13 @@ reward, 학습과 최종 평가는 실행하지 않는다.
 파일럿 승인 후 진입점은 `verak.v3.cli.finalize_corruptions`다. 기존 100편의 판정과
 비용을 재사용하고, 나머지 2,933편에 같은 QC 프롬프트와 `gpt-6.1-sol/high`를 적용한다.
 파일럿 파일은 덮어쓰지 않는다. 누적 원장 `outputs/phase3b/full/cost_ledger.json`이
-파일럿의 hash·100회·비용을 포함하여 총 3,033회 및 $45 상한을 관리한다.
+파일럿의 hash·100회·비용을 포함한다. 사용자 재개 결정 이후 비용 상한은 **확인된
+usage 비용 + 미확인 timeout 예약액 합계 $50**이다. usage 없는 HTTP 5xx는 사용자
+결정에 따라 $0으로 계산한다. 기존 원장은 `cost_ledger_before_retry_approval.json`에
+보존하고 새 정책으로 재정산한다.
 
 ```bash
-python -m verak.v3.cli.finalize_corruptions judge --max-api-calls 3033 --max-cost-usd 45 --workers 1
+python -m verak.v3.cli.finalize_corruptions judge --max-api-calls 7797 --max-cost-usd 50 --workers 4
 python -m verak.v3.cli.finalize_corruptions audit --max-api-calls 0
 # 모든 후보의 유효한 판정이 완료된 뒤에만:
 python -m verak.v3.cli.finalize_corruptions balance --max-api-calls 0
@@ -28,15 +31,22 @@ python -m verak.v3.cli.finalize_corruptions verify --max-api-calls 0
 ```
 
 키는 환경변수에서만 읽는다. 원시 응답·usage를 요청별로 즉시 저장하고, 재시작 시
-완료된 판정을 복구한다. SDK 자동 재시도는 없으며 오류 요청은 QC 불합격과 구분한다.
-사용량이 없는 요청은 무료로 간주하지 않고 보수적 요청 상한을 별도로 예약한다.
-로그의 `usage_cost`는 응답 사용량 기반 비용, `unknown_cost_upper`는 미확인 비용의
-상한이다. 원장의 `cost_usd`는 둘의 합인 예산 검사값이며 실제 청구액이 아니다.
-다음 요청의 최대 비용까지 감당할 수 없으면 전송 전에 중단한다.
+완료된 판정을 복구한다. SDK 자동 재시도는 0이며, 애플리케이션이 5xx/timeout에만
+최대 3회 재시도한다(10/40/120초 대기, transport timeout 600초). 요청마다 별도
+attempt ID와 원장 항목을 만든다. 한 후보에서 유효한 판정을 받으면 다시 호출하지 않는다.
+이미 끝난 1,445편과 기존 실패 155편의 첫 시도를 포함하면 가능한 최대 요청 수는
+7,797회다. 이 호출 수 상한과 $50 비용 상한을 함께 적용한다.
 
-중단 시 `audit`가 `full/partial/`에 완료된 판정, 통과한 부분집합, 실패/미시도 ID와
-집계를 저장한다. 이 파일들은 최종 코퍼스가 아니다. 미판정 후보를 몰래 제외하여
-균형 표집하거나 채점하지 않으며, 재시도·비용 정산 결정이 필요한 상황을 보고한다.
+동시 요청은 최대 4개다. 최근 완료 요청 50회에서 5xx가 10회를 넘으면 모든 새 요청을
+10분 보류한 뒤 재개한다. 대기 상태를 파일로 보존하여 재시작으로 보류를 우회하지 않는다.
+요청 전에는 진행 중 요청의 최대 비용도 예약하여 동시 요청으로 상한을 넘지 않게 한다.
+5xx의 usage가 있으면 실제 사용량을 계산한다. Timeout 예약액은 재시도가 성공해도
+원래 요청의 usage가 확인되기 전까지 유지한다. 로그의 `usage`는 확인 비용,
+`timeout`은 미확인 timeout 예약액이다. 원장의 `cost_usd`는 그 합인 예산 검사값이다.
+
+중단 시 `audit`가 `full/partial_after_retry/`에 완료된 판정, 통과한 부분집합,
+미판정 실패/미시도 ID와 집계를 저장한다. 이전 중단의 `full/partial/`은 보존한다.
+이 파일들은 최종 코퍼스가 아니다. 미판정 후보를 제외하여 균형 표집하거나 채점하지 않는다.
 
 전체 판정 완료 후 `balance`는 모든 record가 통과한 글을 split별
 `full/kept_agent_{train,dev}.jsonl`에 보존한다. WORD/SENTENCE/TEXT 국소 record 수로
@@ -50,6 +60,17 @@ GLOBAL record는 세 국소 수준의 비중 계산에서 제외한다.
 기존 채점기를 그대로 사용한다. 모든 점수가 저장된 경우에만
 `data/corrupt/agent_train.jsonl`, `agent_dev.jsonl`을 출력한다. `verify`는 원문/판정
 불변성, split 분리, 학습 글 hash 배제, 국소 비중, 점수 provenance를 검사한다.
+
+채점이 `ScoreParseError`로 끝나면 같은 입력·설정·파서로 단독 재현한 결과를
+`full/score_parse_diagnostics.json`에 기록한다. 각 항목은 `episode_id`, `status`,
+`error_type`, `fingerprint`, `first_lines: [{text: ...}]`를 포함한다. 모든 후보의
+일괄 채점이 끝난 뒤 `exclude-unscorable --max-api-calls 0`으로 반복 확인된
+형식 오류만 최종 표집에서 제외할 수 있다. 원래 manifest·표집과 전체 kept set은
+보존하고, 새 선택은 `balanced_scorable_agent_*.jsonl`에 저장한다. 유효 점수가
+있거나 다른 오류인 글을 제외하려는 경우, 또는 제외 후 28–38% 균형이 깨지는
+경우는 거부한다. 점수의 크기를 선택 기준으로 사용하지 않는다. 이후 `score`를
+다시 실행하면 이미 저장된 점수를 재사용하며, `verify`가 최종 파일을 검증한다.
+
 실측 진행 상태와 미완료 항목은 로컬 `imple/reports/V3_PHASE_3b.md`에 기록한다.
 Phase 4는 실행하지 않는다.
 

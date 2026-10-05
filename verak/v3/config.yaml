@@ -1,4 +1,4 @@
-version: verak-v3-phase3b-finalize
+version: verak-v3-phase3b-retry
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -118,8 +118,16 @@ corruption_pilot:
 corruption_finalize:
   judge_model: gpt-6.1-sol
   judge_reasoning_effort: high
-  cumulative_api_ceiling: 3033
-  cumulative_cost_cap_usd: 45.0
+  cumulative_api_ceiling: 7797
+  cumulative_cost_cap_usd: 50.0
+  cost_policy: confirmed_usage_plus_timeout_reservations_5xx_without_usage_zero
+  max_concurrency: 4
+  max_retries: 3
+  retry_delays_s: [10, 40, 120]
+  transport_timeout_s: 600
+  error_window: 50
+  error_5xx_pause_threshold: 0.20
+  error_pause_s: 600
   reuse_pilot: true
   balance_seed: 41
   local_share_min: 0.28

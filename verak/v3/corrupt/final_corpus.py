@@ -100,17 +100,26 @@ def completed_judgments(config):
     output = config["paths"]["phase3b_full_output"]
     rows, pilot_rows, pilot = load_population(config)
     status = read_json(output/"judging_status.json")
-    if not status["complete"] or status["cost_usd"] > 45 or status["errors"]:
+    retry_policy = (output/"cost_ledger.json").exists() and read_json(output/"cost_ledger.json").get("schema_version") == 2
+    cap = 50 if retry_policy else 45
+    if not status["complete"] or status["cost_usd"] > cap or status["errors"]:
         raise ValueError("Full judging must finish within budget before finalizing")
-    responses = {r["episode_id"]: r["llm_judgment"] for r in pilot_rows}
-    calls = [r for r in read_jsonl(output/"calls.jsonl") if not r.get("event")]
-    if len(calls) != 2933 or len({r["sample_id"] for r in calls}) != 2933:
-        raise ValueError("Expected exactly one call per remaining candidate")
-    for call in calls:
-        sid = call["sample_id"]
-        if sid in responses:
-            raise ValueError("Pilot re-judged or duplicate request")
-        responses[sid] = recovered_response(call)
+    if retry_policy:
+        from .resilient_judging import open_progress
+        rows,pilot_rows,pilot,calls,ledger,responses,_ = open_progress(config)
+        state = ledger.snapshot()
+        if state["cost_usd"] > cap or state["outstanding_nanos"]:
+            raise ValueError("Unsettled or over-budget attempts prevent finalization")
+    else:
+        responses = {r["episode_id"]: r["llm_judgment"] for r in pilot_rows}
+        calls = [r for r in read_jsonl(output/"calls.jsonl") if not r.get("event")]
+        if len(calls) != 2933 or len({r["sample_id"] for r in calls}) != 2933:
+            raise ValueError("Expected exactly one call per remaining candidate")
+        for call in calls:
+            sid = call["sample_id"]
+            if sid in responses:
+                raise ValueError("Pilot re-judged or duplicate request")
+            responses[sid] = recovered_response(call)
     if set(responses) != {r["episode_id"] for r in rows}:
         raise ValueError("Not every candidate has one judgment")
     judged = []
@@ -158,22 +167,29 @@ def audit_judgments(config):
     lookup = {r["episode_id"]: r for r in rows}
     calls = [r for r in read_jsonl(output/"calls.jsonl") if not r.get("event")]
     ids = [r["sample_id"] for r in calls]
-    if len(ids) != len(set(ids)) or set(ids) & set(pilot["ids"]) or set(ids)-set(lookup):
-        raise ValueError("Duplicate, pilot, or unknown candidate request in continuation")
-    ledger = CostLedger(output/"cost_ledger.json", pilot, max_api_calls=3033)
-    if set(ledger.snapshot()["entries"]) != set(ids):
-        raise ValueError("Unsettled requests need inspection before exporting an audit")
-    responses = {r["episode_id"]: r["llm_judgment"] for r in pilot_rows}
-    failures = []
-    for call in calls:
-        sid = call["sample_id"]
-        ledger.settle(sid, call)
-        if call.get("status") != "completed":
-            failures.append({"episode_id":sid, "split":lookup[sid]["split"],
-                "error_type":call.get("error_type"), "http_status":call.get("http_status"),
-                "usage_reported":bool(call.get("usage")), "phase_call":call.get("phase_call")})
-            continue
-        responses[sid] = recovered_response(call)
+    retry_policy = read_json(output/"cost_ledger.json").get("schema_version") == 2
+    if retry_policy:
+        from .resilient_judging import open_progress
+        _,_,_,_,ledger,responses,history = open_progress(config)
+        unresolved_calls = [items[-1] for sid,items in history.items() if sid not in responses]
+    else:
+        if len(ids) != len(set(ids)) or set(ids) & set(pilot["ids"]) or set(ids)-set(lookup):
+            raise ValueError("Duplicate, pilot, or unknown candidate request in continuation")
+        ledger = CostLedger(output/"cost_ledger.json", pilot, max_api_calls=3033)
+        if set(ledger.snapshot()["entries"]) != set(ids):
+            raise ValueError("Unsettled requests need inspection before exporting an audit")
+        responses = {r["episode_id"]: r["llm_judgment"] for r in pilot_rows}
+        unresolved_calls = []
+        for call in calls:
+            ledger.settle(call["sample_id"], call)
+            if call.get("status") != "completed":
+                unresolved_calls.append(call)
+            else:
+                responses[call["sample_id"]] = recovered_response(call)
+    failures = [{"episode_id":call["sample_id"], "split":lookup[call["sample_id"]]["split"],
+        "error_type":call.get("error_type"), "http_status":call.get("http_status"),
+        "usage_reported":bool(call.get("usage")), "phase_call":call.get("phase_call")}
+        for call in unresolved_calls]
     judged = []
     for row in rows:
         if row["episode_id"] in responses:
@@ -190,7 +206,7 @@ def audit_judgments(config):
     changed = [p for p,h in preserved.items() if file_sha(Path(p)) != h]
     if changed:
         raise ValueError(f"Frozen pilot/analyzer/scorer changed: {changed}")
-    snapshot = output/"partial"
+    snapshot = output/("partial_after_retry" if retry_policy else "partial")
     snapshot.mkdir(exist_ok=True)
     write_jsonl(snapshot/"judged.jsonl", judged)
     split_counts = {}
@@ -211,7 +227,7 @@ def audit_judgments(config):
         "usage_cost_usd":state["confirmed_cost_usd"],
         "unknown_cost_upper_usd":state["unknown_cost_upper_usd"],
         "budget_upper_usd":state["cost_usd"], "outstanding_nanos":state["outstanding_nanos"],
-        "budget_cap_usd":45, "splits":split_counts, "balanced":False, "scored":False,
+        "budget_cap_usd":50 if retry_policy else 45, "splits":split_counts, "balanced":False, "scored":False,
         "preserved_files":len(preserved), "preserved_changes":[], "phase4_started":False,
         "cost_ledger_sha256":file_sha(output/"cost_ledger.json"),
         "files":{p.name:{"path":str(p), "sha256":file_sha(p)} for p in sorted(snapshot.iterdir())
@@ -245,6 +261,79 @@ def balance_corpus(config):
               "selection_uses_q_corrupted":False,"phase4_started":False}
     write_json(output/"balance_manifest.json",result)
     return {s:d["after"] for s,d in decisions.items()}
+
+
+def exclude_unscorable(config):
+    """Retain QC-kept data, but exclude reproducibly malformed scores from final selection.
+
+    Only parseability is considered, never the numerical Q. Preserve the original
+    selection and refuse the refinement if either split would lose its balance.
+    """
+    from ..score.kanana import ScoreParseError, parse_first_line
+    output = config["paths"]["phase3b_full_output"]
+    final = config["paths"]["metadata"] / "corrupt"
+    if (output/"scored_manifest.json").exists() or any((final/f"{s}.jsonl").exists() for s in SPLITS):
+        raise ValueError("Cannot refine an already published corpus")
+    manifest_path = output/"balance_manifest.json"
+    manifest = read_json(manifest_path)
+    if manifest.get("scorer_exclusions"):
+        raise ValueError("Scorer eligibility exclusions already applied")
+    status = read_json(output/"scoring_status.json")
+    errors = {e["episode_id"]:e for e in status["errors"]}
+    diagnostics = read_json(output/"score_parse_diagnostics.json")
+    if (not errors or status["scored"]+len(errors) != status["total"] or
+            {d["episode_id"] for d in diagnostics} != set(errors) or len(diagnostics) != len(errors)):
+        raise ValueError("Complete scoring and a repeated diagnosis of every failure are required")
+    fingerprints = {read_json(p)["fingerprint"] for p in (output/"scores").glob("*.json")}
+    if len(fingerprints) != 1:
+        raise ValueError("Need successful scores from one frozen scorer")
+    for item in diagnostics:
+        sid = item["episode_id"]
+        if (errors[sid]["error"] != "ScoreParseError" or item["status"] != "error" or
+                item["error_type"] != "ScoreParseError" or item["fingerprint"] not in fingerprints or
+                not item["first_lines"] or (output/"scores"/(sid+".json")).exists()):
+            raise ValueError("Only repeatedly unparseable, unscored candidates may be excluded")
+        for line in item["first_lines"]:
+            try:
+                parse_first_line(line["text"])
+            except ScoreParseError:
+                continue
+            raise ValueError("A valid score line cannot justify exclusion")
+    revised, plans, found = copy.deepcopy(manifest), {}, set()
+    for split, decision in revised["splits"].items():
+        path = Path(decision["balanced_path"])
+        if file_sha(path) != decision["balanced_sha256"]:
+            raise ValueError("Original balance selection changed")
+        rows = read_jsonl(path)
+        excluded = [r["episode_id"] for r in rows if r["episode_id"] in errors]
+        kept = [r for r in rows if r["episode_id"] not in errors]
+        after = distribution(kept)
+        if not kept or any(v is None or not .28 <= v <= .38 for v in after["local_shares"].values()):
+            raise ValueError("Scorer exclusions would violate the split balance; stop")
+        found.update(excluded)
+        new_path = output/f"balanced_scorable_{split}.jsonl"
+        if new_path.exists() and read_jsonl(new_path) != kept:
+            raise ValueError("Conflicting prior eligible selection")
+        plans[split] = (new_path, kept)
+        decision.update(pre_score_after=decision["after"], after=after,
+            scorer_excluded_ids=excluded, pre_score_balanced_path=str(path),
+            pre_score_balanced_sha256=decision["balanced_sha256"],
+            pre_score_pattern_allocation=decision.pop("pattern_allocation", []))
+    if found != set(errors):
+        raise ValueError("A diagnosed failure is not in the original selection")
+    backup = output/"balance_manifest_before_scorer_exclusions.json"
+    if backup.exists() and file_sha(backup) != file_sha(manifest_path):
+        raise ValueError("Original selection backup conflicts")
+    if not backup.exists():
+        backup.write_bytes(manifest_path.read_bytes())
+    for split, (path, rows) in plans.items():
+        write_jsonl(path, rows)
+        revised["splits"][split].update(balanced_path=str(path), balanced_sha256=file_sha(path))
+    revised.update(scorer_exclusions=diagnostics, selection_uses_q_corrupted=False,
+        selection_requires_parseable_scores=True, pre_score_manifest=str(backup),
+        pre_score_manifest_sha256=file_sha(backup))
+    write_json(manifest_path, revised)
+    return {"excluded_ids":sorted(found), "final_counts":{s:len(rows) for s,(_,rows) in plans.items()}}
 
 
 _SCORER = None
@@ -371,6 +460,11 @@ def score_corpus(config, *, workers=1):
                 print(f"Scored {done}/{len(rows)}; errors={len(errors)}; elapsed={progress['seconds']:.1f}s",flush=True)
     if errors:
         raise ValueError("Scoring errors preserved; final corpus not published")
+    # A resume may find all scores already saved. Refresh the status even when
+    # no worker had to run; otherwise the previous failed-run status stays stale.
+    write_json(output/"scoring_status.json", {"scored":done,"total":len(rows),"errors":[],
+        "seconds":time.monotonic()-started,"workers":workers,"gpu":config["scorer"]["gpu"],
+        "average_k":1,"reused_saved_scores":len(rows)-len(pending),"newly_scored":len(pending)})
     return publish_scored(config, rows, workers=workers)
 
 

@@ -172,7 +172,7 @@ class HeaderClient(EnvironmentJSONClient):
                             self.error_metadata.update({k:error.get(k) for k in ("code","type")})
                     except (ValueError,AttributeError):
                         pass
-                    if response.status_code in (429,500,502,503,504):
+                    if response.status_code == 429 or 500 <= response.status_code < 600:
                         self.rate_gate.backoff(response.headers.get("retry-after"))
             self._client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], base_url="https://api.openai.com/v1",
                 timeout=600, max_retries=0,
