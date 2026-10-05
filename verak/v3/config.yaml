@@ -1,4 +1,4 @@
-version: verak-v3-phase2c
+version: verak-v3-phase3
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -7,6 +7,7 @@ paths:
   phase2_output: verak/v3/outputs/phase2
   phase2b_output: verak/v3/outputs/phase2b
   phase2c_output: verak/v3/outputs/phase2c
+  phase3_output: verak/v3/outputs/phase3
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -79,7 +80,26 @@ structure_policy:
   dependency_recovery_from_phase: 4
   dependency_recovery: predecessor_restored_or_explicit_subject
   exclude_multi_unit_corruption_targets: true
-  phase3_gate_required: true
+  phase3_gate_required: false  # User accepted omission as a positional hint; gate corruption data.
+  dependency_signal: positional_hint
+  coupled_signal_weights: {CONJ: 1.0, DEP: 0.5}
+corruption:
+  seed: 13
+  per_essay: 2
+  qc_seed: 37
+  qc_essays: 60
+  phase_api_ceiling: 100
+  vague_model: gpt-5-mini
+  vague_reasoning_effort: low
+  vague_generation_limit: 24
+  judge_model: gpt-6.1-sol
+  judge_reasoning_effort: high
+  qc_threshold: 0.8
+  local_level_weights: {WORD: 1, SENTENCE: 1, TEXT: 1}
+  vague_input_usd_per_million: 0.25
+  vague_output_usd_per_million: 2.0
+  judge_input_usd_per_million: 2.0
+  judge_output_usd_per_million: 10.0
 reward:
   quality:
     enabled_from_phase: 4

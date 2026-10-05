@@ -1,14 +1,64 @@
-# VERAK v3 — through Phase 2c
+# VERAK v3 — through Phase 3
 
 현재 활성 구조는 아래 **Phase 2c** 절의 `StructuralAnalyzer` / `annotate_structural`이다.
 Phase 2/2b의 `KoreanStructure`, `annotate`, REF/TOPIC 규칙과 검증 프롬프트는 과거 결과
 재현·디버깅 전용으로 보존한다. 새 데이터 준비는 config의 `structural_dependency` 모드로
-DEP와 coarse 관계를 사용한다. Phase 3 이후 연산자·복원·학습은 아직 시작하지 않았다.
+DEP와 coarse 관계를 사용한다. Phase 3의 surface corruption과 데이터 QC를 추가했으며,
+Phase 4의 의미 유사도 복원 판정·보상·학습은 아직 구현하지 않았다.
 
 Phase 1과 1b의 데이터·채점·노이즈 보정에 Phase 2의 바른 기반 한국어 구조,
 렌더링, EC 검증 도구를 추가한다. 단계별 실측 결과와 한계는 로컬 Phase 2 보고서에 기록한다.
 기존 `verak/src/`, 프롬프트와 테스트는 바꾸지 않는다. 이후 단계의 수정 에이전트,
-corruption, reward, 학습과 최종 평가는 실행하지 않는다.
+reward, 학습과 최종 평가는 실행하지 않는다.
+
+## Phase 3: surface corruption과 데이터 QC
+
+`corrupt/`는 분석기 규칙을 바꾸지 않는다. WORD/SENTENCE/TEXT를 동등하게 표집하고,
+DEP는 직전 문장 변경이라는 위치 힌트로만 기록한다. 후속 coupled 복원의 상대 가중치
+계약은 CONJ=1, DEP=0.5이며 실제 보상 계산은 Phase 4 범위다.
+
+- 원천은 `view_data.load_episode_examples`를 거쳐 valid의 각 split·장르 내 gold 상위
+  사분위(경계 동점 포함), 500–2,500자, Kanana 8점 파싱 성공 조건으로 선정한다.
+  gold는 두 human grader의 항목별 평균 합계이며 오프라인 선정에만 사용한다.
+- 5개 GLOBAL과 7개 국소 연산자는 표면 문자열·위치만 편집한다. 국소 연산자는
+  multi-unit과 익명화 표지 내부를 제외하고 새 표면을 바른으로 재분석한다.
+  띄어쓰기는 WORD, 번역투 구문은 SENTENCE로 분류한다.
+- 원문 공백과 stable ID를 보존하고 수정마다 역변환 기록을 남긴다. 복원 목표는
+  항상 source 위치를 기준으로 한다. 이 역변환 검사는 Phase 4의 유사도 기반
+  recovery나 reward 구현이 아니다.
+- G_OFFTOPIC donor도 같은 agent split에서 다른 문항·같은 문체로 고른다.
+  G_VAGUE는 gpt-5-mini/low로 미리 생성한 캐시만 사용한다. 전체 데이터 생성 시
+  캐시가 없는 문장은 이 연산자의 대상이 아니며 추가 GPT 호출을 하지 않는다.
+- `--max-api-calls`는 vague+QC의 단일 원장에 적용되고 100이 상한이다. GPT QC는
+  gpt-6.1-sol/high로 dev 60편을 보고, 한 요청에 그 글의 모든 record를 묶어
+  각 변경을 한 번씩 판단한다. 변경 전후 실제 문맥을 제공하며 예상 손상 라벨,
+  gold·Kanana 점수는 제공하지 않는다. 어느 필드든 80% 미만이면 연산자를 끈다.
+- 최종 builder는 QC gate를 읽어 기준 미달 연산자를 제외하고 새로 구성한다.
+  private source/record는 supervision 용도이며 향후 에이전트 입력으로 보내지 않는다.
+  최종 파일은 각 원천당 2편, L1–L4 계약, 3,000 compact 토큰 한도, Q 저장을 검사한다.
+
+실행 순서(키는 프로세스 환경변수로 설정):
+
+```bash
+python -m verak.v3.cli.prepare_corruption_sources --split both
+python -m verak.v3.cli.qc_corruptions vague --max-api-calls 100
+python -m verak.v3.cli.build_corruptions --split agent_dev --per-essay 2 --seed 13 --pre-qc --defer-scoring --max-api-calls 100 --out verak/v3/outputs/phase3/pre_qc_agent_dev.jsonl
+python -m verak.v3.cli.probe_corruptions
+python -m verak.v3.cli.qc_corruptions judge --pool verak/v3/outputs/phase3/pre_qc_agent_dev.jsonl --max-api-calls 100
+python -m verak.v3.cli.build_corruptions --split agent_train --per-essay 2 --seed 13 --max-api-calls 100 --out verak/v3/data/corrupt/agent_train.jsonl
+python -m verak.v3.cli.build_corruptions --split agent_dev --per-essay 2 --seed 13 --max-api-calls 100 --out verak/v3/data/corrupt/agent_dev.jsonl
+python -m verak.v3.cli.verify_corruptions
+python -m pytest -q tests verak/tests verak/v3/tests
+```
+
+`--defer-scoring`은 Q가 없는 준비 파일임을 stats에 표시한다. `--score-only`로 실제
+Kanana 채점을 완료해야 최종 검증을 통과한다. score cache는 Phase 1에서 독립된
+Phase 3 사본으로 시작하며, 모델·점수 계산식은 동일하다.
+QC 후 한 수준의 국소 연산자가 모두 탈락하면 최종 builder는 중단한다. 사용자 결정 없이
+균등 구성 조건을 완화하지 않는다. 불균형을 명시적으로 허용받은 제한 데이터에만
+`--allow-unbalanced`를 사용하며, 해당 파일은 균등한 최종 데이터로 표시하지 않는다.
+로컬 결과는 `outputs/phase3/`, 최종 데이터는 `data/corrupt/`, 수치 보고서는
+`imple/reports/V3_PHASE_3.md`에 저장한다. LLM QC 수치는 사람 정확도나 에이전트 성능이 아니다.
 
 ## 데이터 경계
 
