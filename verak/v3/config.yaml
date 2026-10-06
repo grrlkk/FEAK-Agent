@@ -1,4 +1,4 @@
-version: verak-v3-phase7-teacher-pilot
+version: verak-v3-phase7-teacher-pilot2
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -14,7 +14,9 @@ paths:
   phase5_output: verak/v3/outputs/phase5
   phase6_output: verak/v3/outputs/phase6
   phase7_pilot_output: verak/v3/outputs/phase7_pilot
-  active_corrupt: verak/v3/data/corrupt_recoverable
+  phase7_pilot2_output: verak/v3/outputs/phase7_pilot2
+  previous_corrupt: verak/v3/data/corrupt_recoverable
+  active_corrupt: verak/v3/data/corrupt_scope_v2
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -142,6 +144,7 @@ corruption_finalize:
   score_corrupted: true
   scorer_average_k: 1
 reward:
+  overedit_formula: "0.5 * morpheme_distance + 0.5 * order_distance"
   w_rec: 1.0
   w_q: 0.3
   w_over: 0.5
@@ -205,7 +208,8 @@ runtime:
   max_cost_usd: 10.0
   sample_seed: 47
 policy:
-  context_limit: 32768
+  context_limit: 8192
+  generation_reserve: 1024
   base_url: http://127.0.0.1:8030/v1
   model: kanana-policy
   base_revision: c963a5f4f6496c749f94064a20b33028b0db9f19
@@ -235,3 +239,13 @@ phase7_pilot:
   max_concurrent_requests: 4
   selection_percentile: 60
   sft_max_len: 8192
+phase7_pilot2:
+  seed: 73
+  phase_api_ceiling: 7000
+  max_cost_usd: 20.0
+  max_concurrent_requests: 4
+  train_candidates: 300
+  dev_candidates: 80
+  new_pilot_essays: 20
+  removed_operators: [G_DELETE_SUPPORT]
+  new_operator: L_CONJ_DROP

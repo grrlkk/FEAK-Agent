@@ -21,7 +21,7 @@ class Resources:
         if not hasattr(self.local, 'bank'):
             paths = self.config['paths']
             self.local.bank = BareunBank(self.config, cache_dir=paths[self.output_key]/'bareun_units',
-                read_cache_dirs=tuple(paths[p]/'bareun_units' for p in ('phase6_output', 'phase5_output', 'phase3b_output', 'phase3_output') if p != self.output_key))
+                read_cache_dirs=tuple(paths[p]/'bareun_units' for p in ('phase7_pilot_output', 'phase6_output', 'phase5_output', 'phase3b_output', 'phase3_output') if p != self.output_key))
             self.local.analysis = ParagraphAnalyzer(self.config, cache_dir=paths[self.output_key]/'bareun_paragraphs')
             self.local.tokenizer = self.tokenizer_class.from_pretrained(str(paths['policy_base']), local_files_only=True)
             self.local.sources = {}

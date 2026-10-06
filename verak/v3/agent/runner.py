@@ -4,6 +4,7 @@ from pathlib import Path
 import copy
 import json
 import time
+from types import SimpleNamespace
 
 from ..env.protocol import parse_action, validate_action, ActionParseError, ActionError
 from .backends import append_jsonl
@@ -23,19 +24,44 @@ def system_prompt(role, variant='default', *, allow_check=False):
     return prompt
 
 
+def split_handoff(content):
+    marker = '[GLOBAL 인계: 행동 및 누적 marker-change notices]\n'
+    if marker not in content:
+        return None, content
+    start = content.index(marker)
+    end = content.index('\n[', start + len(marker))
+    return content[start:end], content[:start] + content[end+1:]
+
+
 def fit_history(messages, backend, tokenizer, actions):
     def size(values):
         return len(tokenizer.apply_chat_template(values, tokenize=True, add_generation_prompt=True))
-    if tokenizer is None or size(messages)+2048 <= backend.context_limit:
+    reserve = getattr(backend, 'generation_reserve', 1024)
+    if tokenizer is None or size(messages)+reserve <= backend.context_limit:
         return copy.deepcopy(messages), False
-    if backend.name == 'teacher':
-        raise ValueError('Teacher context limit reached; earlier turns are never rewritten')
     diary = [{'action': a['action'], 'args': a['args'], 'valid': a['valid']} for a in actions]
-    # Eight latest conversation turns, original system and first observation.
-    shortened = messages[:2] + [{'role': 'user', 'content': '[작업 일지]\n' +
-                 json.dumps(diary, ensure_ascii=False, sort_keys=True)}] + messages[-8:]
-    if size(shortened)+2048 > backend.context_limit:
-        raise ValueError('Context still exceeds model limit after specified history compaction')
+    full_indices = [i for i, m in enumerate(messages) if m['role'] == 'user' and '[전체 갱신]' in m['content']]
+    latest = full_indices[-1] if full_indices else 1  # Legacy/synthetic initial observations.
+    handoff = next((split_handoff(m['content'])[0] for m in messages
+                    if m['role'] == 'user' and '[GLOBAL 인계:' in m['content']), None)
+    shortened = [messages[0]]
+    if handoff:
+        shortened.append({'role': 'user', 'content': handoff})
+    shortened.append({'role': 'user', 'content': split_handoff(messages[latest]['content'])[1]})
+    shortened.append({'role': 'user', 'content': '[작업 일지]\n' +
+                      json.dumps(diary, ensure_ascii=False, sort_keys=True, separators=(',', ':'))})
+    if size(shortened)+reserve > backend.context_limit:
+        raise ValueError('Mandatory system/handoff/latest full profile/journal exceed context budget; no content truncation')
+    # A contiguous suffix in chronological order, only turns after this snapshot.
+    recent = []
+    for message in reversed(messages[latest+1:]):
+        candidate = [message] + recent
+        if size(shortened+candidate)+reserve > backend.context_limit:
+            break
+        recent = candidate
+    if messages[-1]['role'] == 'user' and latest != len(messages)-1 and not recent:
+        raise ValueError('Latest observation does not fit beside mandatory context; no silent loss')
+    shortened += recent
     return copy.deepcopy(shortened), True
 
 
@@ -74,7 +100,10 @@ def run_episode(env, episode, backend, *, event_path=None, prompt_variant='defau
             history = histories[role]
             retried = False
             for parse_attempt in range(2):
-                sent, compacted = fit_history(history, backend, env.tokenizer, env.actions[role])
+                context = SimpleNamespace(name=backend.name,
+                    context_limit=env.config['policy']['context_limit'],
+                    generation_reserve=env.config['policy'].get('generation_reserve', 1024))
+                sent, compacted = fit_history(history, context, env.tokenizer, env.actions[role])
                 # Transport retries do not invent model turns or consume action steps.
                 for transport_attempt in range(4):
                     try:

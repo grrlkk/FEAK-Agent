@@ -4,7 +4,7 @@ import math
 from .overedit import mapped_span
 
 ACTIVE_OPERATORS = {'G_PARA_SWAP', 'G_SENT_MOVE', 'G_DELETE_SUPPORT', 'G_OFFTOPIC',
-                    'L_CONN', 'L_POLARITY', 'L_CONJ', 'L_SUBJ_INSERT', 'L_REGISTER', 'L_SPACING'}
+                    'L_CONN', 'L_POLARITY', 'L_CONJ', 'L_CONJ_DROP', 'L_SUBJ_INSERT', 'L_REGISTER', 'L_SPACING'}
 
 
 def graded_similarity(similarity, threshold, margin=0.05):
@@ -102,7 +102,7 @@ def main_recovery(source, final, record, *, corrupted=None, similarity=None, tau
         return 0.
     if op == 'L_REGISTER':
         return float(ann.final_ending is not None and ann.style == target['style'])
-    if op == 'L_CONJ':
+    if op in {'L_CONJ', 'L_CONJ_DROP'}:
         return float(bool(ann.initial_conj and ann.initial_conj['eligible'] and
                           ann.initial_conj['coarse_class'] == target['coarse_class']))
     if op == 'L_SUBJ_INSERT':

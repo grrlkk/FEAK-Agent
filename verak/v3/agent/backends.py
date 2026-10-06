@@ -50,7 +50,7 @@ class TeacherBackend:
         self.budget = PhaseBudget(self.output/'api_budget.json', max_api_calls,
             authorized_ceiling=settings['phase_api_ceiling'], phase='v3_phase5')
         self.cfg = OpenAIConfig(model=self.model, reasoning_effort='low',
-            max_output_tokens=settings['max_output_tokens'], timeout_s=600,
+            max_output_tokens=config['policy'].get('generation_reserve', 1024), timeout_s=600,
             max_input_chars=1000000, max_calls_total=settings['phase_api_ceiling'],
             max_calls_per_sample=settings['phase_api_ceiling'])
         self.adapter = adapter_factory(self.cfg)
@@ -132,7 +132,8 @@ class PolicyBackend:
     def generate(self, messages, *, episode_id, role, turn):
         model = self.settings.get('adapters', {}).get(role) or self.model
         payload = {'model': model, 'messages': copy.deepcopy(messages),
-                   'temperature': 0., 'top_p': 1., 'seed': 47, 'max_tokens': 2048}
+                   'temperature': 0., 'top_p': 1., 'seed': 47,
+                   'max_tokens': self.settings.get('generation_reserve', 1024)}
         # No JSON-constrained decoder: measure the untrained model's own output.
         started = time.monotonic()
         response = self.client.post(self.settings['base_url']+'/chat/completions', json=payload)

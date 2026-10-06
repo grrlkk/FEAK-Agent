@@ -29,7 +29,7 @@ def example(tmp_path):
     return source,bank,fixture,config['reward']
 
 
-@pytest.mark.parametrize('op', sorted(ACTIVE_OPERATORS))
+@pytest.mark.parametrize('op', sorted(ACTIVE_OPERATORS - {'L_CONJ_DROP'}))
 def test_each_active_operator_source_and_unchanged(example,op):
     source,bank,fixture,_ = example
     changed,record = apply(source,Proposal(**fixture['proposals'][op]),bank)

@@ -81,14 +81,44 @@ class RevisionEnv:
     def check_enabled(self):
         return self.config['env'].get('enable_check', False)
 
-    def observe(self, *, facts=(), error=None, check=None, handoff=False):
+    def observe(self, *, facts=(), error=None, check=None, handoff=False, before=None):
         structure = self.public_structure()
         compact = render_structural(structure, compact=True)
         self.compact_tokens = len(self.tokenizer.encode(compact, add_special_tokens=False)) if self.tokenizer else None
+        full = self.steps[self.role] % 5 == 0
+        selected = {u.sid for u in self.document.units}
+        affected = set()
+        if not full:
+            selected = set()
+            if before is not None:
+                def paragraphs(doc):
+                    return {p.pid: (i, [(u.sid, u.text) for u in p.units]) for i, p in enumerate(doc.paragraphs)}
+                old, new = paragraphs(before), paragraphs(self.document)
+                affected = {pid for pid in old.keys() | new.keys() if old.get(pid) != new.get(pid)}
+                ordered = self.document.units
+                for paragraph in self.document.paragraphs:
+                    if paragraph.pid not in affected:
+                        continue
+                    selected.update(u.sid for u in paragraph.units)
+                    if paragraph.units:
+                        ids = [u.sid for u in ordered]
+                        a, b = ids.index(paragraph.units[0].sid), ids.index(paragraph.units[-1].sid)
+                        selected.update(u.sid for u in ordered[max(0, a-1):b+2])
+                    else:
+                        # An emptied paragraph still needs context at its old location.
+                        pi = self.document.paragraphs.index(paragraph)
+                        left = [u for p in self.document.paragraphs[:pi] for u in p.units]
+                        right = [u for p in self.document.paragraphs[pi+1:] for u in p.units]
+                        selected.update(u.sid for u in left[-1:] + right[:1])
+            subset = deepcopy(structure)
+            subset.annotations = [a for a in subset.annotations if a.sid in {self.sentence_ids[s] for s in selected}]
+            compact = render_structural(subset, compact=True) if selected else ''
         rubric = RUBRICS.get(self.genre, [f'항목{i}' for i in range(1, 9)])
         lines = [f'[역할] {self.role.upper()}', '[문항] ' + self.question,
                  f'[장르] {self.genre}', '[루브릭] ' + ' / '.join(rubric),
                  '[남은 예산] ' + json.dumps(self.budgets(), ensure_ascii=False)]
+        if not full:
+            lines = ['[남은 예산] ' + json.dumps(self.budgets(), ensure_ascii=False)]
         if error:
             lines.append('[실행 오류] ' + error)
         if check:
@@ -96,14 +126,27 @@ class RevisionEnv:
         lines.append('[marker-change notices: 표지 변화 알림]\n' + ('\n'.join(f['message'] for f in facts) if facts else '없음'))
         if handoff:
             lines.append('[GLOBAL 인계: 행동 및 누적 marker-change notices]\n' + json.dumps({
-                'actions': self.handoff['actions'], 'cohesion_changes': self.handoff['cohesion_changes']},
+                'actions': self.handoff['actions'],
+                'marker_change_notices': [f['message'] for f in self.handoff['cohesion_changes']]},
                 ensure_ascii=False, sort_keys=True))
-        lines.append('[글]')
+        if full or selected or affected:
+            lines.append('[전체 갱신]' if full else '[부분 갱신: 표시된 문단의 문장 순서를 적용하고 이웃 문장은 문맥으로 읽는다]')
+            lines.append('[문단 순서] ' + ' → '.join(self.paragraph_ids[p.pid] for p in self.document.paragraphs))
+        if before is not None:
+            removed = {u.sid for u in before.units} - {u.sid for u in self.document.units}
+            if removed:
+                lines.append('[제거된 문장] ' + ', '.join(sorted(self.sentence_ids[s] for s in removed)))
+        if not full and affected:
+            lines.append('[갱신 문단] ' + ', '.join(self.paragraph_ids[p.pid] for p in self.document.paragraphs if p.pid in affected))
+        if full or selected:
+            lines.append('[글]')
         for paragraph in self.document.paragraphs:
-            if paragraph.units:
+            units = [u for u in paragraph.units if u.sid in selected]
+            if units:
                 lines.append('[' + self.paragraph_ids[paragraph.pid] + ']')
-                lines.extend(self.sentence_ids[u.sid] + ' | ' + u.text for u in paragraph.units)
-        lines.extend(('[Korean document profile: 한국어 문서 프로필; 생략·DEP는 위치 힌트]', compact))
+                lines.extend(self.sentence_ids[u.sid] + ' | ' + u.text for u in units)
+        if compact:
+            lines.extend(('[Korean document profile: 한국어 문서 프로필; 생략·DEP는 위치 힌트]', compact))
         return '\n'.join(lines)
 
     def score(self, document, purpose):
@@ -214,7 +257,7 @@ class RevisionEnv:
         elif self.check_enabled and self.checks[role] >= self.config['env'][role]['max_checks']:
             reason = 'max_checks'
         handoff = self._finish(reason) if reason else False
-        observation = self.observe(facts=facts, error=error, check=check_result, handoff=handoff)
+        observation = self.observe(facts=facts, error=error, check=check_result, handoff=handoff, before=before)
         return observation, self.done, {'action': record, 'role': role, 'next_role': self.role,
             'handoff': handoff, 'stage_termination': reason,
             'stage_terminal_observation': '[단계 종료] ' + str(reason)}
