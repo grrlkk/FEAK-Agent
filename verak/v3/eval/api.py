@@ -17,12 +17,13 @@ from ..reconstruction_api import usage_cost
 class Phase6API:
     model = 'gpt-6.1-sol'
 
-    def __init__(self, config, max_api_calls, *, adapter_factory=EnvironmentJSONClient):
-        self.settings = config['phase6']
+    def __init__(self, config, max_api_calls, *, adapter_factory=EnvironmentJSONClient, phase='phase6'):
+        self.phase = phase
+        self.settings = config[phase]
         if not 0 <= max_api_calls <= self.settings['phase_api_ceiling']:
-            raise ValueError('Invalid --max-api-calls for Phase 6')
+            raise ValueError(f'Invalid --max-api-calls for {phase}')
         self.limit = max_api_calls
-        self.output = config['paths']['phase6_output']/'api'
+        self.output = config['paths'][phase+'_output']/'api'
         self.output.mkdir(parents=True, exist_ok=True)
         self.path = self.output/'ledger.sqlite'
         self.factory = adapter_factory
@@ -62,13 +63,13 @@ class Phase6API:
             rows = db.execute('SELECT stage,status,reserved,confirmed FROM calls').fetchall()
             charged_rows = [r for r in rows if r[1] != 'blocked_before_send']
             if len(charged_rows) >= self.limit:
-                raise CallBudgetExceeded('Phase 6 --max-api-calls exhausted')
+                raise CallBudgetExceeded(f'{self.phase} --max-api-calls exhausted')
             if stage == 'filter' and sum(r[0] == 'filter' for r in charged_rows) >= self.settings['filter_api_ceiling']:
                 raise CallBudgetExceeded('Recoverability filter 260-call cap reached')
             if sum(r[1] == 'pending' for r in rows) >= self.settings['max_concurrent_requests']:
                 return None
             if sum(r[2]+r[3] for r in rows)+bound > self.settings['max_cost_usd']:
-                raise CallBudgetExceeded('Phase 6 $35 cap: insufficient unreserved budget')
+                raise CallBudgetExceeded(f"{self.phase} ${self.settings['max_cost_usd']} cap: insufficient unreserved budget")
             cursor = db.execute('INSERT INTO calls(stage,item_id,fingerprint,status,reserved,created) VALUES(?,?,?,?,?,?)',
                 (stage, item_id, fingerprint, 'pending', bound, time.time()))
             return cursor.lastrowid
@@ -140,7 +141,7 @@ class Phase6API:
                 write_json(cache, record)
                 return record
             if not retryable or attempt == 3:
-                raise RuntimeError(f"Phase 6 API call {call_id}: {record.get('error_type', record['status'])}")
+                raise RuntimeError(f"{self.phase} API call {call_id}: {record.get('error_type', record['status'])}")
             time.sleep((10, 40, 120)[attempt])
 
     def close(self):

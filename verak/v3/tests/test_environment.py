@@ -169,6 +169,7 @@ def test_invalid_actions_are_atomic_and_cost_one_step(setup_env, name, args, cod
 
 def test_check_stage_baselines_and_budget_handoff(setup_env):
     env, ep, _ = setup_env
+    env.config['env']['enable_check'] = True  # Explicit ablation; main method disables CHECK.
     env.reset(ep)
     env.step(action('EDIT', target='after:S1', new_text='새로운 설명을 쓴다.'))
     _, _, info = env.step(action('CHECK'))

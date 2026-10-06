@@ -11,9 +11,11 @@ from .backends import append_jsonl
 PROMPTS = Path(__file__).with_name('prompts')
 
 
-def system_prompt(role, variant='default'):
+def system_prompt(role, variant='default', *, allow_check=False):
     prompt = (PROMPTS / {'global': 'global_ko.txt', 'korean': 'korean_ko.txt',
                        'single': 'system_ko.txt'}[role]).read_text(encoding='utf-8')
+    if allow_check or variant == 'check_once':
+        prompt += '\n비교 실험 설정: 위 행동 목록에 CHECK를 추가한다. CHECK: {}. 필요할 때 채점 도구를 호출하며 남은 checks_left 예산을 따른다.\n'
     if variant == 'check_once':
         prompt += '\n이번 실행에서는 자신의 단계에서 STOP 전에 CHECK를 정확히 한 번 사용한다. 점수와 잡음 범위를 읽고 남은 수정 필요성을 판단한다. CHECK와 STOP에 쓸 step을 남겨 둔다.\n'
     elif variant != 'default':
@@ -37,19 +39,21 @@ def fit_history(messages, backend, tokenizer, actions):
     return copy.deepcopy(shortened), True
 
 
-def validity(raw):
+def validity(raw, *, allow_check=True):
     try:
         value = parse_action(raw)
     except ActionParseError:
         return False, False
     try:
-        validate_action(value)
+        validate_action(value, allow_check=allow_check)
     except (ActionError, TypeError):
         return True, False
     return True, True
 
 
 def run_episode(env, episode, backend, *, event_path=None, prompt_variant='default'):
+    if prompt_variant == 'check_once' and not env.check_enabled:
+        raise ValueError('check_once requires env.enable_check=true')
     started = time.monotonic()
     episode_id = f"{backend.name}:{env.mode}:{episode['episode_id']}"
     histories, observations, calls, events = {}, {}, [], []
@@ -61,7 +65,7 @@ def run_episode(env, episode, backend, *, event_path=None, prompt_variant='defau
             append_jsonl(event_path, record)
     try:
         observation = env.reset(episode)
-        histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant)},
+        histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant, allow_check=env.check_enabled)},
                                {'role': 'user', 'content': observation}]
         observations[env.role] = [observation]
         event({'event': 'reset', 'role': env.role, 'observation': observation})
@@ -86,7 +90,7 @@ def run_episode(env, episode, backend, *, event_path=None, prompt_variant='defau
                         event({'event': 'transport_retry', 'role': role, 'delay_s': delay})
                         time.sleep(delay)
                 raw = response['raw']
-                json_valid, protocol_valid = validity(raw)
+                json_valid, protocol_valid = validity(raw, allow_check=env.check_enabled)
                 call = {**response, 'json_valid': json_valid, 'valid_json_action': protocol_valid,
                         'history_compacted': compacted, 'parse_attempt': parse_attempt}
                 calls.append(call)
@@ -109,7 +113,7 @@ def run_episode(env, episode, backend, *, event_path=None, prompt_variant='defau
             if info['handoff']:
                 history.append({'role': 'user', 'content': info['stage_terminal_observation']})
                 observations[role].append(info['stage_terminal_observation'])
-                histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant)},
+                histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant, allow_check=env.check_enabled)},
                                        {'role': 'user', 'content': observation}]
                 observations[env.role] = [observation]
                 event({'event': 'handoff', 'handoff': env.handoff})
