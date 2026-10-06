@@ -201,7 +201,7 @@ def render(config,result):
         '## 관찰된 약점', '',
         f"- G_DELETE_SUPPORT: {s['by_operator']['G_DELETE_SUPPORT']['n']} records의 평균 recovery {s['by_operator']['G_DELETE_SUPPORT']['mean']:.3f}. "
         f"L_CONJ: {s['by_operator']['L_CONJ']['n']} records의 평균 recovery {s['by_operator']['L_CONJ']['mean']:.3f}. 전체 평균이 이 두 항목의 낮은 복구를 가리지 않도록 별도로 확인해야 한다.",
-        '- GLOBAL 기록이 없는 50편에서는 그 역할의 기본 R_rec가 0이므로 전체 GLOBAL R의 평균만으로 역할 간 성능을 비교할 수 없다. 역할 보상과 combined 보상은 단순 합산 관계도 아니다.',
+        f"- GLOBAL 기록이 없는 {sel['threshold_population']['korean']-sel['threshold_population']['global']}편에서는 그 역할의 기본 R_rec가 0이므로 전체 GLOBAL R의 평균만으로 역할 간 성능을 비교할 수 없다. 역할 보상과 combined 보상은 단순 합산 관계도 아니다.",
         '- 표본은 agent_train의 teacher 파일럿이다. 학습된 policy의 성능이나 held-out 일반화 성능을 측정한 결과가 아니다.', '',
         '## 검증·차이·다음 단계', '',
         '- prompt/config 변경 직후 전체 테스트: **796 passed, 25 skipped**, 2개의 기존 SWIG deprecation warnings. '
