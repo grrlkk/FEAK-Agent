@@ -11,9 +11,14 @@ from .backends import append_jsonl
 PROMPTS = Path(__file__).with_name('prompts')
 
 
-def system_prompt(role):
-    return (PROMPTS / {'global': 'global_ko.txt', 'korean': 'korean_ko.txt',
+def system_prompt(role, variant='default'):
+    prompt = (PROMPTS / {'global': 'global_ko.txt', 'korean': 'korean_ko.txt',
                        'single': 'system_ko.txt'}[role]).read_text(encoding='utf-8')
+    if variant == 'check_once':
+        prompt += '\n이번 실행에서는 자신의 단계에서 STOP 전에 CHECK를 정확히 한 번 사용한다. 점수와 잡음 범위를 읽고 남은 수정 필요성을 판단한다. CHECK와 STOP에 쓸 step을 남겨 둔다.\n'
+    elif variant != 'default':
+        raise ValueError('Unknown prompt variant')
+    return prompt
 
 
 def fit_history(messages, backend, tokenizer, actions):
@@ -44,7 +49,7 @@ def validity(raw):
     return True, True
 
 
-def run_episode(env, episode, backend, *, event_path=None):
+def run_episode(env, episode, backend, *, event_path=None, prompt_variant='default'):
     started = time.monotonic()
     episode_id = f"{backend.name}:{env.mode}:{episode['episode_id']}"
     histories, observations, calls, events = {}, {}, [], []
@@ -56,7 +61,7 @@ def run_episode(env, episode, backend, *, event_path=None):
             append_jsonl(event_path, record)
     try:
         observation = env.reset(episode)
-        histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role)},
+        histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant)},
                                {'role': 'user', 'content': observation}]
         observations[env.role] = [observation]
         event({'event': 'reset', 'role': env.role, 'observation': observation})
@@ -104,7 +109,7 @@ def run_episode(env, episode, backend, *, event_path=None):
             if info['handoff']:
                 history.append({'role': 'user', 'content': info['stage_terminal_observation']})
                 observations[role].append(info['stage_terminal_observation'])
-                histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role)},
+                histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant)},
                                        {'role': 'user', 'content': observation}]
                 observations[env.role] = [observation]
                 event({'event': 'handoff', 'handoff': env.handoff})
@@ -129,10 +134,13 @@ def run_episode(env, episode, backend, *, event_path=None):
     result = {'episode_id': episode_id, 'corpus_episode_id': episode['episode_id'],
         'source_id': episode.get('source_id'), 'genre': episode.get('genre'), 'level': episode.get('level'),
         'mode': env.mode, 'backend': backend.name, 'model': backend.model,
+        'prompt_variant': prompt_variant,
         'completed': error is None and getattr(env, 'done', False), 'runtime_error': error,
         'messages_by_role': histories, 'observations_by_role': observations, 'calls': calls,
         'actions_by_role': getattr(env, 'actions', {}), 'handoff': getattr(env, 'handoff', None),
         'final_text': env.final_text(), 'reward': reward,
+        'initial_layout': env.corrupted.snapshot(), 'final_layout': env.document.snapshot(),
+        'stage1_layout': env.stage1.snapshot() if getattr(env, 'stage1', None) else None,
         'termination': getattr(env, 'termination', {}), 'steps': getattr(env, 'steps', {}),
         'checks': getattr(env, 'checks', {}), 'score_calls': getattr(env, 'score_log', []),
         'source_id_mapping': {public: sid if sid in source_ids else None for sid, public in env.sentence_ids.items()

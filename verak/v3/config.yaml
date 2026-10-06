@@ -1,4 +1,4 @@
-version: verak-v3-phase5-runtime
+version: verak-v3-phase6-baselines
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -12,6 +12,8 @@ paths:
   phase3b_full_output: verak/v3/outputs/phase3b/full
   phase4_output: verak/v3/outputs/phase4
   phase5_output: verak/v3/outputs/phase5
+  phase6_output: verak/v3/outputs/phase6
+  active_corrupt: verak/v3/data/corrupt_recoverable
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -209,3 +211,15 @@ policy:
   enable_lora: true
   max_loras: 2
   adapters: {}
+phase6:
+  phase_api_ceiling: 12000
+  filter_api_ceiling: 260
+  max_cost_usd: 35.0
+  max_concurrent_requests: 4
+  paired_seed: 53
+  check_seed: 54
+  real_seed: 57
+  local_seed: 59
+  bootstrap_seed: 61
+  bootstrap_samples: 10000
+  sentence_alignment_threshold: 0.35
