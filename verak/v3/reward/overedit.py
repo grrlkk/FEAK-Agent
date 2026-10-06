@@ -74,6 +74,45 @@ def action_ids(actions, before, after):
     return result
 
 
+def order_distance(source, before, after, records, *, actions=None):
+    """Unreferenced sentence placement OR normalized pairwise Kendall damage.
+
+    A wrong paragraph contributes 1 for that sentence; otherwise its contribution
+    is its discordant-pair share. Averaging counts each inversion twice and equals
+    normalized Kendall distance when paragraph membership is unchanged. Missing
+    sentences are charged by the morpheme term, not again as order damage.
+    Role attribution charges only new disagreements introduced by a valid MOVE;
+    inherited disagreements and restoration/UNDO to source order cost zero.
+    """
+    excluded = referenced_ids(records)
+    def positions(doc):
+        return {u.sid: (p.pid, i) for i, (p, u) in enumerate(
+            (p, u) for p in doc.paragraphs for u in p.units) if u.sid not in excluded}
+    original, initial, final = map(positions, (source, before, after))
+    eligible = [sid for sid in original if sid in initial and sid in final]
+    moved = actions is None or any(a.get('valid', True) and a.get('action') == 'MOVE' for a in actions)
+    detail = []
+    for sid in eligible:
+        paragraph = final[sid][0] != original[sid][0]
+        if actions is not None:
+            paragraph = paragraph and final[sid][0] != initial[sid][0]
+        discordant = 0
+        for other in eligible:
+            if other == sid:
+                continue
+            source_before = original[sid][1] < original[other][1]
+            damaged = (final[sid][1] < final[other][1]) != source_before
+            if actions is not None:
+                damaged = damaged and (initial[sid][1] < initial[other][1]) == source_before
+            discordant += damaged
+        kendall = discordant / (len(eligible)-1) if len(eligible) > 1 else 0.
+        value = (1. if paragraph else kendall) if moved else 0.
+        detail.append({'sid': sid, 'paragraph_changed': bool(paragraph),
+                       'discordant_pairs': discordant, 'kendall_share': kendall, 'value': value})
+    return {'value': sum(r['value'] for r in detail)/len(detail) if detail else 0.,
+            'eligible_sentences': len(detail), 'move_attributed': bool(moved), 'sentences': detail}
+
+
 def overedit(source, before, after, records, *, actions=None, preexisting_spell_spans=()):
     """Role distance uses its own start/end states; combined uses source/end.
 
@@ -114,5 +153,8 @@ def overedit(source, before, after, records, *, actions=None, preexisting_spell_
         costs += cost
         normalizers += normalizer
         detail.append({'sid': sid, 'distance': cost, 'normalizer': normalizer})
-    return {'value': costs / normalizers if normalizers else 0., 'distance': costs,
+    morpheme = costs / normalizers if normalizers else 0.
+    order = order_distance(source, before, after, records, actions=actions)
+    return {'value': .5*morpheme + .5*order['value'], 'morpheme': morpheme,
+            'order': order['value'], 'order_details': order, 'distance': costs,
             'normalizer': normalizers, 'sentences': detail}

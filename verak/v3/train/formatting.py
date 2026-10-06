@@ -4,11 +4,23 @@ from copy import deepcopy
 import gzip
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 
 from ..agent.runner import fit_history, system_prompt
 from ..common import write_json, file_sha, sha_text
+
+
+def structural_action(action):
+    # Attempts also count: a rejected MOVE/insert/delete is still such an action
+    # in the trajectory the student would otherwise imitate.
+    if action.get('action') == 'MOVE':
+        return True
+    args = action.get('args', {})
+    target = args.get('target', '')
+    return action.get('action') == 'EDIT' and (target.startswith(('before:', 'after:')) or
+        (':' not in target and args.get('new_text') == ''))
 
 
 def select_roles(episodes, corpus_rows):
@@ -27,9 +39,10 @@ def select_roles(episodes, corpus_rows):
             kept['global'].append(id)
             reasons[id]='GLOBAL_record_R_ge_p60'
         elif (not has_global[id] and row['termination']['global']=='STOP' and row['steps']['global']<=2
-              and row['reward']['global']['R_over']==0):
+              and row['reward']['global']['R_over']==0
+              and not any(structural_action(a) for a in row.get('actions_by_role', {}).get('global', []))):
             kept['global'].append(id)
-            reasons[id]='no_GLOBAL_STOP_within_2_steps_R_over_0'
+            reasons[id]='no_GLOBAL_no_structural_action_STOP_within_2_steps_R_over_0'
         if row['reward']['korean']['R']>=threshold['korean']:
             kept['korean'].append(id)
     return {'percentile':60,'percentile_method':'linear (n-1)*q; ties included',
@@ -76,7 +89,7 @@ def formatted_turns(row, role, tokenizer, context_limit):
         if len(encoded['input_ids'])>context_limit:
             raise ValueError('Actual teacher action does not fit the policy context')
         yield {'episode_id':row['corpus_episode_id'],'role':role,'turn':call['turn'],
-            'sample_index':i,'messages':full,**encoded,'history_compacted':compacted,
+            'sample_index':i,'messages':full,**encoded,'history_compacted':compacted or call.get('history_compacted', False),
             'prompt_tokens':len(prompt_ids),'total_tokens':len(encoded['input_ids']),
             'loss_tokens':sum(v!=-100 for v in encoded['labels']),
             'loss_policy':'current_assistant_only; historical assistants are context, each target trained once',
@@ -90,12 +103,13 @@ def lengths(values):
             'above_8192':sum(v>8192 for v in values)}
 
 
-def export(config,episodes,selection,tokenizer):
-    root=config['paths']['phase7_pilot_output']/'sft_pilot'
+def export(config,episodes,selection,tokenizer, *, output_key='phase7_pilot_output'):
+    root=config['paths'][output_key]/'sft_pilot'
     root.mkdir(exist_ok=True)
     lookup={r['corpus_episode_id']:r for r in episodes}
     context_limit=config['policy']['context_limit']
     result={'policy_base_revision':config['policy']['base_revision'],
+        'formatting_source_sha256':file_sha(Path(__file__)),
         'tokenizer_sha256':file_sha(config['paths']['policy_base']/'tokenizer.json'),
         'chat_template_sha256':sha_text(tokenizer.chat_template),'context_limit':context_limit,
         'training_recipe_max_length':8192,'truncated':0,'training_run':False,'roles':{}}

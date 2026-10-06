@@ -1,4 +1,41 @@
-# VERAK v3 — Phase 3b instance filtering
+# VERAK v3 — Phase 7 second teacher pilot
+
+현재 활성 실행은 `two_stage`, CHECK 없음이며, 입력 코퍼스는
+`config.paths.active_corrupt`의 `corrupt_scope_v2/`다. G_DELETE_SUPPORT가 포함된 글은
+범위 결정으로 제외하고, L_CONJ_DROP은 기존 closed-set 접속어를 삭제한 뒤
+같은 coarse class가 문두에 돌아오면 복구로 인정한다. 모든 새 후보는 글 단위
+instance QC를 거친다. 이전 코퍼스·판정·trajectory는 보존한다.
+
+각 단계 시작과 매 5번째 행동 뒤에 전체 Korean document profile과 글을 보여준다.
+나머지는 표지 변화 알림과 바뀐 문단, 양쪽 이웃 한 문장만 갱신한다. Teacher와
+정책 추론, SFT export는 같은 8,192토큰 문맥과 생성 예약 1,024토큰을 쓴다.
+넘치면 system → KOREAN 인계 → 최신 전체 프로필 → 작업 일지 → 최근 턴 순으로
+남기며, 문서 문자열을 잘라 맞추지 않는다. SFT turn 파일은 실제 teacher 입력과
+동일하고 현재 assistant 응답만 loss를 갖는다. 누적 transcript는 감사용이다.
+
+R_over는 참조되지 않은 원천 문장에 대해 형태소 거리와 순서 거리를 각각 0.5로
+합친다. 문단 소속이 바뀐 문장은 순서 비용 1, 나머지는 해당 문장의 Kendall 역전
+쌍 비율이며 문장별로 평균한다. 역할별 비용은 자신의 MOVE가 새로 만든 순서
+차이에만 부과한다. GLOBAL 레코드가 없는 SFT 후보는 STOP≤2/R_over=0뿐 아니라
+문장 이동·삽입·삭제를 시도하지 않았어야 한다(거절·UNDO도 해당 행동으로 센다).
+
+```bash
+python -m verak.v3.cli.teacher_pilot2 build --max-api-calls 0
+python -m verak.v3.cli.teacher_pilot2 qc --max-api-calls 7000
+python -m verak.v3.cli.teacher_pilot2 finalize --max-api-calls 0
+python -m verak.v3.cli.verify_rewards --out verak/v3/outputs/phase7_pilot2/reward_audit
+python -m verak.v3.cli.teacher_pilot2 prepare --max-api-calls 0
+python -m verak.v3.cli.teacher_pilot2 run --max-api-calls 7000
+python -m verak.v3.cli.teacher_pilot2 diagnostic --max-api-calls 0
+python -m verak.v3.cli.teacher_pilot2 report --max-api-calls 0
+```
+
+QC와 pilot은 같은 SQLite 장부의 $20 한도를 공유한다. 완료된 요청은 재사용하고
+SDK 자동 재시도는 꺼져 있다. CLI에는 bulk 생성·SFT·RFT 학습 경로가 없다.
+실측 수치와 부족한 QC 표본은 로컬 `imple/reports/V3_PHASE_7_PILOT2.md`에 기록한다.
+아래 절은 이전 단계의 구현·실행 계약을 보존한 것이며 최신 결정은 addendum을 따른다.
+
+## 이전 Phase 3b 개요 (보존)
 
 현재 활성 구조는 아래 **Phase 2c** 절의 `StructuralAnalyzer` / `annotate_structural`이다.
 Phase 2/2b의 `KoreanStructure`, `annotate`, REF/TOPIC 규칙과 검증 프롬프트는 과거 결과

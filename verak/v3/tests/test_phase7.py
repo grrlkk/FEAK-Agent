@@ -99,7 +99,7 @@ def test_inference_compaction_and_journal_are_shared_with_sft():
     for i in range(12):
         history.extend([{'role':'assistant','content':'action'+str(i)}, {'role':'user','content':'notice '+('x'*200)}])
         logs.append({'action':'EDIT','args':{'target':f'S{i}'},'valid':True})
-    budget=len(system_prompt('global'))+4400
+    budget=len(system_prompt('global'))+3300
     policy=SimpleNamespace(name='policy',context_limit=budget)
     expected,compacted=fit_history(history,policy,tok,logs)
     assert compacted

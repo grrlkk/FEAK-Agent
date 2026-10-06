@@ -155,10 +155,11 @@ class Phase6Teacher:
     model = 'gpt-6.1-sol'
     context_limit = 250000
 
-    def __init__(self, api, condition):
+    def __init__(self, api, condition, *, max_output=1024):
         self.api, self.condition = api, condition
+        self.max_output = max_output
 
     def generate(self, messages, *, episode_id, role, turn):
         response = self.api.request(messages, stage=self.condition,
-            item_id=f'{episode_id}:{role}:{turn}')
+            item_id=f'{episode_id}:{role}:{turn}', max_output=self.max_output)
         return {**response, 'episode_id': episode_id, 'role': role, 'turn': turn}

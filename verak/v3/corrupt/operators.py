@@ -175,6 +175,12 @@ def local_verified(proposal, before, after):
     if op == "L_CONJ":
         return bool(after.initial_conj and after.initial_conj["eligible"] and
                     after.initial_conj["coarse_class"] == params["coarse_after"])
+    if op == "L_CONJ_DROP":
+        # Re-analysis must preserve all remaining morphemes and remove the prefix.
+        prefix_end = b
+        expected = [(t.form, t.tag) for t in before.tokens if t.start-before.start >= prefix_end]
+        observed = [(t.form, t.tag) for t in after.tokens]
+        return after.initial_conj is None and bool(observed) and observed == expected
     if op == "L_SUBJ_INSERT":
         return not after.subject_omitted and any(t.tag in {"JX", "JKS"} for t in changed)
     if op == "L_REGISTER":
@@ -237,7 +243,7 @@ def apply(doc, proposal, bank):
     new = current.structure()
     corrupted_units = {u.sid: u.text for u in current.units if u.sid in proposal.sids}
     target = recovery_target(doc, proposal, old, original_units)
-    record = {"op": op, "level": LEVELS[op], "sids": proposal.sids,
+    record = {"op": op, "level": "SENTENCE" if op == "L_CONJ_DROP" else LEVELS[op], "sids": proposal.sids,
         "original_text": original_units, "corrupted_text": corrupted_units,
         "recovery_target": target,
         "coupled_changes": positional_changes(old, new) if op in {"G_PARA_SWAP", "G_SENT_MOVE"} else [],
@@ -260,7 +266,7 @@ def recovery_target(doc, proposal, structure, originals):
             target["similarity_threshold"] = "calibrate_in_phase4"
     elif op == "G_OFFTOPIC":
         target.update(kind="inserted_sentence_absent", inserted_id=sid)
-    elif op in {"L_CONN", "L_CONJ"}:
+    elif op in {"L_CONN", "L_CONJ", "L_CONJ_DROP"}:
         target.update(kind="coarse_class_at_site", coarse_class=p["coarse_before"],
                       site=list(proposal.span), channel="EC" if op == "L_CONN" else "initial_conjunction")
     elif op == "L_SUBJ_INSERT":
