@@ -72,8 +72,14 @@ class RevisionEnv:
 
     def budgets(self):
         setting = self.config['env'][self.role]
-        return {'steps_left': setting['max_steps']-self.steps[self.role],
-                'checks_left': setting['max_checks']-self.checks[self.role]}
+        result = {'steps_left': setting['max_steps']-self.steps[self.role]}
+        if self.check_enabled:
+            result['checks_left'] = setting['max_checks']-self.checks[self.role]
+        return result
+
+    @property
+    def check_enabled(self):
+        return self.config['env'].get('enable_check', False)
 
     def observe(self, *, facts=(), error=None, check=None, handoff=False):
         structure = self.public_structure()
@@ -87,9 +93,9 @@ class RevisionEnv:
             lines.append('[실행 오류] ' + error)
         if check:
             lines.append('[점수] ' + json.dumps(check, ensure_ascii=False, sort_keys=True))
-        lines.append('[변화]\n' + ('\n'.join(f['message'] for f in facts) if facts else '없음'))
+        lines.append('[marker-change notices: 표지 변화 알림]\n' + ('\n'.join(f['message'] for f in facts) if facts else '없음'))
         if handoff:
-            lines.append('[GLOBAL 인계: 행동 및 누적 변화]\n' + json.dumps({
+            lines.append('[GLOBAL 인계: 행동 및 누적 marker-change notices]\n' + json.dumps({
                 'actions': self.handoff['actions'], 'cohesion_changes': self.handoff['cohesion_changes']},
                 ensure_ascii=False, sort_keys=True))
         lines.append('[글]')
@@ -97,7 +103,7 @@ class RevisionEnv:
             if paragraph.units:
                 lines.append('[' + self.paragraph_ids[paragraph.pid] + ']')
                 lines.extend(self.sentence_ids[u.sid] + ' | ' + u.text for u in paragraph.units)
-        lines.extend(('[한국어 관찰: 생략·DEP는 위치에 관한 힌트]', compact))
+        lines.extend(('[Korean document profile: 한국어 문서 프로필; 생략·DEP는 위치 힌트]', compact))
         return '\n'.join(lines)
 
     def score(self, document, purpose):
@@ -158,7 +164,7 @@ class RevisionEnv:
         old_undo = list(self.undo_stack)
         try:
             value = parse_action(raw)
-            validate_action(value)
+            validate_action(value, allow_check=self.check_enabled)
             action, args = value['action'], value['args']
             if action in ('EDIT', 'MOVE'):
                 candidate = self.document.clone()
@@ -173,6 +179,8 @@ class RevisionEnv:
                 changed = {u.sid for u in before.units + candidate.units}
                 self.document = candidate
             elif action == 'CHECK':
+                if not self.check_enabled:
+                    raise ActionError('check_disabled', '현재 행동 공간은 EDIT/MOVE/UNDO/STOP이며 역할별 제한을 따릅니다.')
                 if self.checks[role] >= self.config['env'][role]['max_checks']:
                     raise ActionError('check_budget', 'CHECK 예산이 없습니다.')
                 self.checks[role] += 1
@@ -203,7 +211,7 @@ class RevisionEnv:
             reason = 'errors'
         elif self.steps[role] >= self.config['env'][role]['max_steps']:
             reason = 'max_steps'
-        elif self.checks[role] >= self.config['env'][role]['max_checks']:
+        elif self.check_enabled and self.checks[role] >= self.config['env'][role]['max_checks']:
             reason = 'max_checks'
         handoff = self._finish(reason) if reason else False
         observation = self.observe(facts=facts, error=error, check=check_result, handoff=handoff)

@@ -124,6 +124,7 @@ class PolicyBackend:
     def __init__(self, config, output):
         import httpx
         self.settings = config['policy']
+        self.context_limit = self.settings.get('context_limit', 32768)
         self.output = Path(output)
         self.model = self.settings['model']
         self.client = httpx.Client(timeout=600)

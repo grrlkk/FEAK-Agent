@@ -1,4 +1,4 @@
-version: verak-v3-phase6-baselines
+version: verak-v3-phase7-teacher-pilot
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -13,6 +13,7 @@ paths:
   phase4_output: verak/v3/outputs/phase4
   phase5_output: verak/v3/outputs/phase5
   phase6_output: verak/v3/outputs/phase6
+  phase7_pilot_output: verak/v3/outputs/phase7_pilot
   active_corrupt: verak/v3/data/corrupt_recoverable
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
@@ -172,6 +173,7 @@ check:
   noise_floor_by_genre_key: reward.quality.noise_floor_by_genre
 env:
   mode: two_stage
+  enable_check: false  # Main method: scorer only for terminal rewards/evaluation.
   max_consecutive_errors: 3
   single: {max_steps: 24, max_checks: 4}
   global: {max_steps: 14, max_checks: 2}
@@ -203,6 +205,7 @@ runtime:
   max_cost_usd: 10.0
   sample_seed: 47
 policy:
+  context_limit: 32768
   base_url: http://127.0.0.1:8030/v1
   model: kanana-policy
   base_revision: c963a5f4f6496c749f94064a20b33028b0db9f19
@@ -223,3 +226,12 @@ phase6:
   bootstrap_seed: 61
   bootstrap_samples: 10000
   sentence_alignment_threshold: 0.35
+phase7_pilot:
+  seed: 71
+  size: 100
+  per_level: 25
+  phase_api_ceiling: 6000
+  max_cost_usd: 15.0
+  max_concurrent_requests: 4
+  selection_percentile: 60
+  sft_max_len: 8192
