@@ -1,4 +1,4 @@
-version: verak-v3-phase3b-retry
+version: verak-v3-phase4-addendum1
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -10,6 +10,7 @@ paths:
   phase3_output: verak/v3/outputs/phase3
   phase3b_output: verak/v3/outputs/phase3b
   phase3b_full_output: verak/v3/outputs/phase3b/full
+  phase4_output: verak/v3/outputs/phase4
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -31,6 +32,7 @@ scorer:
   average_k: 1
   average_seed: 13
 teacher:
+  # Historical Phase 1 reproduction only. New trajectories use role_teacher below.
   model: gpt-5-mini
   reasoning_effort: low
   phase_api_ceiling: 700
@@ -136,6 +138,13 @@ corruption_finalize:
   score_corrupted: true
   scorer_average_k: 1
 reward:
+  w_rec: 1.0
+  w_q: 0.3
+  w_over: 0.5
+  w_step: 0.01
+  w_coh: 1.0
+  dependents_weight: 0.3
+  role_recovery: record_mean_plus_global_coupled_for_korean
   quality:
     enabled_from_phase: 4
     scorer_method: score
@@ -158,3 +167,29 @@ check:
   show_noise_floor: true
   noise_floor_key: reward.quality.noise_floor
   noise_floor_by_genre_key: reward.quality.noise_floor_by_genre
+env:
+  mode: two_stage
+  single: {max_steps: 24, max_checks: 4}
+  global: {max_steps: 14, max_checks: 2}
+  korean: {max_steps: 14, max_checks: 2}
+  verifier: false
+cheap_model:
+  model: gpt-6-luna
+  reasoning_effort: low
+role_teacher:
+  model: gpt-6.1-sol
+  reasoning_effort: low
+similarity:
+  model: BAAI/bge-m3
+  tau: 0.6084223985671997
+  margin: 0.05
+  calibration: verak/v3/outputs/phase4/similarity_metrics.json
+reconstruction:
+  n: 200
+  seed: 43
+  phase_api_ceiling: 650
+  judge_model: gpt-6.1-sol
+  judge_reasoning_effort: high
+  local_temperature: 0.7
+  local_gpu: 0
+  local_max_new_tokens: 384

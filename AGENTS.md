@@ -1,6 +1,7 @@
 # FEAK-Agent repository instructions
 
 작업을 시작하기 전에 `feak_tc_docs/CODEX.md`를 읽고 따른다.
+Read imple/VERAK_V3_SPEC_ADDENDUM_1.md before every phase; it overrides the spec.
 
 ## 필수 Git/GitHub 흐름
 
