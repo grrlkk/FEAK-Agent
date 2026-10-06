@@ -36,10 +36,7 @@ def test_each_active_operator_source_and_unchanged(example,op):
     restored = restore_record(changed,record,bank)
     assert main_recovery(source,restored,record) == 1
     value = main_recovery(source,changed,record)
-    if op=='G_PARA_SWAP':
-        assert value==pytest.approx(2/3)  # Unchanged Kendall partial credit, explicitly reported.
-    else:
-        assert value==0
+    assert value==0
     assert overedit(source,source,restored,[record])['value']==0
 
 
@@ -120,7 +117,9 @@ def test_subject_corruption_cannot_earn_dependency_repair_credit(example):
     global_record={'op':'G_PARA_SWAP','level':'GLOBAL','sids':['S4'],
         'recovery_target':{'paragraph_ids':['P1','P2','P3']},
         'coupled_changes':[{'kind':'DEP','sid':'S5','previous_before':'S4'}]}
-    results=recover_records(source,changed,[global_record,subject])
+    baseline=source.clone()
+    baseline.paragraphs.reverse()
+    results=recover_records(source,changed,[global_record,subject],corrupted=baseline)
     assert results[0]['coupled']==0
     assert results[1]['main']==0
 
@@ -151,7 +150,9 @@ def test_main_recovered_but_coupled_position_unrecovered_gives_point_seven(examp
     final=source.clone()
     p=final.paragraphs[1]
     p.units[0],p.units[2]=p.units[2],p.units[0]
-    result=recover_records(source,final,[record])[0]
+    baseline=source.clone()
+    baseline.paragraphs.reverse()
+    result=recover_records(source,final,[record],corrupted=baseline)[0]
     assert result['main']==1 and result['coupled']==0
     assert result['recovery']==pytest.approx(.7)
 
@@ -182,7 +183,17 @@ def test_role_split_uses_middle_global_final_local_and_separate_quality(example)
     result2=rewards(source,corrupted,source,[global_record,word,sentence,text],genre='논증',
         q_corrupted=5,q_stage1=5,q_final=6,config=config,mode='two_stage',stage1=corrupted,
         stage2_actions=logs2)
-    assert result2['global']['R_rec']==pytest.approx(2/3)
+    assert result2['global']['R_rec']==0
+
+
+def test_paragraph_order_reward_is_improvement_from_episode_start():
+    from verak.v3.reward.recovery import order_improvement
+    order=['P1','P2','P3','P4']
+    corrupted=['P4','P2','P3','P1']
+    assert order_improvement(order,corrupted,corrupted)==0
+    assert order_improvement(order,order,corrupted)==1
+    assert order_improvement(order,list(reversed(order)),corrupted)==0
+    assert 0<order_improvement(order,['P2','P1','P3','P4'],corrupted)<1
 
 
 def test_role_overedit_attribution_undo_and_excluded_sites(example):

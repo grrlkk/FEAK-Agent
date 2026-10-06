@@ -39,7 +39,21 @@ def _at_site(record, ann):
     return mapped_span(original, ann.text, *target['site'])
 
 
-def main_recovery(source, final, record, *, similarity=None, tau=None, annotations=None,
+def order_tau(order, current):
+    positions = {pid: i for i, pid in enumerate(current)}
+    pairs = [(a, b) for i, a in enumerate(order) for b in order[i + 1:]]
+    return sum(a in positions and b in positions and positions[a] < positions[b]
+               for a, b in pairs) / len(pairs) if pairs else 1.
+
+
+def order_improvement(order, final, corrupted):
+    baseline = order_tau(order, corrupted)
+    if baseline >= 1:
+        raise ValueError('Paragraph corruption has no order damage to normalize')
+    return max(0., min(1., (order_tau(order, final) - baseline) / (1. - baseline)))
+
+
+def main_recovery(source, final, record, *, corrupted=None, similarity=None, tau=None, annotations=None,
                   excluded_reconstruction_ids=()):
     """Record-derived targets; no antecedent identity and no hidden-answer prompts."""
     op, target = record['op'], record['recovery_target']
@@ -49,12 +63,16 @@ def main_recovery(source, final, record, *, similarity=None, tau=None, annotatio
     sid = record['sids'][0]
     ann = annotations.get(sid)
     if op == 'G_PARA_SWAP':
-        order = target['paragraph_ids']
-        positions = {p.pid: i for i,p in enumerate(final.paragraphs)}
-        pairs = [(a,b) for i,a in enumerate(order) for b in order[i+1:]]
-        # Concordant-pair fraction is Kendall tau mapped to [0,1]. Missing pairs get zero.
-        return sum(a in positions and b in positions and positions[a] < positions[b]
-                   for a,b in pairs) / len(pairs) if pairs else 1.
+        if corrupted is not None:
+            initial = [p.pid for p in corrupted.paragraphs]
+        else:
+            # Standalone apply/restore tests may use the record's one-step state.
+            # Episodes always pass their actual, fully corrupted starting document.
+            initial = [p['pid'] for p in record['inverse']['paragraphs']]
+            a, b = record['params']['paragraph_indices']
+            initial[a], initial[b] = initial[b], initial[a]
+        return order_improvement([p.pid for p in source.paragraphs],
+                                 [p.pid for p in final.paragraphs], initial)
     if op == 'G_SENT_MOVE':
         if ann is None or ann.paragraph != target['paragraph']:
             return 0.
@@ -134,7 +152,7 @@ def coupled_recovery(record, annotations, source_annotations=None, *, blocked_su
     return value, details
 
 
-def recover_records(source, final, records, *, similarity=None, tau=None, coupled_weight=.3):
+def recover_records(source, final, records, *, corrupted=None, similarity=None, tau=None, coupled_weight=.3):
     if not 0 <= coupled_weight <= 1:
         raise ValueError('Coupled weight out of range')
     annotations = {a.sid: a for a in final.structure().annotations}
@@ -146,7 +164,7 @@ def recover_records(source, final, records, *, similarity=None, tau=None, couple
                      main_recovery(source,final,r,annotations=annotations)==0}
     results = []
     for i,record in enumerate(records):
-        main = main_recovery(source, final, record, similarity=similarity, tau=tau, annotations=annotations,
+        main = main_recovery(source, final, record, corrupted=corrupted, similarity=similarity, tau=tau, annotations=annotations,
                              excluded_reconstruction_ids=off_topic_ids)
         coupled, changes = coupled_recovery(record, annotations, source_annotations,
                                             blocked_subject_ids=bad_subject_ids)

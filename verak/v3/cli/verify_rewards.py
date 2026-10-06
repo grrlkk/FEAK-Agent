@@ -16,8 +16,14 @@ class NoLiveAnalysis:
 
 
 def main():
+    import argparse
+    from pathlib import Path
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--out', type=Path)
+    args = parser.parse_args()
     config=load_config()
-    output=config['paths']['phase4_output']
+    output=args.out or config['paths'].get('phase5_output', config['paths']['phase4_output'])
+    output.mkdir(parents=True, exist_ok=True)
     examples={e.id:e for e in load_episode_examples(config,'agent_dev')}
     bank=BareunBank(config,analyzer=NoLiveAnalysis(),cache_dir=output/'reward_profile_cache',
         read_cache_dirs=(config['paths']['phase3b_output']/'bareun_units',
@@ -33,14 +39,14 @@ def main():
     for row in rows:
         sid=row['source_id']
         source=cache[sid]
-        for result in recover_records(source,source,row['records']):
+        corrupted=Document.restore(row['corrupted_layout'],bank)
+        for result in recover_records(source,source,row['records'],corrupted=corrupted):
             counts[result['op']]+=1
             if result['recovery']!=1:
                 failures.append({'episode_id':row['episode_id'],**result})
         if overedit(source,source,source,row['records'])['value']!=0:
             raise ValueError('Source has nonzero overedit')
-        corrupted=Document.restore(row['corrupted_layout'],bank)
-        for result in recover_records(source,corrupted,row['records']):
+        for result in recover_records(source,corrupted,row['records'],corrupted=corrupted):
             unchanged[result['op']].append(result['recovery'])
             if result['recovery']:
                 partial.append({'episode_id':row['episode_id'],**result})
@@ -53,7 +59,7 @@ def main():
     write_json(output/'source_recovery_audit.json',result)
     print({'essays':len(rows),'records':sum(counts.values()),'source_failures':len(failures),
            'unchanged_nonzero':len(partial)})
-    if failures:
+    if failures or partial:
         raise SystemExit('Source recovery audit failed')
 
 
