@@ -99,7 +99,7 @@ def rewards(source, corrupted, final, records, *, genre, q_corrupted, q_final, c
     if mode not in {'single','two_stage'}:
         raise ValueError('Unknown episode mode')
     weight = config.get('dependents_weight',.3)
-    end = recover_records(source, final, records, similarity=similarity, tau=tau, coupled_weight=weight)
+    end = recover_records(source, final, records, corrupted=corrupted, similarity=similarity, tau=tau, coupled_weight=weight)
     all_actions = list(stage1_actions)+list(stage2_actions) if mode=='two_stage' else list(actions)
     combined = _breakdown([r['recovery'] for r in end], end,
         quality_reward(q_corrupted,q_final,genre,config),
@@ -109,7 +109,7 @@ def rewards(source, corrupted, final, records, *, genre, q_corrupted, q_final, c
         return {'mode': mode, 'global': None, 'korean': None, 'combined': combined}
     if stage1 is None or q_stage1 is None:
         raise ValueError('two_stage rewards require actual stage-1 text and score')
-    middle = recover_records(source,stage1,records,similarity=similarity,tau=tau,coupled_weight=weight)
+    middle = recover_records(source,stage1,records,corrupted=corrupted,similarity=similarity,tau=tau,coupled_weight=weight)
     global_records = [r for r in middle if r['level']=='GLOBAL']
     korean_records = [r for r in end if r['level'] in LOCAL_LEVELS or r['coupled'] is not None]
     korean_terms = [r['main'] for r in end if r['level'] in LOCAL_LEVELS] + [

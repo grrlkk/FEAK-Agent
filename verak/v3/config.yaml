@@ -1,4 +1,4 @@
-version: verak-v3-phase4-addendum1
+version: verak-v3-phase5-runtime
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -11,6 +11,7 @@ paths:
   phase3b_output: verak/v3/outputs/phase3b
   phase3b_full_output: verak/v3/outputs/phase3b/full
   phase4_output: verak/v3/outputs/phase4
+  phase5_output: verak/v3/outputs/phase5
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -169,6 +170,7 @@ check:
   noise_floor_by_genre_key: reward.quality.noise_floor_by_genre
 env:
   mode: two_stage
+  max_consecutive_errors: 3
   single: {max_steps: 24, max_checks: 4}
   global: {max_steps: 14, max_checks: 2}
   korean: {max_steps: 14, max_checks: 2}
@@ -193,3 +195,17 @@ reconstruction:
   local_temperature: 0.7
   local_gpu: 0
   local_max_new_tokens: 384
+runtime:
+  phase_api_ceiling: 1600
+  max_output_tokens: 2048
+  max_cost_usd: 10.0
+  sample_seed: 47
+policy:
+  base_url: http://127.0.0.1:8030/v1
+  model: kanana-policy
+  base_revision: c963a5f4f6496c749f94064a20b33028b0db9f19
+  conda_env: verak_vllm
+  vllm_version: 0.8.5
+  enable_lora: true
+  max_loras: 2
+  adapters: {}

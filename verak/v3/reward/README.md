@@ -52,6 +52,12 @@ Conjunction alternatives must change the expression and restore the source
 coarse class; this structural criterion is not a semantic appropriateness claim.
 Antecedent identity is never used.
 
+From Phase 5, paragraph-order main recovery is improvement over the actual
+corrupted episode start: `clip((tau_final - tau_corrupted) / (1 - tau_corrupted),
+0, 1)`, with tau mapped to [0, 1]. Unchanged damage receives zero. Role and
+combined reward calls pass the same corrupted baseline. Standalone operator
+tests can reconstruct a single swap's baseline from its record.
+
 Deletion credit uses the source paragraph and source position ±1, with a restored
 ID or a newly inserted ID. Existing neighboring sentences cannot count as newly
 restored support. Exact source restoration is 1; other candidates use the
