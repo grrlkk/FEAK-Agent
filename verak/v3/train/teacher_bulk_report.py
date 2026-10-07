@@ -254,6 +254,11 @@ def render(config, metrics):
         'Costs use the existing pinned Luna rates; historical reused cost is excluded from this $25 budget.', '',
         'A single-process file lock protects collection. Attempt JSON files are committed atomically and '
         'never overwritten. Resuming replays completed API responses under the same attempt namespace. '
+        'If a crash occurs after the durable request file is written but before its ledger update, '
+        'recovery validates the call identity, payload fingerprint, status, and usage before restoring '
+        'the ledger. Valid completed responses replay without another provider request; incomplete '
+        'and timeout outcomes remain failures. Missing, malformed, or mismatched records retain their '
+        'uncertain reservations, and responses lacking usage retain their billing bounds. '
         'Previously failed or uncertain calls are not sent again; interrupted request bounds remain '
         'reserved. Budget exhaustion stops new dispatch and drains already reserved requests.', '',
         f"Stop reason: `{metrics['run_status'].get('stop_reason')}`; unattempted slots: {len(metrics['missing_slots'])}. "

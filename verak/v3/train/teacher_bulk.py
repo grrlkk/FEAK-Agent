@@ -8,6 +8,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -22,6 +23,7 @@ from ..env import RevisionEnv
 from ..eval.api import Phase6API, Phase6Teacher
 from ..eval.resources import Resources
 from ..phase2 import read_jsonl
+from ..reconstruction_api import usage_cost
 from ..view_data import load_episode_examples
 from .pilot import safe_id, stratified_order
 
@@ -152,14 +154,77 @@ def tasks(design):
 class BulkAPI(Phase6API):
     """Use aggregate reservations and refuse to regenerate interrupted calls."""
 
+    def _durable_outcome(self, call_id, stage, item_id, fingerprint, reserved):
+        """Validate the record written before the parent's ledger update."""
+        path = self.output / 'requests' / f'{call_id:06}.json'
+        try:
+            record = read_json(path)
+            if not isinstance(record, dict) or type(record.get('phase_call')) is not int or any(record.get(key) != value for key, value in (
+                ('phase_call', call_id), ('fingerprint', fingerprint), ('stage', stage),
+                ('item_id', item_id), ('model', self.model))):
+                raise ValueError('durable request identity mismatch')
+            keys = ('stage', 'item_id', 'model', 'reasoning_effort', 'max_output_tokens', 'messages', 'schema')
+            contract = {key: record[key] for key in keys}
+            if sha_text(json.dumps(contract, ensure_ascii=False, sort_keys=True)) != fingerprint:
+                raise ValueError('durable request payload fingerprint mismatch')
+            status = record['status']
+            if status not in {'completed', 'incomplete', 'error', 'failed', 'cancelled'}:
+                raise ValueError('durable response has no terminal status')
+            if status != 'error' and (not isinstance(record.get('raw'), str) or
+                    not isinstance(record.get('response_id'), str) or not record['response_id']):
+                raise ValueError('durable response body is incomplete')
+            if status == 'error' and not isinstance(record.get('error_type'), str):
+                raise ValueError('durable exception record is incomplete')
+            confirmed = 0.0
+            usage = record.get('usage')
+            if usage is not None:
+                if not isinstance(usage, dict) or any(type(usage.get(k)) is not int or usage[k] < 0
+                        for k in ('input_tokens', 'output_tokens')):
+                    raise ValueError('durable response usage is invalid')
+                for field, keys in (('input_tokens_details', ('cached_tokens', 'cache_write_tokens')),
+                                    ('output_tokens_details', ('reasoning_tokens',))):
+                    details = usage.get(field)
+                    if details is not None and (not isinstance(details, dict) or any(
+                            type(details.get(k, 0)) is not int or details.get(k, 0) < 0 for k in keys)):
+                        raise ValueError('durable response usage details are invalid')
+                expected = usage_cost(self.model, usage)
+                if any(value < 0 or not math.isfinite(value) for value in expected.values()):
+                    raise ValueError('durable response cost is invalid')
+                if expected['reasoning'] > expected['output']:
+                    raise ValueError('durable reasoning usage exceeds output usage')
+                cost = record['cost']
+                if not isinstance(cost, dict) or any(type(cost.get(k)) not in (int, float) or
+                        not math.isfinite(cost[k]) or abs(cost[k] - value) > 1e-12 for k, value in expected.items()):
+                    raise ValueError('durable response cost/usage mismatch')
+                confirmed = expected['confirmed_usd']
+            elif record.get('cost'):
+                raise ValueError('durable cost lacks supporting usage')
+            timeout = 'Timeout' in record.get('error_type', '') or 'timeout_reservation_usd' in record
+            # Successful/incomplete responses without usage can be replayed/preserved,
+            # but their billing remains unknown. Never release that reservation.
+            retained = reserved if timeout or (usage is None and status != 'error') else 0.0
+            return {'status': status, 'confirmed': confirmed, 'reserved': retained,
+                'path': str(path), 'reconciliation': 'recovered_durable_record'}
+        except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
+            return {'status': 'interrupted_unconfirmed', 'reserved': reserved,
+                'path': None, 'reconciliation': 'reservation_retained', 'reason': type(exc).__name__ + ': ' + str(exc)}
+
     def settle_interrupted(self):
+        reconciled = []
         with self.db() as db:
-            rows = db.execute("SELECT id,stage,item_id,reserved FROM calls WHERE status='pending'").fetchall()
-            db.execute("UPDATE calls SET status='interrupted_unconfirmed',finished=? WHERE status='pending'", (time.time(),))
-        if rows:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute("SELECT id,stage,item_id,fingerprint,reserved,confirmed FROM calls WHERE status='pending'").fetchall()
+            for call_id, stage, item_id, fingerprint, reserved, confirmed in rows:
+                outcome = self._durable_outcome(call_id, stage, item_id, fingerprint, reserved)
+                outcome.setdefault('confirmed', confirmed)
+                db.execute('UPDATE calls SET status=?,reserved=?,confirmed=?,path=?,finished=? WHERE id=?',
+                    (outcome['status'], outcome['reserved'], outcome['confirmed'], outcome['path'], time.time(), call_id))
+                reconciled.append({'phase_call': call_id, 'stage': stage, 'item_id': item_id,
+                    'previous_reserved': reserved, **outcome})
+        if reconciled:
             atomic_new(self.output / ('interrupted_' + uuid.uuid4().hex + '.json'),
-                {'requests': rows, 'reservations_retained': True, 'at': time.time()})
-        return rows
+                {'requests': reconciled, 'at': time.time()})
+        return reconciled
 
     def reserve(self, stage, item_id, fingerprint, bound):
         with self.db() as db:

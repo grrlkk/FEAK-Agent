@@ -103,6 +103,7 @@ def test_attempt_two_is_fresh_but_resume_replays_and_unknown_cost_is_retained(tm
                for r in FakeAdapter.requests)
     with api.db() as db:
         db.execute("UPDATE calls SET status='pending',confirmed=0,reserved=.5 WHERE id=?", (one['phase_call'],))
+    (api.output / 'requests' / f"{one['phase_call']:06}.json").unlink()
     assert len(api.settle_interrupted()) == 1
     assert api.accounting()['reserved_usd'] == .5 and api.accounting()['pending'] == 0
     with pytest.raises(RuntimeError, match='no regeneration'):
@@ -112,6 +113,105 @@ def test_attempt_two_is_fresh_but_resume_replays_and_unknown_cost_is_retained(tm
         db.execute('UPDATE calls SET confirmed=12.24,reserved=0')
     with pytest.raises(CallBudgetExceeded):
         api.reserve('bulk_attempt_2', 'new', 'new', .53)
+
+
+def interrupted_call(tmp_path, monkeypatch):
+    """Simulate durable response followed by a crash before the DB/cache writes."""
+    from verak.v3.eval import api as module
+    monkeypatch.setattr(module.socket, 'getaddrinfo', lambda *args: [])
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path
+    FakeAdapter.requests = []
+    api = BulkAPI(config, 80000, phase=PHASE, adapter_factory=FakeAdapter)
+    messages = [{'role': 'user', 'content': 'saved request'}]
+    record = api.request(messages, stage='bulk_attempt_2', item_id='essay:korean:3')
+    (api.output / 'cache' / (record['fingerprint'] + '.json')).unlink()
+    with api.db() as db:
+        db.execute("UPDATE calls SET status='pending',confirmed=0,reserved=?,path=NULL,finished=NULL WHERE id=?",
+            (record['bound_usd'], record['phase_call']))
+    return api, messages, deepcopy(record), api.output / 'requests' / f"{record['phase_call']:06}.json"
+
+
+def test_completed_record_before_ledger_update_restores_cost_and_replays(tmp_path, monkeypatch):
+    api, messages, record, path = interrupted_call(tmp_path, monkeypatch)
+    outcomes = api.settle_interrupted()
+    assert outcomes[0]['reconciliation'] == 'recovered_durable_record'
+    account = api.accounting()
+    assert account['confirmed_usd'] == pytest.approx(record['cost']['confirmed_usd'])
+    assert account['reserved_usd'] == 0 and account['pending'] == 0 and account['calls'] == 1
+    with api.db() as db:
+        assert db.execute('SELECT status,path FROM calls').fetchone() == ('completed', str(path))
+    replay = api.request(messages, stage='bulk_attempt_2', item_id='essay:korean:3')
+    assert replay['raw'] == record['raw'] and replay['replayed']
+    assert len(FakeAdapter.requests) == 1
+    assert api.settle_interrupted() == []
+    assert api.accounting()['confirmed_usd'] == pytest.approx(record['cost']['confirmed_usd'])
+
+
+def test_completed_response_without_usage_keeps_billing_bound_while_replaying(tmp_path, monkeypatch):
+    api, messages, record, path = interrupted_call(tmp_path, monkeypatch)
+    record['usage'] = None
+    record.pop('cost')
+    write_json(path, record)
+    api.settle_interrupted()
+    account = api.accounting()
+    assert account['confirmed_usd'] == 0 and account['reserved_usd'] == record['bound_usd']
+    assert account['pending'] == 0
+    assert api.request(messages, stage='bulk_attempt_2', item_id='essay:korean:3')['replayed']
+    assert len(FakeAdapter.requests) == 1
+
+
+@pytest.mark.parametrize('outcome', ['incomplete', 'timeout'])
+def test_durable_failed_responses_preserve_status_and_never_resend(tmp_path, monkeypatch, outcome):
+    api, messages, record, path = interrupted_call(tmp_path, monkeypatch)
+    record['status'] = 'incomplete' if outcome == 'incomplete' else 'error'
+    record['error_type'] = 'IncompleteResponse' if outcome == 'incomplete' else 'APITimeoutError'
+    if outcome == 'timeout':
+        for key in ('usage', 'cost', 'raw', 'response_id', 'response_model'):
+            record.pop(key)
+        record['timeout_reservation_usd'] = record['bound_usd']
+    write_json(path, record)
+    result = api.settle_interrupted()[0]
+    assert result['status'] == record['status'] and result['path'] == str(path)
+    account = api.accounting()
+    assert account['pending'] == 0
+    assert account['reserved_usd'] == (record['bound_usd'] if outcome == 'timeout' else 0)
+    assert account['confirmed_usd'] == (0 if outcome == 'timeout' else record['cost']['confirmed_usd'])
+    with pytest.raises(RuntimeError, match='no regeneration'):
+        api.request(messages, stage='bulk_attempt_2', item_id='essay:korean:3')
+    assert len(FakeAdapter.requests) == 1
+
+
+@pytest.mark.parametrize('damage', ['missing', 'partial_json', 'partial_response', 'phase_call',
+    'fingerprint', 'stage', 'item_id', 'model', 'payload', 'cost', 'usage_details'])
+def test_unusable_durable_record_keeps_uncertain_reservation_without_send(tmp_path, monkeypatch, damage):
+    api, messages, record, path = interrupted_call(tmp_path, monkeypatch)
+    if damage == 'missing':
+        path.unlink()
+    elif damage == 'partial_json':
+        path.write_text('{"status":')
+    else:
+        if damage == 'partial_response':
+            record.pop('raw')
+        elif damage == 'phase_call':
+            record['phase_call'] += 1
+        elif damage == 'payload':
+            record['messages'][0]['content'] = 'different message'
+        elif damage == 'cost':
+            record['cost']['confirmed_usd'] += 1
+        elif damage == 'usage_details':
+            record['usage']['input_tokens_details'] = 'malformed'
+        else:
+            record[damage] = 'mismatched'
+        write_json(path, record)
+    result = api.settle_interrupted()[0]
+    assert result['status'] == 'interrupted_unconfirmed' and result['path'] is None
+    account = api.accounting()
+    assert account['confirmed_usd'] == 0 and account['reserved_usd'] == record['bound_usd']
+    assert account['pending'] == 0 and account['calls'] == 1
+    with pytest.raises(RuntimeError, match='no regeneration'):
+        api.request(messages, stage='bulk_attempt_2', item_id='essay:korean:3')
+    assert len(FakeAdapter.requests) == 1
 
 
 def test_policy_token_limits_fail_visibly_before_or_after_paid_response():
