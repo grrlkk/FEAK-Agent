@@ -10,6 +10,7 @@ from ..common import read_json, write_json, file_sha
 from ..phase2 import read_jsonl
 from ..train.pilot import safe_id
 from ..view_data import percentiles
+from ..reward.overedit import referenced_ids
 from .data import PHASE, prepare
 from .evaluation import episodes, marker_cases
 from .export import export
@@ -213,6 +214,80 @@ def paired(new, old, corpus, metric='R'):
             'method': 'episode-level level-stratified bootstrap; no source/question clustering correction'}
 
 
+def paired_interpretation(new, old, corpus):
+    """Descriptive reward arithmetic and automatically selected saved loop evidence."""
+    left = {r['episode_id']: r for r in new if r.get('completed') and r.get('reward')}
+    right = {r.get('corpus_episode_id', r['episode_id']): r for r in old if r.get('completed') and r.get('reward')}
+    ids = sorted(left.keys() & right.keys())
+    components = {key: avg(left[i]['reward']['combined']['weighted_components'][key] -
+                          right[i]['reward']['combined']['weighted_components'][key] for i in ids)
+                  for key in ('recovery', 'quality', 'overedit', 'steps')}
+    operators, local = defaultdict(list), Counter()
+    for eid in ids:
+        row = left[eid]
+        a = {r['record_id']: r for r in row['reward']['combined']['per_record']}
+        b = {r['record_id']: r for r in right[eid]['reward']['combined']['per_record']}
+        if a.keys() != b.keys():
+            raise ValueError('Paired recovery record sets differ')
+        final = {u['sid']: u['text'] for p in row['final_layout']['paragraphs'] for u in p['units']}
+        initial = {u['sid']: u['text'] for p in corpus[eid]['corrupted_layout']['paragraphs'] for u in p['units']}
+        cohesion = any(s['role'] == 'cohesion' for s in row['sequences'])
+        local['paired_episodes_with_cohesion'] += cohesion
+        for record in corpus[eid]['records']:
+            key = record['record_id']
+            operators[record['op']].append((a[key]['main'], b[key]['main'],
+                (a[key]['recovery'] - b[key]['recovery']) / len(a) / len(ids)))
+            if record['level'] != 'GLOBAL':
+                local['records'] += 1
+                local['fully_recovered_new'] += a[key]['main'] == 1
+                local['fully_recovered_baseline'] += b[key]['main'] == 1
+                local['targets_unchanged'] += all(sid in final and final[sid] == initial[sid] for sid in record['sids'])
+                local['targets_deleted_in_final'] += any(sid not in final for sid in record['sids'])
+                local['records_without_cohesion'] += not cohesion
+    deletions, empty_loops, preview_loops = Counter(), [], []
+    failures = [r for r in new if not r.get('completed') and r.get('termination') == 'orchestrator_budget']
+    for row in new:
+        records = corpus[row['episode_id']]['records']
+        inserted = {r['recovery_target']['inserted_id'] for r in records if r['op'] == 'G_OFFTOPIC'}
+        targeted = {sid for r in records if r['level'] != 'GLOBAL' for sid in r['sids']}
+        referenced = referenced_ids(records)
+        source = {u['sid'] for p in corpus[row['episode_id']]['source_layout']['paragraphs'] for u in p['units']}
+        for action in row['actions']:
+            if action['valid'] and action['action'] == 'DELETE':
+                if len(action['changed_sids']) != 1:
+                    raise ValueError('Whole-sentence deletion must name exactly one stable target')
+                sid = action['changed_sids'][0]
+                deletions['inserted_G_OFFTOPIC' if sid in inserted else 'local_record_target' if sid in targeted else
+                    'other_record_or_coupled_target' if sid in referenced else 'unreferenced_source' if sid in source else 'editor_inserted'] += 1
+        if row not in failures:
+            continue
+        audits = defaultdict(list)
+        for index, action in enumerate(row['actions']):
+            if action['valid'] and action['action'] == 'AUDIT' and not any(action['result'].values()):
+                audits[action['after_hash']].append(index)
+        for indices in audits.values():
+            empty_loops.append({'episode_id': row['episode_id'], 'count': len(indices), 'action_indices': indices})
+        for sequence in row['sequences']:
+            rejected = Counter((json.dumps(a['args'], sort_keys=True, ensure_ascii=False), a['error']) for a in row['actions']
+                if a['role'] == sequence['role'] and a['delegation'] == sequence['delegation'] and a['action'] == 'PREVIEW' and not a['valid'])
+            for (args, error), count in rejected.items():
+                preview_loops.append({'episode_id': row['episode_id'], 'delegation': sequence['delegation'],
+                    'count': count, 'args': json.loads(args), 'error': error, 'editor_terminal': sequence['terminal']})
+    largest = lambda values: sorted(values, key=lambda value: (-value['count'], value['episode_id']))[0] if values else None
+    if ids and abs(sum(components.values()) - avg(left[i]['reward']['combined']['R'] - right[i]['reward']['combined']['R'] for i in ids)) > 1e-9:
+        raise ValueError('Weighted component differences do not reconstruct the paired R difference')
+    return {'paired_n': len(ids), 'weighted_component_deltas': components,
+        'paired_operators': {op: {'records': len(values), 'new_main': avg(v[0] for v in values),
+            'baseline_main': avg(v[1] for v in values), 'contribution_to_mean_R_rec_delta': sum(v[2] for v in values)}
+            for op, values in sorted(operators.items())}, 'local_coverage': dict(local),
+        'paired_steps': paired_steps(new, old), 'executed_deletion_categories_all_saved': dict(deletions),
+        'orchestrator_budget_failures': len(failures),
+        'failures_with_all_editors_returned': sum(bool(r['sequences']) and all(s['terminal'] in {'REPORT', 'AUTO_REPORT'} for s in r['sequences']) for r in failures),
+        'failures_ending_on_audit': sum(bool(r['actions']) and r['actions'][-1]['action'] == 'AUDIT' for r in failures),
+        'representative_loops': {'most_repeated_empty_audit_same_state': largest(empty_loops),
+                                 'most_repeated_rejected_preview_in_one_delegation': largest(preview_loops)}}
+
+
 def orchestration(rows):
     totals, tools, used, patterns = Counter(), Counter(), Counter(), Counter()
     executed, rejected, rejection_reasons = Counter(), Counter(), Counter()
@@ -413,6 +488,8 @@ def report(config):
                     raise ValueError('Real over-edit diagnostic input changed: ' + prefix)
     for key in ('R', 'R_rec', 'R_q', 'R_over', 'R_step'):
         metrics['paired'][key] = paired(groups['corrupted'], baseline['corrupted'], train, key)
+    if config[PHASE].get('relevance_protection'):
+        metrics['paired_interpretation'] = paired_interpretation(groups['corrupted'], baseline['corrupted'], train)
     metrics['by_level'] = {}
     for level in sorted({train[i]['level'] for i in design['corrupted_ids']}):
         ids = {i for i in design['corrupted_ids'] if train[i]['level'] == level}
@@ -645,6 +722,40 @@ def render(config, m, rows):
     for key, result in m['paired'].items():
         interval = '—' if result['ci95'] is None else ' / '.join(fmt(x) for x in result['ci95'])
         lines.append(f"| {key} | {result['n']} | {fmt(result.get('new'))} | {fmt(result.get('baseline'))} | {fmt(result['delta'])} | {interval} |")
+    if m.get('paired_interpretation'):
+        findings = m['paired_interpretation']
+        component, local, steps = findings['weighted_component_deltas'], findings['local_coverage'], findings['paired_steps']
+        lines += ['', '### Interpretation of the corrected corruption results', '',
+            f"Across {findings['paired_n']} completed pairs, the weighted contributions to the mean R difference are "
+            f"recovery {fmt(component['recovery'])}, quality {fmt(component['quality'])}, over-edit {fmt(component['overedit'])}, "
+            f"and charged steps {fmt(component['steps'])}. Operator main-recovery means below use those same pairs; "
+            'the contribution column includes existing coupled weighting and each essay’s record-count normalization.', '',
+            '| Operator | Records | New main recovery | Baseline main recovery | Contribution to mean R_rec difference |',
+            '|---|---:|---:|---:|---:|']
+        for op, values in findings['paired_operators'].items():
+            lines.append(f"| {op} | {values['records']} | {fmt(values['new_main'])} | {fmt(values['baseline_main'])} | "
+                         f"{fmt(values['contribution_to_mean_R_rec_delta'])} |")
+        lines += ['', f"Local recovery was {local.get('fully_recovered_new', 0)}/{local.get('records', 0)} records versus "
+            f"{local.get('fully_recovered_baseline', 0)}/{local.get('records', 0)} for the baseline. "
+            f"For {local.get('targets_unchanged', 0)} local records, all target sentence texts stayed unchanged; at least one target was absent "
+            f"from the final text for {local.get('targets_deleted_in_final', 0)} records. Cohesion ran in "
+            f"{local.get('paired_episodes_with_cohesion', 0)}/{findings['paired_n']} paired episodes; "
+            f"{local.get('records_without_cohesion', 0)} local records were in episodes without it. The eligibility rule requires markers disturbed "
+            'by Composition; an untouched initial local corruption does not itself authorize Cohesion. The observed coverage is consistent '
+            'with a restricted local-repair path. This comparison does not isolate the causal effect of any one rule.', '',
+            f"Paired raw action counts were {fmt(steps['raw_actions']['new'])} versus {fmt(steps['raw_actions']['baseline'])}, "
+            f"while charged steps were {fmt(steps['charged_steps']['new'])} versus {fmt(steps['charged_steps']['baseline'])}. "
+            'Read tools and ledgers are exempt from combined R_step, so lower charged steps do not imply fewer interactions.', '',
+            'Deletion categories below count executed operations across all saved corruption episodes, including deletions later undone '
+            'and repeated deletions of a restored sentence. They are not unique final deletions. Local-record targets are separate from '
+            'other record/coupled targets; unreferenced source sentences are those eligible for the inherited over-edit metric.', '',
+            '```json', json.dumps(findings['executed_deletion_categories_all_saved'], ensure_ascii=False, indent=2), '```', '',
+            f"There were {findings['orchestrator_budget_failures']} Orchestrator-budget failures; "
+            f"{findings['failures_with_all_editors_returned']} had all editor invocations return and "
+            f"{findings['failures_ending_on_audit']} ended on AUDIT without FINISH. Editor-return enforcement therefore did not guarantee "
+            'a terminal Orchestrator FINISH. These examples are selected automatically for the largest repeated empty-AUDIT count in one state '
+            'and repeated identical rejected PREVIEW count within one delegation among failed episodes. They illustrate loops, not their prevalence.', '',
+            '```json', json.dumps(findings['representative_loops'], ensure_ascii=False, indent=2), '```', '']
     lines += ['',
               '## Question audit and graph quality', '',
               'Question IDs use the existing question hash. ' +

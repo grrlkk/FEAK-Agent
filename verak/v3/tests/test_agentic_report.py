@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 
 from verak.v3.agentic.audit import audit_v3_row, audit_snapshots, expected_protection
-from verak.v3.agentic.report import deletion_summary, orchestration, render, summary, routing_summary, paired_steps
+from verak.v3.agentic.report import deletion_summary, orchestration, render, summary, routing_summary, paired_steps, paired_interpretation
 from verak.v3.common import sha_text
 from verak.v3.agentic.redelegation import summarize_cases
 
@@ -168,6 +168,37 @@ def test_redelegation_reward_summary_never_counts_unavailable_as_zero():
     assert result['by_level']['L2']['mean_delta']['R'] == .4
     assert result['by_level']['L1']['mean_delta']['R'] is None
     assert result['completed_episodes_only']['eligible_redelegations'] == 1
+
+
+def test_interpretation_counts_executed_deletions_and_selects_failure_loops_from_data():
+    layout = {'paragraphs': [{'units': [{'sid': sid, 'text': sid} for sid in ('S1', 'S2', 'S3')]}]}
+    records = [{'record_id': key, 'op': op, 'level': level, 'sids': [sid]}
+               for key, op, level, sid in [('one', 'L_REGISTER', 'TEXT', 'S1'), ('two', 'L_SPACING', 'WORD', 'S2')]]
+    def reward(recovery, steps):
+        return {'combined': {'R': recovery - .01 * steps, 'weighted_components': {
+            'recovery': recovery, 'quality': 0, 'overedit': 0, 'steps': -.01 * steps},
+            'per_record': [{**r, 'main': recovery, 'recovery': recovery} for r in records]}}
+    actions = [{'action': name, 'valid': True, 'changed_sids': ['S3'] if name == 'DELETE' else []}
+               for name in ('DELETE', 'UNDO', 'DELETE', 'REPORT')]
+    completed = {'episode_id': 'paired', 'completed': True, 'reward': reward(0, 4), 'actions': actions,
+                 'sequences': [{'role': 'composition'}], 'final_layout': layout}
+    baseline = {'episode_id': 'paired', 'completed': True, 'reward': reward(1, 2),
+                'actions_by_role': {'global': [{'action': 'STOP'}], 'korean': [{'action': 'STOP'}]}}
+    failure = {'episode_id': 'automatically_selected', 'completed': False, 'termination': 'orchestrator_budget',
+        'sequences': [{'role': 'composition', 'delegation': 1, 'terminal': 'REPORT'}],
+        'actions': [{'role': 'composition', 'delegation': 1, 'valid': False, 'action': 'PREVIEW',
+                     'args': {'action': {'action': 'DELETE', 'args': {'target': 'S1-S3'}}}, 'error': 'invalid target'} for _ in range(3)] +
+                   [{'role': 'composition', 'delegation': 1, 'valid': True, 'action': 'REPORT'}] +
+                   [{'role': 'orchestrator', 'delegation': 1, 'valid': True, 'action': 'AUDIT', 'result': {}, 'after_hash': 'same'} for _ in range(3)]}
+    corpus = {eid: {'records': records if eid == 'paired' else [], 'source_layout': layout, 'corrupted_layout': layout}
+              for eid in ('paired', 'automatically_selected')}
+    result = paired_interpretation([completed, failure], [baseline], corpus)
+    assert result['weighted_component_deltas']['recovery'] == -1
+    assert sum(v['contribution_to_mean_R_rec_delta'] for v in result['paired_operators'].values()) == -1
+    assert result['local_coverage']['fully_recovered_baseline'] == 2
+    assert result['executed_deletion_categories_all_saved']['unreferenced_source'] == 2
+    assert result['failures_with_all_editors_returned'] == result['failures_ending_on_audit'] == 1
+    assert all(v['episode_id'] == 'automatically_selected' and v['count'] == 3 for v in result['representative_loops'].values())
 
 
 @pytest.mark.parametrize('version,protected', [(2, False), (3, False), (3, True)])
