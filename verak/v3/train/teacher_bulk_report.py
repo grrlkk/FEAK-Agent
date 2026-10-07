@@ -260,6 +260,9 @@ def render(config, metrics):
     lines += ['Completion means environment termination and stored reward. STOP, step limits, and invalid-action '
         'termination are distinguished below. API failures remain failures; their confirmed usage is charged. '
         'A completed GLOBAL stage can receive its unchanged local reward when the later KOREAN stage failed.', '']
+    lines += table(['attempt', 'failed episodes', 'runtime error'], [
+        [a, count, error] for a, group in metrics['attempts'].items()
+        for error, count in sorted(group['errors'].items())])
     lines += table(['attempt', 'role', 'reward n', 'R', 'R_rec', 'R_q', 'R_over', 'R_step'], [
         [a, role, v['n']] + [fmt(v[k]) for k in ('R', 'R_rec', 'R_q', 'R_over', 'R_step')]
         for a, group in metrics['attempts'].items() for role, v in group['rewards'].items()])
@@ -332,7 +335,16 @@ def render(config, metrics):
             'implementation readiness only. A passing artifact audit does not mean the bulk request is complete.', '']
     authorization_path = root / 'dispatch_authorization.json'
     if authorization_path.exists():
-        lines += ['Dispatch clarification record: `' + str(authorization_path) + '`.', '']
+        authorization = read_json(authorization_path)
+        lines += ['Dispatch was authorized with the user message: “' + authorization['user_message'] + '.” '
+            'The exact approval and timestamp are retained in [`dispatch_authorization.json`]('
+            + str(authorization_path) + ').', '']
+    provenance_path = root / 'dispatch_code_provenance.json'
+    if provenance_path.exists():
+        provenance = read_json(provenance_path)
+        lines += ['[`dispatch_code_provenance.json`](' + str(provenance_path) + ') preserves the dispatch-time '
+            'file hashes, Git HEAD `' + provenance['git_HEAD'] + '`, and tracked code-diff SHA-256 `'
+            + provenance['tracked_v3_diff_sha256'] + '`. Later commits do not replace this record.', '']
     report_path = config['paths']['repo'] / 'imple/reports/V3_TEACHER_BULK_TWO_STAGE.md'
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text('\n'.join(lines), encoding='utf-8')
