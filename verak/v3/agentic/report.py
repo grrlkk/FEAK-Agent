@@ -153,7 +153,7 @@ def summary(rows, expected, *, baseline=False):
              'cost': sum(r.get('confirmed_episode_cost', r.get('cost_usd', 0)) for r in rows),
              'errors': dict(Counter(r.get('runtime_error', {}).get('message', 'unknown') for r in rows if r.get('runtime_error')))}
     stats['teacher_attempted'] = sum(bool(r.get('calls')) for r in rows)
-    stats['termination'] = dict(Counter('FINISH' if r.get('completed') else
+    stats['termination'] = dict(Counter(('completed' if baseline else 'FINISH') if r.get('completed') else
         (r.get('runtime_error') or {}).get('type', r.get('termination', 'unfinished')) for r in rows))
     stats['cost_per_attempt'] = ratio(stats['cost'], len(rows))
     stats['deletions'] = deletion_summary(rows, expected, baseline=baseline)
@@ -683,10 +683,25 @@ def render(config, m, rows):
     orchestration_view['blocked_response_examples'] = blocked[:3]
     previews = m['orchestration']['preview_details']
     orchestration_view['preview_changed_examples'] = [p for p in previews if p['next'] is not None and p['next'] != p['preview']][:3]
+    decision_evidence = []
+    reward_pair = m['paired'].get('R', {})
+    if reward_pair.get('n'):
+        corrupted, real = m['new']['corrupted'], m['new']['real']
+        interval = reward_pair['ci95']
+        missing = [cohort + ' completion below 90%' for cohort in ('corrupted', 'real') if m['new'][cohort]['completion'] < .9]
+        if interval is None or interval[1] < 0:
+            missing.append('paired reward CI unavailable' if interval is None else 'paired reward CI wholly below zero')
+        run_label = 'The corrected run' if m.get('initial_run') else 'The pilot'
+        decision_evidence = [f"{run_label} completed **{corrupted['completed']}/{corrupted['expected']} corruptions "
+            f"({100 * corrupted['completion']:.1f}%)** and **{real['completed']}/{real['expected']} real essays "
+            f"({100 * real['completion']:.1f}%)**. Across {reward_pair['n']} completed pairs, combined **ΔR = {fmt(reward_pair['delta'])}**, "
+            + ('95% CI unavailable. ' if interval is None else f"95% CI **[{fmt(interval[0])}, {fmt(interval[1])}]**. ")
+            + ('Decision gates unmet: ' + '; '.join(missing) + '.' if missing else 'Both prespecified decision conditions are met.'), '']
     lines = ['Recommendation: ' + ('adopt the three-agent design.' if m['recommendation'] == 'agentic'
                                   else 'retain the current two-stage design.'), '', f'# V3 Agentic Pilot (v{version})', '',
              'This is a design experiment on 92 agent_train corruptions and 30 Phase-6 real essays, not held-out evaluation. '
              'Both two-stage baselines were read from saved runs, including their failures; neither was regenerated.', '',
+             *decision_evidence,
              f"Confirmed API usage cost: **${m['budget']['confirmed_usd']:.6f} / ${budget:g}**; outstanding conservative reservation: "
              f"${m['budget']['reserved_usd']:.6f}; live requests: {m['budget']['pending']}.", '']
     if m.get('initial_run'):

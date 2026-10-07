@@ -30,6 +30,7 @@ def test_deletion_denominators_include_failures_and_do_not_refund_undo():
     old = deletion_summary(baseline, 3, baseline=True)
     for field in ('valid_deletions', 'rejected_deletion_attempts', 'per_attempted_episode', 'per_completed_episode'):
         assert new[field] == old[field]
+    assert summary(baseline, 3, baseline=True)['termination'] == {'completed': 1, 'unfinished': 1}
 
 
 def test_editor_return_rates_keep_failed_turns_out_of_success_counts():
