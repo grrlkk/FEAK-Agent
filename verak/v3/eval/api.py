@@ -11,7 +11,7 @@ from feak_tc.agent.schemas import OpenAIConfig
 from feak_tc.runtime.openai import CallBudgetExceeded
 from ..api import EnvironmentJSONClient
 from ..common import read_json, write_json, sha_text
-from ..reconstruction_api import usage_cost
+from ..reconstruction_api import usage_cost, RATES
 
 
 class Phase6API:
@@ -20,6 +20,10 @@ class Phase6API:
     def __init__(self, config, max_api_calls, *, adapter_factory=EnvironmentJSONClient, phase='phase6'):
         self.phase = phase
         self.settings = config[phase]
+        self.model = self.settings.get('model', type(self).model)
+        self.rate_family = next((name for name in RATES if self.model == name or self.model.startswith(name+'-')), None)
+        if self.rate_family is None:
+            raise ValueError('Unknown model pricing; cannot reserve budget')
         if not 0 <= max_api_calls <= self.settings['phase_api_ceiling']:
             raise ValueError(f'Invalid --max-api-calls for {phase}')
         self.limit = max_api_calls
@@ -102,7 +106,9 @@ class Phase6API:
         # A sandbox DNS failure is not an API request. Fail before dispatch/reservation.
         socket.getaddrinfo('api.openai.com', 443)
         payload = json.dumps(messages, ensure_ascii=False) + json.dumps(schema)
-        bound = ((len(payload.encode('utf-8'))+4096)*2.5 + max_output*10)/1e6
+        rates = RATES[self.rate_family]
+        bound = ((len(payload.encode('utf-8'))+4096)*max(rates['input'], rates['cache_write']) +
+                 max_output*rates['output'])/1e6
         for attempt in range(4):
             while (call_id := self.reserve(stage, item_id, fingerprint, bound)) is None:
                 time.sleep(.2)
@@ -155,11 +161,13 @@ class Phase6Teacher:
     model = 'gpt-6.1-sol'
     context_limit = 250000
 
-    def __init__(self, api, condition, *, max_output=1024):
+    def __init__(self, api, condition, *, max_output=1024, effort='low'):
         self.api, self.condition = api, condition
         self.max_output = max_output
+        self.model = getattr(api, 'model', type(self).model)
+        self.effort = effort
 
     def generate(self, messages, *, episode_id, role, turn):
         response = self.api.request(messages, stage=self.condition,
-            item_id=f'{episode_id}:{role}:{turn}', max_output=self.max_output)
+            item_id=f'{episode_id}:{role}:{turn}', max_output=self.max_output, effort=self.effort)
         return {**response, 'episode_id': episode_id, 'role': role, 'turn': turn}

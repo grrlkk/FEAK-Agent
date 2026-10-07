@@ -1,4 +1,4 @@
-version: verak-v3-phase7-teacher-pilot2
+version: verak-v3-phase7-teacher-comparison
 paths:
   repo: /home/chanwoo/FEAK-Agent
   valid: data/data_jsonl/valid.jsonl
@@ -15,8 +15,9 @@ paths:
   phase6_output: verak/v3/outputs/phase6
   phase7_pilot_output: verak/v3/outputs/phase7_pilot
   phase7_pilot2_output: verak/v3/outputs/phase7_pilot2
+  phase7_teacher_output: verak/v3/outputs/phase7_teacher
   previous_corrupt: verak/v3/data/corrupt_recoverable
-  active_corrupt: verak/v3/data/corrupt_scope_v2
+  active_corrupt: verak/v3/data/corrupt_scope_v3
   scorer_package: /home/chanwoo/essay_scoring_llm
   scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
   policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
@@ -94,6 +95,7 @@ structure_policy:
   dependency_signal: positional_hint
   coupled_signal_weights: {CONJ: 1.0, DEP: 0.5}
 corruption:
+  disabled_operators: [L_TRANSLATIONESE, G_VAGUE, G_DELETE_SUPPORT, L_CONJ_DROP]
   seed: 13
   per_essay: 2
   qc_seed: 37
@@ -249,3 +251,11 @@ phase7_pilot2:
   new_pilot_essays: 20
   removed_operators: [G_DELETE_SUPPORT]
   new_operator: L_CONJ_DROP
+phase7_teacher:
+  model: gpt-6-luna
+  efforts: [low, medium]
+  phase_api_ceiling: 8000
+  max_cost_usd: 5.0
+  max_concurrent_requests: 4
+  absolute_global_threshold: 0.80
+  absolute_korean_threshold: 0.80
