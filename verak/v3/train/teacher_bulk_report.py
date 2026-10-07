@@ -10,6 +10,38 @@ from .teacher_comparison import absolute_selection
 from .teacher_bulk import PHASE, ROLES, BulkAPI, attempt_path, prepare, replay_baseline_contexts
 
 
+def transport_retry_audit(api):
+    """Distinguish live transport retries from cached replay on resume."""
+    with api.db() as db:
+        rows = db.execute('SELECT id,stage,item_id,fingerprint,status,reserved,confirmed,path FROM calls ORDER BY id').fetchall()
+    grouped = defaultdict(list)
+    for call_id, stage, item_id, fingerprint, status, reserved, confirmed, path in rows:
+        grouped[fingerprint].append({'phase_call': call_id, 'stage': stage, 'item_id': item_id,
+            'status': status, 'reserved_usd': reserved, 'confirmed_usd': confirmed, 'path': path})
+    repeated = []
+    for fingerprint, calls in grouped.items():
+        if len(calls) < 2:
+            continue
+        for call in calls:
+            request = read_json(call['path']) if call['path'] else {}
+            call['http_status'] = request.get('http_status')
+            call['error_type'] = request.get('error_type')
+            call['retryable_transport_error'] = call['status'] == 'error' and (
+                call['http_status'] in (429, 500, 502, 503, 504, 520) or
+                'Timeout' in (call['error_type'] or ''))
+        repeated.append({'fingerprint': fingerprint, 'sends': len(calls), 'calls': calls,
+            'confirmed_usd': sum(c['confirmed_usd'] for c in calls),
+            'retained_reservations_usd': sum(c['reserved_usd'] for c in calls),
+            'nonfinal_outcomes_are_retryable_transports': all(c['retryable_transport_error'] for c in calls[:-1])})
+    return {'fingerprints_with_multiple_sends': len(repeated),
+        'additional_sends': sum(g['sends'] - 1 for g in repeated),
+        'total_sends_in_retry_groups': sum(g['sends'] for g in repeated),
+        'confirmed_usd_in_retry_groups': sum(g['confirmed_usd'] for g in repeated),
+        'retained_reservations_usd_in_retry_groups': sum(g['retained_reservations_usd'] for g in repeated),
+        'live_retry_contract_valid': all(g['sends'] <= 4 and g['nonfinal_outcomes_are_retryable_transports'] for g in repeated),
+        'groups': repeated}
+
+
 def report(config, *, awaiting_seed_clarification=False):
     from transformers import AutoTokenizer
     design, corpus = prepare(config)
@@ -17,6 +49,7 @@ def report(config, *, awaiting_seed_clarification=False):
     tokenizer = AutoTokenizer.from_pretrained(str(config['paths']['policy_base']), local_files_only=True)
     api = BulkAPI(config, 0, phase=PHASE)
     account = api.accounting()
+    retries = transport_retry_audit(api)
     baseline_replay = replay_baseline_contexts(config, tokenizer)
     failures, slots, selected = [], [], {role: {} for role in ROLES}
     checks = 0
@@ -150,6 +183,7 @@ def report(config, *, awaiting_seed_clarification=False):
     new_cost = sum(v['new_cost_usd'] for v in metrics.values())
     check(abs(new_cost - account['confirmed_usd']) < 1e-7, 'all confirmed API usage attributed to saved attempts')
     check(abs(usage['confirmed_usd'] - account['confirmed_usd']) < 1e-7, 'raw usage matches confirmed ledger')
+    check(retries['live_retry_contract_valid'], 'repeated fingerprints only follow allowed live transport retries, at most4 sends')
     status = read_json(root / 'run_status.json') if (root / 'run_status.json').exists() else {}
     if awaiting_seed_clarification:
         if account['calls'] or metrics['1']['attempted'] != 92 or metrics['2']['attempted']:
@@ -166,7 +200,8 @@ def report(config, *, awaiting_seed_clarification=False):
         'total': lengths(token_lengths[role]), 'compacted_calls': compacted[role],
         'compaction_rate': compacted[role] / call_counts[role] if call_counts[role] else None} for role in ROLES}
     result = {'design': design, 'attempts': metrics, 'api': account, 'usage': dict(usage),
-        'api_statuses': dict(statuses), 'tokens': token_stats, 'selection_counts': {r: len(v) for r, v in selected.items()},
+        'api_statuses': dict(statuses), 'transport_retries': retries, 'tokens': token_stats,
+        'selection_counts': {r: len(v) for r, v in selected.items()},
         'selected': selected, 'missing_slots': missing, 'run_status': status, 'validation': validation,
         'baseline_context_replay': baseline_replay, 'distinct_source_essays': len(source_counts),
         'no_training_executed': True}
@@ -259,8 +294,12 @@ def render(config, metrics):
         'the ledger. Valid completed responses replay without another provider request; incomplete '
         'and timeout outcomes remain failures. Missing, malformed, or mismatched records retain their '
         'uncertain reservations, and responses lacking usage retain their billing bounds. '
-        'Previously failed or uncertain calls are not sent again; interrupted request bounds remain '
-        'reserved. Budget exhaustion stops new dispatch and drains already reserved requests.', '',
+        'On resume, a fingerprint with prior failed or uncertain outcomes and no completed response '
+        'is not sent again; interrupted request bounds remain reserved. Within one live invocation, '
+        'the existing API transport may send a request up to four times for transient HTTP errors '
+        '(429/500/502/503/504/520) or timeouts. Incomplete responses are not retried. Every send, '
+        'confirmed charge, and retained timeout reservation remains in the ledger. Budget exhaustion '
+        'stops new dispatch and drains already reserved requests.', '',
         f"Stop reason: `{metrics['run_status'].get('stop_reason')}`; unattempted slots: {len(metrics['missing_slots'])}. "
         f"Audit passed: **{metrics['validation']['passed']}** ({metrics['validation']['checks']} checks); "
         f"failures: `{json.dumps(metrics['validation']['failures'], ensure_ascii=False)}`.", '',
@@ -272,6 +311,19 @@ def render(config, metrics):
         'This is teacher-data collection on agent_train, not a held-out performance evaluation. '
         'The two attempts are stochastic repetitions, and multiple corruption variants can share a source essay. '
         'No training or extra teacher generation follows this report.', '']
+    retries = metrics.get('transport_retries')
+    if retries is not None:
+        lines += ['## Live transport retry audit', '',
+            f"Repeated request fingerprints: {retries['fingerprints_with_multiple_sends']}; "
+            f"additional sends: {retries['additional_sends']}. Confirmed usage across those complete "
+            f"retry groups: ${retries['confirmed_usd_in_retry_groups']:.6f}; retained reservations: "
+            f"${retries['retained_reservations_usd_in_retry_groups']:.6f}. These amounts are already "
+            'included in the collection ledger, not added a second time. Cached replays do not create '
+            'new ledger sends. Per-call statuses and errors are preserved in `metrics.json`.', '']
+        lines += table(['stage', 'item', 'sends', 'statuses', 'confirmed USD', 'reserved USD'], [
+            [g['calls'][0]['stage'], g['calls'][0]['item_id'], g['sends'],
+             ', '.join(c['status'] + (':' + c['error_type'] if c['error_type'] else '') for c in g['calls']),
+             fmt(g['confirmed_usd'], 6), fmt(g['retained_reservations_usd'], 6)] for g in retries['groups']])
     if metrics['run_status'].get('stop_reason') == 'awaiting_seed_clarification':
         lines[2:2] = ['**Collection has not started.** The requested change of model sampling seed cannot '
             'be sent through the existing Responses API. A clarification is pending on using independent '

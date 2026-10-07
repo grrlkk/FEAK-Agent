@@ -256,3 +256,37 @@ def test_parallel_reservations_never_overspend_cap(tmp_path):
     assert sum(outcomes) in {5, 6}
     assert account['confirmed_usd'] <= .05 and account['reserved_usd'] == 0
     assert account['pending'] == 0
+
+
+@pytest.mark.parametrize('failure', ['http_503', 'timeout'])
+def test_retry_report_distinguishes_live_retries_from_resume(tmp_path, monkeypatch, failure):
+    from verak.v3.eval import api as module
+    from verak.v3.train.teacher_bulk_report import transport_retry_audit
+    monkeypatch.setattr(module.socket, 'getaddrinfo', lambda *args: [])
+    monkeypatch.setattr(module.time, 'sleep', lambda *args: None)
+    class TransientHTTPError(Exception):
+        status_code = 503
+    class APITimeoutError(Exception):
+        pass
+    sends = []
+    class Adapter(FakeAdapter):
+        def create(self, **kwargs):
+            sends.append(kwargs)
+            if len(sends) == 1:
+                raise (TransientHTTPError() if failure == 'http_503' else APITimeoutError())
+            return super().create(**kwargs)
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path
+    api = BulkAPI(config, 80000, phase=PHASE, adapter_factory=Adapter)
+    messages = [{'role': 'user', 'content': 'same live request'}]
+    response = api.request(messages, stage='bulk_attempt_1', item_id='essay:global:1')
+    replay = api.request(messages, stage='bulk_attempt_1', item_id='essay:global:1')
+    assert replay['replayed'] and len(sends) == 2
+    report = transport_retry_audit(api)
+    assert report['live_retry_contract_valid']
+    assert report['fingerprints_with_multiple_sends'] == report['additional_sends'] == 1
+    assert report['total_sends_in_retry_groups'] == 2
+    assert [c['status'] for c in report['groups'][0]['calls']] == ['error', 'completed']
+    assert report['confirmed_usd_in_retry_groups'] == response['cost']['confirmed_usd']
+    assert report['retained_reservations_usd_in_retry_groups'] > 0 if failure == 'timeout' else (
+        report['retained_reservations_usd_in_retry_groups'] == 0)
