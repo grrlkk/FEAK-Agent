@@ -1,4 +1,38 @@
-# VERAK v3 — Phase 7 teacher comparison
+# VERAK v3 — Agentic design pilot
+
+최신 설계 실험은 `agentic/`의 총괄·구성 편집·응집 편집 세 역할이다.
+기존 two-stage 설계와 비교하며, 저장된 Luna-low 92편과 observation
+test의 실제 글 30편 기준선을 재사용한다. 그래프는 문항 Q를 루트로
+두 독립 추출의 교집합을 사용하고 QUERY/AUDIT/PREVIEW로 조회한다. 담화 관계는
+편집 뒤 다시 추론하지 않으며 바른 표지·인접 관계만 갱신한다.
+
+```bash
+python -m verak.v3.cli.agentic_pilot audit --max-api-calls 0
+python -m verak.v3.cli.agentic_pilot prompts --max-api-calls 0
+python -m verak.v3.cli.agentic_pilot graphs --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot corrupted --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot real --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot markers --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot relevance --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot report --max-api-calls 0
+```
+
+순서는 사용자 우선순위다. 모든 유료 단계는 같은 **$6** 장부를 공유하고, 미확인
+비용 예약도 상한에서 차감한다. CLI는 모델 호출 전에 키 전달과 바른 실제 분석을
+확인한다. 편집·총괄 교사는 Luna low, 문맥 8,192/출력 1,024이고 각 프롬프트는
+정책 tokenizer 기준 400토큰 이하다. 도구 관찰은 사실이며 의미 오류 판정이 아니다.
+
+`audit`는 활성 코퍼스에 문항 텍스트와 hash 기반 ID를 보완하고 원본을 로컬에
+보존한다. `report`는 실제 전송 입력과 행동 JSON을 역할별 SFT 형식으로 내보내되
+학습하지 않는다. 출력·비용·실패·검증은 `outputs/agentic_pilot/`, 보고서는
+`imple/reports/V3_AGENTIC_PILOT.md`에 보관한다. Bulk 생성·SFT·RFT 진입점은 없다.
+
+역할 보상은 편집 write만 step 비용으로 세고, combined R은 기존 모든 행동
+비용에서 SCORE/QUERY/AUDIT/PREVIEW/PLAN/PROGRESS만 제외한다. 종료 후
+`accounting.audit_reward`가 저장 행동에 맞춰 이를 검산하며 정책 관찰에는 들어가지
+않는다. 원시 파일럿과 보상 검산 결과를 함께 보존하고 비교·export에는 검산값을 쓴다.
+
+## Phase 7 teacher comparison (이전 단계)
 
 현재 코퍼스는 `config.paths.active_corrupt`의 `corrupt_scope_v3/`다.
 `L_CONJ_DROP`은 비활성화했고 이전 코퍼스와 복구 코드는 재현용으로 보존한다.
