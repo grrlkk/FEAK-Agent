@@ -3,6 +3,7 @@ from collections import Counter
 from pathlib import Path
 import copy
 import json
+import re
 import time
 from types import SimpleNamespace
 
@@ -25,11 +26,13 @@ def system_prompt(role, variant='default', *, allow_check=False):
 
 
 def split_handoff(content):
-    marker = '[GLOBAL 인계: 행동 및 누적 marker-change notices]\n'
-    if marker not in content:
+    match = re.search(r'(?m)^\[GLOBAL 인계:[^\n]*\]\n', content)
+    if match is None:
         return None, content
-    start = content.index(marker)
-    end = content.index('\n[', start + len(marker))
+    start = match.start()
+    end = content.find('\n[', match.end())
+    if end < 0:
+        return content[start:], content[:start]
     return content[start:end], content[:start] + content[end+1:]
 
 
@@ -77,13 +80,15 @@ def validity(raw, *, allow_check=True):
     return True, True
 
 
-def run_episode(env, episode, backend, *, event_path=None, prompt_variant='default'):
+def run_episode(env, episode, backend, *, event_path=None, prompt_variant='default', prompt_factory=None):
     if prompt_variant == 'check_once' and not env.check_enabled:
         raise ValueError('check_once requires env.enable_check=true')
     started = time.monotonic()
     episode_id = f"{backend.name}:{env.mode}:{episode['episode_id']}"
     histories, observations, calls, events = {}, {}, [], []
     error = None
+    def role_prompt(role):
+        return prompt_factory(role) if prompt_factory else system_prompt(role, prompt_variant, allow_check=env.check_enabled)
     def event(value):
         record = {'episode_id': episode_id, **value}
         events.append(record)
@@ -91,7 +96,7 @@ def run_episode(env, episode, backend, *, event_path=None, prompt_variant='defau
             append_jsonl(event_path, record)
     try:
         observation = env.reset(episode)
-        histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant, allow_check=env.check_enabled)},
+        histories[env.role] = [{'role': 'system', 'content': role_prompt(env.role)},
                                {'role': 'user', 'content': observation}]
         observations[env.role] = [observation]
         event({'event': 'reset', 'role': env.role, 'observation': observation})
@@ -142,7 +147,7 @@ def run_episode(env, episode, backend, *, event_path=None, prompt_variant='defau
             if info['handoff']:
                 history.append({'role': 'user', 'content': info['stage_terminal_observation']})
                 observations[role].append(info['stage_terminal_observation'])
-                histories[env.role] = [{'role': 'system', 'content': system_prompt(env.role, prompt_variant, allow_check=env.check_enabled)},
+                histories[env.role] = [{'role': 'system', 'content': role_prompt(env.role)},
                                        {'role': 'user', 'content': observation}]
                 observations[env.role] = [observation]
                 event({'event': 'handoff', 'handoff': env.handoff})
