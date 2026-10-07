@@ -1,21 +1,26 @@
 # VERAK v3 — Agentic pilot v3 and two-stage teacher collection
 
-현재 작업은 별도 장부의 두 실험이다. `agentic_pilot --version 3`는 $5,
+현재 작업은 별도 장부의 두 실험이다. `agentic_pilot --version 3`는 초기 실행을 포함해 $7,
 `teacher_bulk_two_stage`는 $25 상한이며 SFT/RFT는 실행하지 않는다.
 이전 v2 출력과 두 기준선은 보존한다.
 
 ```bash
 python -m verak.v3.cli.agentic_pilot audit --version 3 --max-api-calls 0
 python -m verak.v3.cli.agentic_pilot prompts --version 3 --max-api-calls 0
-python -m verak.v3.cli.agentic_pilot graphs --version 3 --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot protection --version 3 --max-api-calls 0
 python -m verak.v3.cli.agentic_pilot corrupted --version 3 --max-api-calls 12000
 python -m verak.v3.cli.agentic_pilot real --version 3 --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot diagnostics --version 3 --max-api-calls 0
 python -m verak.v3.cli.agentic_pilot markers --version 3 --max-api-calls 12000
 python -m verak.v3.cli.agentic_pilot relevance --version 3 --max-api-calls 12000
 python -m verak.v3.cli.agentic_pilot report --version 3 --max-api-calls 0
 ```
 
-V3의 off_topic_candidate는 두 추출이 모두 명시한 off_topic 문장만 포함한다.
+V3의 off_topic_candidate는 두 추출이 모두 명시한 off_topic 문장에서 보호 집합을 뺀다.
+어느 한 추출에서라도 Q에 addresses인 문장을 시작점으로 삼고, 두 추출의 supports /
+example_of / contrasts 합집합을 target→source 방향으로 최대 2단계 따라 보호한다.
+이는 관련성의 증명이 아니라 무관 후보 표시를 막는 보호 규칙이다. 일반 담화 관계는
+계속 교집합이다. 기존 두 추출을 재사용하며 모델에 다시 추출시키지 않는다.
 AUDIT는 바른 사실·dangling edges와 이 후보만 보여 주며 unsupported는 제외한다.
 구성 편집의 DELETE는 task에 명시된 문장만, 동일 상태의 정확한 PREVIEW 뒤에,
 위임당 최대 2회 허용한다. UNDO는 삭제 횟수를 돌려주지 않는다. 총괄의 SCORE는
@@ -23,7 +28,12 @@ AUDIT는 바른 사실·dangling edges와 이 후보만 보여 주며 unsupporte
 있어야 한다. 편집 행동 2개가 남으면 최종 알림을 보내고 REPORT 없이 소진하면
 controller의 `done (budget)`을 반환한다. 이는 과제 해결 판정이나 학습 타깃이 아니다.
 
-출력은 `outputs/agentic_pilot_v3/`, 보고서는
+초기 출력은 `outputs/agentic_pilot_v3/`에 보존한다. 초기의 닫힌 API 장부와 요청을
+한 번 복사해 모든 초기 비용·미확인 예약을 $7 상한에 포함하고, 수정 파일럿은
+`pilot_protected_*` 요청 공간에서 새로 실행한다. `diagnostics`는 정책 실행 종료 후
+로컬 분석·채점만 사용해 실제 글의 변화량과 AUDIT 뒤 재위임 전후의 combined R을
+검산한다. 이 보상은 정책에 전달하지 않으며 인과 효과로 해석하지 않는다.
+수정 출력은 `outputs/agentic_pilot_v3_protected/`, 보고서는
 `imple/reports/V3_AGENTIC_PILOT_V3.md`다. 이전 인터페이스는 `--version 2`로 재현한다.
 
 ```bash

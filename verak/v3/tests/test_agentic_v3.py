@@ -109,8 +109,8 @@ def test_final_notice_and_auto_report(v3, tmp_path, report_at_notice):
 def test_v3_output_budget_and_prompt_limits():
     from transformers import AutoTokenizer
     config = config_for(version=3)
-    assert config['agentic_pilot']['max_cost_usd'] == 5.
-    assert config['paths']['agentic_pilot_output'].name == 'agentic_pilot_v3'
+    assert config['agentic_pilot']['max_cost_usd'] == 7.
+    assert config['paths']['agentic_pilot_output'].name == 'agentic_pilot_v3_protected'
     assert config_for()['paths']['agentic_pilot_output'].name == 'agentic_pilot'
     tokenizer = AutoTokenizer.from_pretrained(str(config['paths']['policy_base']), local_files_only=True)
     assert all(len(tokenizer.encode(p, add_special_tokens=False)) <= 400

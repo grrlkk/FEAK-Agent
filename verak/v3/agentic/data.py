@@ -15,12 +15,13 @@ def config_for(model='gpt-6-luna', *, version=2):
     if version not in (2, 3):
         raise ValueError('Agentic pilot version must be 2 or 3')
     config = load_config()
-    output = PHASE if version == 2 else PHASE + '_v3'
+    output = PHASE if version == 2 else PHASE + '_v3_protected'
     config['paths'][PHASE + '_output'] = config['paths']['repo'] / 'verak/v3/outputs' / output
     config[PHASE] = {'model': model, 'phase_api_ceiling': 12000,
-                    'max_cost_usd': 6. if version == 2 else 5., 'max_concurrent_requests': 4}
+                    'max_cost_usd': 6. if version == 2 else 7., 'max_concurrent_requests': 4}
     if version == 3:
         config[PHASE]['version'] = version
+        config[PHASE]['relevance_protection'] = True
     return config
 
 
@@ -92,7 +93,11 @@ def prepare(config):
               'decision_rule': 'both cohorts completion >= .90; paired 95% CI upper bound for combined R difference >= 0',
               'low_tool_call_rate': .05, 'bootstrap_seed': 89, 'bootstrap_samples': 10000}
     if config[PHASE].get('version', 2) == 3:
-        design.update(version=3, off_topic_rule='explicit off_topic labels in BOTH extractions',
+        design.update(version=3, off_topic_rule='explicit off_topic labels in BOTH extractions minus relevance protection',
+                      relevance_protection={'seeds': 'addresses Q in EITHER extraction', 'edges': 'union',
+                          'labels': ['supports', 'example_of', 'contrasts'], 'direction': 'target to source',
+                          'max_hops': 2, 'meaning': 'protection only, never proof of relevance'},
+                      budget_scope='combined initial v3 and corrected protected run',
                       score_limit=1, score_only_first_action=True, delegation_limit=3,
                       delete_limit_per_delegation=2, delete_requires_task_id_and_same_state_preview=True,
                       cohesion_requires_disturbed_markers=True, final_editor_notice_steps_left=2,

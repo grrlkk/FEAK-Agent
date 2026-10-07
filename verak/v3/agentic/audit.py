@@ -1,13 +1,105 @@
 """Validate saved experimental contracts without model or analyzer calls."""
 from collections import Counter
+from types import SimpleNamespace
 import json
+import sqlite3
+from pathlib import Path
 
-from ..common import read_json, file_sha, write_json
+from ..common import read_json, file_sha, write_json, sha_text
 from .data import PHASE, prepare
 from .environment import ALLOWED, prompts_for, named_sentence_ids
 from .schemas import action_schema
-from .graph import intersection, validate
+from .graph import intersection, validate, request as graph_request
 from ..train.pilot import safe_id
+
+
+def expected_protection(left, right, sentence_ids):
+    """Independently trace valid raw child edges from either extraction's Q seeds."""
+    ids, children, seeds = set(sentence_ids), {}, set()
+    for raw in (left, right):
+        for edge in raw['sentence_edges']:
+            if not isinstance(edge, dict) or set(edge) != {'source', 'target', 'label'}:
+                continue
+            source, target, label = edge['source'], edge['target'], edge['label']
+            if not all(isinstance(part, str) for part in (source, target, label)) or source not in ids or source == target:
+                continue
+            if label == 'addresses' and target == 'Q':
+                seeds.add(source)
+            if label in {'supports', 'example_of', 'contrasts'} and target in ids:
+                children.setdefault(target, set()).add(source)
+    depths = {sid: 0 for sid in seeds}
+    frontier = set(seeds)
+    for distance in (1, 2):
+        frontier = set().union(*(children.get(parent, set()) for parent in frontier)) - depths.keys() if frontier else set()
+        depths.update({sid: distance for sid in frontier})
+    return {'seeds': sorted(seeds), 'protected_ids': sorted(depths),
+            'depths': {sid: depths[sid] for sid in sorted(depths)},
+            'overridden_off_topic': sorted(set(left['off_topic']) & set(right['off_topic']) & depths.keys())}
+
+
+def layout_text(layout):
+    if len(layout['gaps']) != len(layout['paragraphs']):
+        raise ValueError('Saved layout gap/paragraph count mismatch')
+    ids = [unit['sid'] for paragraph in layout['paragraphs'] for unit in paragraph['units']]
+    if len(ids) != len(set(ids)):
+        raise ValueError('Duplicate stable sentence IDs in a saved snapshot')
+    return ''.join(gap + ''.join(unit['leading'] + unit['text'] for unit in paragraph['units'])
+                   for gap, paragraph in zip(layout['gaps'], layout['paragraphs'])) + layout['tail']
+
+
+def audit_snapshots(row, check, *, aliases=None):
+    """Check every saved delegation boundary and the fresh-AUDIT trigger."""
+    eid, actions = row['episode_id'], row['actions']
+    delegates = [i for i, a in enumerate(actions) if a['valid'] and a['action'] == 'DELEGATE']
+    def public_rows(layout):
+        sentences, paragraphs = aliases
+        def sid(value):
+            if value in sentences:
+                return sentences[value]
+            if value.startswith('N') and value[1:].isdigit():
+                return value
+            raise ValueError('Unknown stable sentence ID in saved snapshot')
+        return [{'sid': sid(unit['sid']), 'paragraph': paragraphs[paragraph['pid']], 'text': unit['text']}
+                for paragraph in layout['paragraphs'] for unit in paragraph['units']]
+    previous_end = None
+    for number, sequence in enumerate(row['sequences']):
+        before, after = sequence.get('before_action_count'), sequence.get('after_action_count')
+        check(type(before) is int and number < len(delegates) and before == delegates[number],
+              'snapshot_before_excludes_delegate', eid)
+        if type(before) is not int or not 0 <= before < len(actions):
+            continue
+        indices = [i for i in range(previous_end, before) if actions[i]['role'] == 'orchestrator' and
+                   actions[i]['action'] == 'AUDIT' and actions[i]['valid']] if previous_end is not None else []
+        check(sequence.get('redelegation_audit_action_indices') == indices and
+              sequence.get('audit_before_redelegation') is bool(indices), 'fresh_audit_redelegation_trigger', eid)
+        try:
+            check(sha_text(layout_text(sequence['before_layout'])) == actions[before]['before_hash'],
+                  'snapshot_before_exact_text', eid)
+            if aliases is not None:
+                check(public_rows(sequence['before_layout']) == actions[before]['before_rows'],
+                      'snapshot_before_exact_ids_order', eid)
+        except (KeyError, TypeError, ValueError):
+            check(False, 'snapshot_before_exact_text', eid)
+        editor_indices = [i for i, a in enumerate(actions) if a['role'] == sequence['role'] and
+                          a['delegation'] == sequence['delegation']]
+        if after is None:
+            check(sequence.get('after_layout') is None and bool(row.get('runtime_error')),
+                  'interrupted_snapshot_is_unavailable', eid)
+        elif sequence['terminal'] in {'REPORT', 'AUTO_REPORT'}:
+            check(type(after) is int and bool(editor_indices) and after == editor_indices[-1] + 1,
+                  'snapshot_after_includes_editor_return', eid)
+            try:
+                check(type(after) is int and 0 < after <= len(actions) and
+                      sha_text(layout_text(sequence['after_layout'])) == actions[after - 1]['after_hash'],
+                      'snapshot_after_exact_text', eid)
+                if aliases is not None:
+                    check(public_rows(sequence['after_layout']) == actions[after - 1]['after_rows'],
+                          'snapshot_after_exact_ids_order', eid)
+            except (KeyError, TypeError, ValueError):
+                check(False, 'snapshot_after_exact_text', eid)
+        else:
+            check(False, 'snapshot_has_actual_editor_return', eid)
+        previous_end = after
 
 
 def scope_sentence_ids(rows, scope):
@@ -133,27 +225,72 @@ def audit(config, rows, tokenizer):
         checks[label] += 1
         if not condition:
             failures.append({'check': label, 'item': item})
+    initial = None
+    if config[PHASE].get('relevance_protection'):
+        initial = read_json(root / 'initial_run.json')
+        check(file_sha(initial['ledger_path']) == initial['ledger_sha256'], 'superseded_ledger_unchanged')
+        with sqlite3.connect('file:' + initial['ledger_path'] + '?mode=ro', uri=True) as old, \
+                sqlite3.connect('file:' + str(root / 'api/ledger.sqlite') + '?mode=ro', uri=True) as current:
+            check(old.execute('PRAGMA table_info(calls)').fetchall() == current.execute('PRAGMA table_info(calls)').fetchall(),
+                  'carried_ledger_schema_unchanged')
+            old_rows = old.execute('SELECT * FROM calls ORDER BY id').fetchall()
+            new_rows = current.execute('SELECT * FROM calls WHERE id <= ? ORDER BY id', (initial['last_call_id'],)).fetchall()
+            check(old_rows == new_rows, 'initial_ledger_prefix_all_fields_unchanged')
+        for name, expected in initial['request_sha256'].items():
+            check(file_sha(root / 'api/requests' / name) == expected and
+                  file_sha(Path(initial['output']) / 'api/requests' / name) == expected,
+                  'initial_request_original_and_copy_unchanged', name)
     for i, baseline in design['baseline_files'].items():
         check(file_sha(baseline['path']) == baseline['sha256'], 'baseline_unchanged', i)
     for path in (root / 'graphs').glob('*.json'):
         value = read_json(path)
+        item = value['id']
+        if initial is not None:
+            source_path = value.get('reused_from')
+            check(bool(source_path) and file_sha(source_path) == value.get('reused_sha256'), 'original_graph_preserved', item)
+        source = train.get(item) or dev.get(item)
+        question = source['question'] if source else examples[item].question
+        check(value['question'] == question, 'graph_question_matches_source', item)
+        paragraphs = [SimpleNamespace(pid=p['pid'], units=[SimpleNamespace(sid=u['sid'], text=u['text'])
+                      for u in p['units']]) for p in value['input_layout']['paragraphs']]
+        document = SimpleNamespace(paragraphs=paragraphs, units=[u for p in paragraphs for u in p.units])
+        messages, schema = graph_request(document, question, version=version)
+        requests = [read_json(root / 'api/requests' / f"{r['phase_call']:06}.json") for r in value['runs']]
+        for number, (run, request) in enumerate(zip(value['runs'], requests), 1):
+            check(request['messages'] == messages, 'exact_graph_prompt_and_input', item)
+            check(request['schema'] == schema, 'exact_graph_output_schema', item)
+            check(request['stage'] == 'graph_extract' and request['item_id'] == f'{item}:run{number}',
+                  'graph_run_request_identity', item)
+            check(request['status'] == 'completed' and json.loads(request['raw']) == run['discourse'],
+                  'graph_raw_response_preserved', item)
+            check(request['model'] == 'gpt-6-luna' and request['reasoning_effort'] == 'low' and
+                  request['max_output_tokens'] == 8192, 'graph_model_and_output_limit', item)
+        if len(requests) == 2:
+            check(requests[0]['messages'] == requests[1]['messages'], 'identical_graph_inputs', item)
+            check(value['runs'][0]['phase_call'] != value['runs'][1]['phase_call'], 'independent_graph_requests', item)
         if value['status'] == 'completed':
             check(len(value['runs']) == 2, 'two_graph_extractions', value['id'])
         if value['status'] != 'completed':
             continue
         intersected, counts = intersection(*[r['discourse'] for r in value['runs']])
-        check(intersected == value['discourse'], 'exact_intersection', value['id'])
+        saved_assertions = {k: v for k, v in value['discourse'].items() if k != 'relevance_protection'}
+        check(intersected == saved_assertions and counts == value['intersection_counts'], 'exact_intersection', value['id'])
         validate(intersected, value['sentence_ids'].values(), value['paragraph_ids'].values())
         if version == 3:
             check('off_topic' in intersected and all('off_topic' in r['discourse'] for r in value['runs']),
                   'explicit_off_topic_in_both_extractions', value['id'])
-            check(value['graph'].get('off_topic_candidate') == intersected.get('off_topic'),
+            candidates = intersected['off_topic']
+            rule = 'explicit_agreement'
+            if config[PHASE].get('relevance_protection'):
+                protection = expected_protection(*[r['discourse'] for r in value['runs']], value['sentence_ids'].values())
+                check(value['discourse'].get('relevance_protection') == protection and
+                      value['graph'].get('relevance_protection') == protection, 'union_two_hop_protection', item)
+                candidates = sorted(set(candidates) - set(protection['protected_ids']))
+                rule = 'explicit_agreement_with_relevance_protection'
+            check(value['graph'].get('off_topic_candidate') == candidates,
                   'graph_uses_explicit_agreement', value['id'])
             if 'off_topic_rule' in value['graph']:
-                check(value['graph']['off_topic_rule'] == 'explicit_agreement', 'explicit_rule_metadata_when_present', value['id'])
-        requests = [read_json(root / 'api/requests' / f"{r['phase_call']:06}.json") for r in value['runs']]
-        check(requests[0]['messages'] == requests[1]['messages'], 'identical_graph_inputs', value['id'])
-        check(all(r['model'] == 'gpt-6-luna' and r['reasoning_effort'] == 'low' for r in requests), 'graph_model', value['id'])
+                check(value['graph']['off_topic_rule'] == rule, 'explicit_rule_metadata_when_present', value['id'])
     for row in rows:
         eid = row['episode_id']
         question = train[eid]['question'] if eid in train else examples[eid].question
@@ -177,6 +314,9 @@ def audit(config, rows, tokenizer):
             check(all(s in obs for s in ('[계획]', '[진행]', '[최근 REPORT]', '[맡은 일]')), 'mandatory_observation_fields', eid)
             check(call['input_tokens'] <= 7168 and call['total_tokens'] <= 8192, 'policy_context_limit', eid)
             request = read_json(root / 'api/requests' / f"{call['phase_call']:06}.json")
+            if initial is not None:
+                check(call['phase_call'] > initial['last_call_id'] and request['stage'] == 'pilot_protected_' + row['cohort'],
+                      'fresh_corrected_policy_request', eid)
             check(request['messages'] == call['messages'], 'exact_request_observation', eid)
             check(request['schema'] == action_schema(role), 'role_output_schema', eid)
             check(request['model'] == 'gpt-6-luna' and request['reasoning_effort'] == 'low' and
@@ -184,8 +324,10 @@ def audit(config, rows, tokenizer):
         if version == 3 and row.get('actions'):
             graph_path = root / 'graphs' / (safe_id(eid) + '.json')
             check(graph_path.exists(), 'episode_has_saved_graph', eid)
-            initial = read_json(graph_path)['graph'] if graph_path.exists() else {}
-            audit_v3_row(row, initial, check)
+            graph_data = read_json(graph_path) if graph_path.exists() else {}
+            audit_v3_row(row, graph_data.get('graph', {}), check)
+            if config[PHASE].get('relevance_protection'):
+                audit_snapshots(row, check, aliases=(graph_data.get('sentence_ids', {}), graph_data.get('paragraph_ids', {})))
         if row['completed']:
             check(bool(row['actions']) and row['actions'][-1]['action'] == 'FINISH' and row['actions'][-1]['valid'], 'finish_completion', eid)
             if row.get('reward'):

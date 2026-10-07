@@ -11,6 +11,10 @@ from .schemas import action_schema
 PILOT_STAGE = 'pilot_final_'
 
 
+def pilot_stage(config):
+    return 'pilot_protected_' if config.get('agentic_pilot', {}).get('relevance_protection') else PILOT_STAGE
+
+
 def run(env, api, tokenizer, config, event_path):
     event_path.parent.mkdir(parents=True, exist_ok=True)
     result = {'episode_id': env.episode['episode_id'], 'cohort': 'corrupted' if 'records' in env.episode else 'real',
@@ -27,7 +31,7 @@ def run(env, api, tokenizer, config, event_path):
 
         def turn(role, index, limit, history):
             messages, stats = context(env, role, limit - index + 1, tokenizer, history)
-            response = api.request(messages, stage=PILOT_STAGE + result['cohort'],
+            response = api.request(messages, stage=pilot_stage(config) + result['cohort'],
                 item_id=f"{result['episode_id']}:{role}:{env.delegations if role != 'orchestrator' else 0}:{index}",
                 effort='low', max_output=1024, schema=action_schema(role))
             call = {k: deepcopy(response.get(k)) for k in ('raw', 'phase_call', 'usage', 'cost', 'response_model')}
@@ -68,6 +72,14 @@ def run(env, api, tokenizer, config, event_path):
                                 'scope_ids': sorted(scope_ids), 'task': args['task'], 'terminal': None, 'reward': None}
                     if env.version == 3:
                         sequence.update(final_notice_sent=False, auto_report=False)
+                    if config.get('agentic_pilot', {}).get('relevance_protection'):
+                        previous_end = result['sequences'][-1]['after_action_count'] if result['sequences'] else None
+                        audits = [i for i, a in enumerate(env.actions) if previous_end is not None and
+                                  previous_end <= i < len(env.actions) - 1 and a['role'] == 'orchestrator' and
+                                  a['action'] == 'AUDIT' and a['valid']]
+                        sequence.update(before_layout=before.snapshot(), before_action_count=len(env.actions) - 1,
+                                        after_layout=None, after_action_count=None,
+                                        audit_before_redelegation=bool(audits), redelegation_audit_action_indices=audits)
                     result['sequences'].append(sequence)
                     for et in range(1, 17):
                         if env.version == 3 and et == 15:
@@ -88,6 +100,8 @@ def run(env, api, tokenizer, config, event_path):
                         sequence['report'] = deepcopy(env.latest_report)
                     sequence['rejected'] = sum(not a['valid'] for a in editor_actions)
                     sequence['reward'] = editor_reward(env, role, before, scope_ids, editor_actions, config)
+                    if config.get('agentic_pilot', {}).get('relevance_protection'):
+                        sequence.update(after_layout=env.document.snapshot(), after_action_count=len(env.actions))
                     env.last_result = {'editor_return': deepcopy(env.latest_report)}
                     histories['orchestrator'].append(deepcopy(env.last_result))
                     emit({'event': 'editor_return', **sequence, 'report': env.latest_report})
