@@ -40,6 +40,8 @@ def bank_for(config):
 
 
 def build(config):
+    if 'L_CONJ_DROP' in config.get('corruption', {}).get('disabled_operators', []):
+        raise ValueError('L_CONJ_DROP is disabled; archived pilot data is read-only')
     from transformers import AutoTokenizer
     root = config['paths'][PHASE+'_output']
     root.mkdir(parents=True, exist_ok=True)
@@ -162,6 +164,8 @@ def bounded_map(items, function, *, workers=4):
 
 
 def judge(config, api):
+    if 'L_CONJ_DROP' in config.get('corruption', {}).get('disabled_operators', []):
+        raise ValueError('L_CONJ_DROP is disabled; do not re-judge archived candidates')
     root = config['paths'][PHASE+'_output']
     rows = [r for split in ('agent_train', 'agent_dev') for r in read_jsonl(root/f'candidates_{split}.jsonl')]
     if len(rows) != 380:
@@ -190,6 +194,8 @@ def judge(config, api):
 
 
 def finalize(config):
+    if 'L_CONJ_DROP' in config.get('corruption', {}).get('disabled_operators', []):
+        raise ValueError('L_CONJ_DROP is disabled; do not re-add archived candidates')
     from ..score.kanana import KananaScorer
     root = config['paths'][PHASE+'_output']
     target = config['paths']['metadata']/'corrupt_scope_v2'

@@ -1,6 +1,28 @@
-# VERAK v3 — Phase 7 second teacher pilot
+# VERAK v3 — Phase 7 teacher comparison
 
-현재 활성 실행은 `two_stage`, CHECK 없음이며, 입력 코퍼스는
+현재 코퍼스는 `config.paths.active_corrupt`의 `corrupt_scope_v3/`다.
+`L_CONJ_DROP`은 비활성화했고 이전 코퍼스와 복구 코드는 재현용으로 보존한다.
+시제·상 프로필 필드는 추가하지 않는다. 아래 bounded comparison만 실행하며
+bulk teacher generation, SFT, RFT 진입점은 제공하지 않는다.
+
+```bash
+python -m verak.v3.cli.teacher_comparison prepare --max-api-calls 0
+python -m verak.v3.cli.teacher_comparison diagnose --max-api-calls 0
+python -m verak.v3.cli.teacher_comparison run --max-api-calls 8000
+python -m verak.v3.cli.teacher_comparison evaluate --max-api-calls 0
+python -m verak.v3.cli.teacher_comparison report --max-api-calls 0
+```
+
+같은 Pilot-2 paired essays에서 Phase-4-pinned Luna low/medium을 비교하고 Sol
+저장 결과를 재사용한다. 두 설정은 $5 장부를 공유한다. 환경·프롬프트·8,192토큰
+문맥은 고정한다. `diagnose`는 저장 로그만 읽고, `evaluate`는 KOREAN 호출 실패 전에
+이미 완료한 GLOBAL 단계의 보상을 로컬 채점기로 평가한다. 실패 요청 비용도 포함한다.
+역할별 절대 보상 기준과 no-GLOBAL STOP 규칙의 통과 수를 집계하며 학습은 하지 않는다.
+실측 결과는 로컬 `imple/reports/V3_PHASE_7_TEACHER.md`에 저장한다.
+
+## Pilot 2 구현 기록 (이전 단계)
+
+Pilot 2의 실행은 `two_stage`, CHECK 없음이며, 당시 입력 코퍼스는
 `config.paths.active_corrupt`의 `corrupt_scope_v2/`다. G_DELETE_SUPPORT가 포함된 글은
 범위 결정으로 제외하고, L_CONJ_DROP은 기존 closed-set 접속어를 삭제한 뒤
 같은 coarse class가 문두에 돌아오면 복구로 인정한다. 모든 새 후보는 글 단위
@@ -18,6 +40,8 @@ R_over는 참조되지 않은 원천 문장에 대해 형태소 거리와 순서
 쌍 비율이며 문장별로 평균한다. 역할별 비용은 자신의 MOVE가 새로 만든 순서
 차이에만 부과한다. GLOBAL 레코드가 없는 SFT 후보는 STOP≤2/R_over=0뿐 아니라
 문장 이동·삽입·삭제를 시도하지 않았어야 한다(거절·UNDO도 해당 행동으로 센다).
+
+아래 후보 생성/QC/재추가 명령은 현재의 비활성화 설정에서 거절된다.
 
 ```bash
 python -m verak.v3.cli.teacher_pilot2 build --max-api-calls 0
