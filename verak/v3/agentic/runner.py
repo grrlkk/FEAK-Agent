@@ -15,6 +15,8 @@ def run(env, api, tokenizer, config, event_path):
     event_path.parent.mkdir(parents=True, exist_ok=True)
     result = {'episode_id': env.episode['episode_id'], 'cohort': 'corrupted' if 'records' in env.episode else 'real',
               'completed': False, 'calls': [], 'sequences': [], 'runtime_error': None, 'reward': None}
+    if env.version == 3:
+        result['version'] = 3
     histories = {'orchestrator': []}
     with event_path.open('w', encoding='utf-8') as log:
         def emit(event):
@@ -64,15 +66,26 @@ def run(env, api, tokenizer, config, event_path):
                     history, editor_actions = [], []
                     sequence = {'role': role, 'delegation': env.delegations, 'scope': args.get('scope', 'all'),
                                 'scope_ids': sorted(scope_ids), 'task': args['task'], 'terminal': None, 'reward': None}
+                    if env.version == 3:
+                        sequence.update(final_notice_sent=False, auto_report=False)
                     result['sequences'].append(sequence)
                     for et in range(1, 17):
+                        if env.version == 3 and et == 15:
+                            sequence['final_notice_sent'] = True
+                            emit({'event': 'final_editor_notice', 'role': role, 'delegation': env.delegations,
+                                  'steps_left': 2})
                         editor_action = turn(role, et, 16, history)
                         editor_actions.append(editor_action)
                         if editor_action['valid'] and editor_action['action'] == 'REPORT':
                             sequence['terminal'] = 'REPORT'
                             break
                     if sequence['terminal'] is None:
-                        env.latest_report = {'agent': role, 'status': 'blocked', 'summary': '편집 행동 예산 소진', 'origin': 'controller'}
+                        env.latest_report = {'agent': role, 'status': 'done (budget)' if env.version == 3 else 'blocked',
+                                             'summary': '편집 행동 예산 소진', 'origin': 'controller'}
+                        if env.version == 3:
+                            sequence.update(terminal='AUTO_REPORT', auto_report=True)
+                    if env.version == 3:
+                        sequence['report'] = deepcopy(env.latest_report)
                     sequence['rejected'] = sum(not a['valid'] for a in editor_actions)
                     sequence['reward'] = editor_reward(env, role, before, scope_ids, editor_actions, config)
                     env.last_result = {'editor_return': deepcopy(env.latest_report)}

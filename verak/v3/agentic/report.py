@@ -2,6 +2,7 @@
 from collections import Counter, defaultdict
 from statistics import mean
 import json
+import re
 
 import numpy as np
 
@@ -25,6 +26,33 @@ def ratio(n, d):
     return n / d if d else None
 
 
+def deletion_summary(rows, expected, *, baseline=False):
+    """Count executed whole-sentence deletions, including subsequently undone ones."""
+    counts, attempts = {}, Counter()
+    for row in rows:
+        actions = row.get('actions_by_role', {}).get('global', []) if baseline else row.get('actions', [])
+        if baseline:
+            selected = [a for a in actions if a['action'] == 'EDIT' and a.get('args', {}).get('new_text') == '']
+        else:
+            selected = [a for a in actions if a['action'] == 'DELETE']
+        valid = sum(bool(a.get('valid')) and (not baseline or
+                    bool(re.fullmatch(r'(?:S|N)\d+', a.get('args', {}).get('target', '')))) for a in selected)
+        counts[row.get('corpus_episode_id', row['episode_id'])] = valid
+        attempts['valid'] += valid
+        attempts['rejected'] += sum(not a.get('valid') for a in selected)
+        attempts['valid_non_sentence'] += sum(bool(a.get('valid')) for a in selected) - valid
+    completed = [counts[r.get('corpus_episode_id', r['episode_id'])] for r in rows if r.get('completed')]
+    return {'definition': 'valid whole-sentence DELETE; baseline GLOBAL EDIT with an empty replacement and a single sentence ID; later UNDO does not erase an executed deletion',
+            'attempted_episodes': len(rows), 'completed_episodes': len(completed), 'intended_episodes': expected,
+            'valid_deletions': attempts['valid'], 'rejected_deletion_attempts': attempts['rejected'],
+            'valid_non_sentence_empty_edits_excluded': attempts['valid_non_sentence'],
+            'per_attempted_episode': avg(counts.values()), 'per_completed_episode': avg(completed),
+            'per_intended_episode': ratio(attempts['valid'], expected),
+            'episodes_with_deletions': sum(n > 0 for n in counts.values()),
+            'maximum_per_episode': max(counts.values(), default=None),
+            'distribution': dict(sorted(Counter(counts.values()).items())), 'by_episode': counts}
+
+
 def summary(rows, expected, *, baseline=False):
     complete = [r for r in rows if r.get('completed')]
     roles = ('global', 'korean', 'combined') if baseline else ('orchestrator', 'composition', 'cohesion', 'combined')
@@ -36,6 +64,7 @@ def summary(rows, expected, *, baseline=False):
     stats['termination'] = dict(Counter('FINISH' if r.get('completed') else
         (r.get('runtime_error') or {}).get('type', r.get('termination', 'unfinished')) for r in rows))
     stats['cost_per_attempt'] = ratio(stats['cost'], len(rows))
+    stats['deletions'] = deletion_summary(rows, expected, baseline=baseline)
     for role in roles:
         values = [r['reward'][role] for r in complete if r.get('reward')]
         stats['rewards'][role] = {'n': len(values), **{k: avg(v[k] for v in values if k in v)
@@ -95,6 +124,8 @@ def paired(new, old, corpus, metric='R'):
 def orchestration(rows):
     totals, tools, used, patterns = Counter(), Counter(), Counter(), Counter()
     blocked, preview_details, off_topic = [], [], []
+    editor_returns = {role: Counter() for role in ('composition', 'cohesion')}
+    auto_report_episodes = set()
     for row in rows:
         actions = row['actions']
         seen = set()
@@ -146,13 +177,33 @@ def orchestration(rows):
                 off_topic.append(row['episode_id'])
         used.update(seen)
         patterns[' -> '.join(delegates) or '(none)'] += 1
-        totals['editor_turns_without_report_at_budget'] += sum(s['terminal'] is None and sum(
-            a['role'] == s['role'] and a['delegation'] == s['delegation'] for a in actions) == 16 for s in row.get('sequences', []))
+        for sequence in row.get('sequences', []):
+            counts = editor_returns[sequence['role']]
+            counts['delegations'] += 1
+            counts['final_notice_sent'] += bool(sequence.get('final_notice_sent'))
+            counts['explicit_reports'] += sequence['terminal'] == 'REPORT'
+            counts['explicit_reports_after_final_notice'] += sequence['terminal'] == 'REPORT' and bool(sequence.get('final_notice_sent'))
+            auto = sequence['terminal'] == 'AUTO_REPORT' and sequence.get('auto_report') is True
+            counts['auto_reports'] += auto
+            counts['unfinished'] += sequence['terminal'] not in {'REPORT', 'AUTO_REPORT'}
+            if auto:
+                auto_report_episodes.add(row['episode_id'])
+            totals['editor_turns_without_report_at_budget'] += auto or (sequence['terminal'] is None and sum(
+                a['role'] == sequence['role'] and a['delegation'] == sequence['delegation'] for a in actions) == 16)
+    keys = ('delegations', 'final_notice_sent', 'explicit_reports', 'explicit_reports_after_final_notice', 'auto_reports', 'unfinished')
+    returns = {role: {key: counts[key] for key in keys}
+               for role, counts in editor_returns.items()}
+    returns['all_editors'] = {key: sum(counts[key] for counts in editor_returns.values()) for key in keys}
+    for counts in returns.values():
+        counts['auto_report_rate_per_delegation'] = ratio(counts['auto_reports'], counts['delegations'])
+        counts['auto_report_rate_after_final_notice'] = ratio(counts['auto_reports'], counts['final_notice_sent'])
+        counts['explicit_report_rate_after_final_notice'] = ratio(counts['explicit_reports_after_final_notice'], counts['final_notice_sent'])
     tool_names = set().union(*ALLOWED.values())
     return {'episodes': len(rows), 'totals': dict(totals), 'tool_calls': {k: tools[k] for k in sorted(tool_names)},
             'tool_episode_use': dict(used), 'tool_episode_rates': {k: used[k] / len(rows) for k in sorted(tool_names)} if rows else {},
             'delegations_mean': avg(r.get('delegations', 0) for r in rows), 'delegation_orders': dict(patterns),
             'blocked_responses': blocked, 'preview_details': preview_details,
+            'editor_returns': returns, 'auto_report_episodes': sorted(auto_report_episodes),
             'off_topic_query_episodes': sorted(set(off_topic)),
             'audit_before_finish_rate': ratio(totals['audit_before_finish'], totals['finishes']),
             'audit_current_before_finish_rate': ratio(totals['audit_current_before_finish'], totals['finishes']),
@@ -187,6 +238,16 @@ def marker_metrics(config):
     return result
 
 
+def graph_flag_summary(value):
+    return {'source_flagged': value.get('source_flagged', 0),
+            'source_sentences': value.get('source_sentences', 0),
+            'source_false_flag_proxy': ratio(value.get('source_flagged', 0), value.get('source_sentences', 0)),
+            'offtopic_flagged': value.get('offtopic_flagged', 0),
+            'offtopic_evaluable': value.get('offtopic_evaluable', 0),
+            'offtopic_total': value.get('offtopic_total', 0),
+            'offtopic_flag_rate': ratio(value.get('offtopic_flagged', 0), value.get('offtopic_evaluable', 0))}
+
+
 def report(config):
     from transformers import AutoTokenizer
     design, train, dev, examples = prepare(config)
@@ -199,7 +260,8 @@ def report(config):
     groups = {cohort: [r for r in new if r['cohort'] == cohort] for cohort in ('corrupted', 'real')}
     baseline = {cohort: [old[i] for i in design['corrupted_ids' if cohort == 'corrupted' else 'real_ids']]
                 for cohort in groups}
-    metrics = {'design': design, 'new': {}, 'baseline': {}, 'paired': {},
+    version = config[PHASE].get('version', 2)
+    metrics = {'version': version, 'design': design, 'new': {}, 'baseline': {}, 'paired': {},
                'question_audit': read_json(root / 'question_audit.json'),
                'graph_quality': read_json(root / 'graph_quality.json'),
                'prompt_tokens': read_json(root / 'prompt_tokens.json'),
@@ -233,6 +295,7 @@ def report(config):
     metrics['relevance'] = {setting: {'expected': 30,
         'eligible_completed_essays': metrics['new' if setting == 'agentic' else 'baseline']['real']['completed'],
         'judged': sum(r['setting'] == setting for r in relevance),
+        'reused_saved_judgments': sum(r['setting'] == setting and bool(r.get('reused_from')) for r in relevance),
         'changes': dict(Counter(r['judgment']['relevance_change'] for r in relevance if r['setting'] == setting)),
         'off_topic_edits': sum(len(r['judgment']['off_topic_edits']) for r in relevance if r['setting'] == setting),
         'essays_with_off_topic_edits': sum(bool(r['judgment']['off_topic_edits']) for r in relevance if r['setting'] == setting)}
@@ -257,16 +320,31 @@ def report(config):
     metrics['environment_preflight'] = read_json(root / 'environment_preflight_failed/status.json') if (root / 'environment_preflight_failed/status.json').exists() else None
     metrics['protocol_preflight'] = read_json(root / 'protocol_preflight/status.json') if (root / 'protocol_preflight/status.json').exists() else None
     metrics['graph_quality']['intersection_retention'] = {
-        k: {'intersection_over_union': ratio(metrics['graph_quality']['intersection_counts'][k + '_intersection'],
-                                             metrics['graph_quality']['intersection_counts'][k + '_union']),
-            'intersection_over_mean_raw': ratio(2 * metrics['graph_quality']['intersection_counts'][k + '_intersection'],
-                metrics['graph_quality']['intersection_counts'][k + '_left'] + metrics['graph_quality']['intersection_counts'][k + '_right'])}
+        k: {'intersection_over_union': ratio(metrics['graph_quality']['intersection_counts'].get(k + '_intersection', 0),
+                                             metrics['graph_quality']['intersection_counts'].get(k + '_union', 0)),
+            'intersection_over_mean_raw': ratio(2 * metrics['graph_quality']['intersection_counts'].get(k + '_intersection', 0),
+                metrics['graph_quality']['intersection_counts'].get(k + '_left', 0) + metrics['graph_quality']['intersection_counts'].get(k + '_right', 0))}
         for k in ('sentence_edges', 'paragraph_edges')}
     metrics['graph_quality']['retention_population'] = 'semantically valid final intersections; invalid graph listed separately'
     metrics['graph_quality']['offtopic_flag_rate'] = ratio(metrics['graph_quality'].get('offtopic_flagged', 0),
                                                         metrics['graph_quality'].get('offtopic_evaluable', 0))
     metrics['graph_quality']['source_false_flag_proxy'] = ratio(metrics['graph_quality'].get('source_flagged', 0),
                                                              metrics['graph_quality'].get('source_sentences', 0))
+    if version == 3:
+        previous = config['paths']['repo'] / 'verak/v3/outputs/agentic_pilot'
+        previous_quality = previous / 'graph_quality.json'
+        previous_design = previous / 'design.json'
+        comparison = {'v3_explicit_both': graph_flag_summary(metrics['graph_quality']),
+                      'v2_no_path_to_Q': None, 'same_intended_population': None}
+        if previous_quality.exists():
+            comparison['v2_no_path_to_Q'] = graph_flag_summary(read_json(previous_quality))
+            comparison['v2_source_path'] = str(previous_quality)
+            comparison['v2_source_sha256'] = file_sha(previous_quality)
+        if previous_design.exists():
+            old_design = read_json(previous_design)
+            comparison['same_intended_population'] = all(old_design[key] == design[key]
+                for key in ('quality_corrupted_ids', 'quality_source_ids'))
+        metrics['graph_flag_comparison'] = comparison
     metrics['runtime_files_unchanged'] = all(file_sha(p) == h for p, h in read_json(root / 'pilot_runtime.json')['files'].items())
     ci = metrics['paired']['R']['ci95']
     adopt = all(metrics['new'][c]['completion'] >= .9 for c in groups) and ci is not None and ci[1] >= 0
@@ -277,6 +355,12 @@ def report(config):
         for r in new for c in r.get('calls', []))
     test_log = root / 'tests_live.txt'
     metrics['test_result'] = test_log.read_text().strip().splitlines()[-1] if test_log.exists() else 'not_run'
+    metrics['preflight_test_results'] = {path.name: path.read_text().strip().splitlines()[-1]
+        for path in sorted(root.glob('*preflight*test*.txt')) if path.read_text().strip()}
+    for name in ('tests_preflight.txt', 'check_env.txt'):
+        path = root / name
+        if path.exists() and path.read_text().strip():
+            metrics['preflight_test_results'][name] = path.read_text().strip().splitlines()[-1]
     from .audit import audit
     metrics['validation'] = audit(config, new, tokenizer)
     write_json(root / 'metrics.json', metrics)
@@ -287,6 +371,9 @@ def report(config):
 
 def render(config, m, rows):
     root = config['paths'][PHASE + '_output']
+    version = config[PHASE].get('version', 2)
+    budget = config[PHASE]['max_cost_usd']
+    output_rel = root.relative_to(config['paths']['repo']).as_posix()
     fmt = lambda v: '—' if v is None else f'{v:.4f}'
     orchestration_view = {k: v for k, v in m['orchestration'].items() if k not in {'preview_details', 'blocked_responses'}}
     blocked = m['orchestration']['blocked_responses']
@@ -299,22 +386,26 @@ def render(config, m, rows):
     orchestration_view['blocked_response_examples'] = blocked[:3]
     previews = m['orchestration']['preview_details']
     orchestration_view['preview_changed_examples'] = [p for p in previews if p['next'] is not None and p['next'] != p['preview']][:3]
-    lines = ['Recommendation: ' + ('adopt the three-agent design for later bulk generation.' if m['recommendation'] == 'agentic'
-                                  else 'retain the current two-stage design for later bulk generation.'), '', '# V3 Agentic Pilot (v2)', '',
+    lines = ['Recommendation: ' + ('adopt the three-agent design.' if m['recommendation'] == 'agentic'
+                                  else 'retain the current two-stage design.'), '', f'# V3 Agentic Pilot (v{version})', '',
              'This is a design experiment on 92 agent_train corruptions and 30 Phase-6 real essays, not held-out evaluation. '
              'Both two-stage baselines were read from saved runs, including their failures; neither was regenerated.', '',
-             f"Confirmed API usage cost: **${m['budget']['confirmed_usd']:.6f} / $6**; outstanding conservative reservation: "
+             f"Confirmed API usage cost: **${m['budget']['confirmed_usd']:.6f} / ${budget:g}**; outstanding conservative reservation: "
              f"${m['budget']['reserved_usd']:.6f}; live requests: {m['budget']['pending']}.", '',
              '## Completion and outcomes', '',
-             '| Cohort | Design | Completed / intended | Combined R | R_over | Teacher USD / attempted essay |',
-             '|---|---|---:|---:|---:|---:|']
+             '| Cohort | Design | Completed / intended | Combined R | R_over | DELETE / attempted essay | DELETE / completed essay | Teacher USD / attempted essay |',
+             '|---|---|---:|---:|---:|---:|---:|---:|']
     for cohort in ('corrupted', 'real'):
         for source in ('baseline', 'new'):
             s = m[source][cohort]
-            lines.append(f"| {cohort} | {source} | {s['completed']}/{s['expected']} | {fmt(s['rewards']['combined']['R'])} | {fmt(s['rewards']['combined']['R_over'])} | {fmt(s['cost_per_attempt'])} |")
+            lines.append(f"| {cohort} | {source} | {s['completed']}/{s['expected']} | {fmt(s['rewards']['combined']['R'])} | {fmt(s['rewards']['combined']['R_over'])} | {fmt(s['deletions']['per_attempted_episode'])} | {fmt(s['deletions']['per_completed_episode'])} | {fmt(s['cost_per_attempt'])} |")
     lines += ['', 'Paired differences use only jointly completed corruptions; completion failures remain in the intended-population denominator. '
               'The recommendation requires at least 90% completion in both cohorts and a paired combined-R 95% CI that does not lie wholly below zero. '
               'This is a design decision rule, not proof of equivalence.', '',
+              'R_over in the cohort table uses all completed corruption episodes; the paired table uses jointly completed episodes. '
+              'Deletion counts include every valid whole-sentence DELETE, even if later undone. Saved baseline equivalents are GLOBAL EDIT actions '
+              'with an empty replacement for one sentence ID. Unattempted essays are excluded from the attempted-episode deletion mean; '
+              'intended-population and completed-episode counts are also saved.', '',
               'Cohort costs cover teacher API attempts. Graph extraction, quality inputs, preflights and Sol evaluation are listed '
               'separately in the shared budget ledger below.', '',
               '| Paired metric | n | New | Baseline | Difference | 95% CI |',
@@ -324,26 +415,48 @@ def render(config, m, rows):
         lines.append(f"| {key} | {result['n']} | {fmt(result.get('new'))} | {fmt(result.get('baseline'))} | {fmt(result['delta'])} | {interval} |")
     lines += ['',
               '## Question audit and graph quality', '',
-              'Question IDs use the existing question hash. Only question metadata was repaired; original active corpus files are archived locally. '
+              'Question IDs use the existing question hash. ' +
+              ('The v3 audit verifies the already repaired active corpus and records any additional repairs explicitly. '
+               if version == 3 else 'Only question metadata was repaired; original active corpus files are archived locally. ') +
               'Graph quality covers all 57 active dev G_OFFTOPIC essays and their 48 distinct sources. Missing graph extractions remain missing. '
               'A source flag is a false-flag proxy, not a human judgment of irrelevance.', '',
               '```json', json.dumps({'question_audit': m['question_audit'], 'graph_quality': m['graph_quality'],
                                    'graph_status': m['graph_status'], 'prompt_tokens': m['prompt_tokens']}, ensure_ascii=False, indent=2), '```', '',
               'The graph contains only the intersection of two independent identical-prompt extractions. All semantic edge constraints and degree limits apply to the intersected state; '
-              'raw invalid assertions are preserved, never arbitrarily pruned. Pre-intersection validation failures were preserved and resumed from '
-              'the same cached request, adding only a missing second extraction. No extraction was regenerated to improve its answer. '
+              'raw invalid assertions are preserved, never arbitrarily pruned. ' +
+              ('Pre-intersection validation failures were preserved and resumed from the same cached request, adding only a missing second extraction. '
+               if version == 2 else '') + 'No extraction was regenerated to improve its answer. '
               'Graph extraction uses an 8,192 output-token allowance; every editor/orchestrator request uses the required 1,024.', '',
+              ('V3 removes the no-path-to-Q rule. A current sentence is an off_topic_candidate only when both extraction responses explicitly '
+               'name it in off_topic. Other discourse edges retain the exact intersection. A support relation to a relevant sentence can be evidence '
+               'of indirect relevance, but relevance does not automatically propagate through every descendant or connection; '
+               'missing Q paths do not establish irrelevance. No replacement relevance inference runs after editing.' if version == 3 else
+               'Off-topic candidates are sentences without a directed graph path to Q.'), '',
+              '```json', json.dumps(m.get('graph_flag_comparison', {'v2_no_path_to_Q': graph_flag_summary(m['graph_quality'])}), ensure_ascii=False, indent=2), '```', '',
+              ('AUDIT contains only off-register sentences, conjunction/omitted-subject predecessor changes since the start, dangling edges, and '
+               'explicit-agreement off_topic_candidate. It has no unsupported list. QUERY(unsupported) remains a graph query: '
+               if version == 3 else '') +
               '`unsupported` means a Q-addressing node without an incoming supports/example_of edge. No separate claim classifier was added. '
               'Paragraph summaries are deterministic first-sentence excerpts (up to 80 characters). Discourse relations are not re-inferred after edits.', '',
               'The action contract reuses the existing editor primitives: MOVE accepts a sentence, a contiguous sentence range or a paragraph; '
               'INSERT anchors before/after a sentence; DELETE removes one sentence. Deleting a paragraph therefore requires its individual sentences '
               'to be deleted. These permissions and the exact prompts were fixed before the formal pilot.', '',
+              ('V3 Composition DELETE is permitted only for a literal sentence ID named in the current Orchestrator task, after an exact deletion '
+               'PREVIEW in the same state and delegation. Each delegation permits at most two executed DELETE actions; UNDO does not refund this limit. '
+               'Editors are prompted to perform only their assigned task and then REPORT. SCORE is available at most once and only as the first '
+               'Orchestrator action; there are at most three DELEGATE calls. Cohesion delegation requires factual disturbed markers inside its scope. '
+               'The Orchestrator is prompted to FINISH when AUDIT has no issues.' if version == 3 else
+               'V2 retains its original four-delegation and two-SCORE limits.'), '',
               '## Orchestration and tools', '', '```json', json.dumps(orchestration_view, ensure_ascii=False, indent=2), '```', '',
               'All blocked-report responses and every PREVIEW/next-action pair are preserved in '
-              '`verak/v3/outputs/agentic_pilot/metrics.json`; the report shows counts and examples.', '',
+              f'`{output_rel}/metrics.json`; the report shows counts and examples.', '',
               'AUDIT lists factual graph/profile findings, including historical predecessor changes; remaining findings do not establish remaining semantic errors. '
-              'Completion means Orchestrator FINISH plus terminal reward calculation for corruptions. An editor reaching 16 actions returns '
-              'a controller-origin budget notice; these returns are counted separately from agent REPORT actions and are ineligible for export. '
+              'Completion means Orchestrator FINISH plus terminal reward calculation for corruptions. ' +
+              ('With two editor steps remaining, the controller sends a final notice. If the editor reaches its 16-action limit without REPORT, '
+               'the controller returns status "done (budget)" and terminal AUTO_REPORT. Auto-report counts and rates are shown for each editor '
+               'and all editors, using both all delegations and final-notice recipients as denominators. ' if version == 3 else
+               'An editor reaching 16 actions returns a controller-origin budget notice. ') +
+              'Controller returns are counted separately from agent REPORT actions and are ineligible for export. '
               'PREVIEW coverage requires the exact action and arguments to have been previewed in the same document state and delegation; '
               'the stricter immediately-preceding rate is also reported. A changed decision compares a preview to the next valid write/UNDO/REPORT.', '',
               'QUERY(off_topic) association (observational, not causal):', '', '```json',
@@ -376,29 +489,37 @@ def render(config, m, rows):
                                    'relevance': m['relevance'], 'relevance_paired': m['relevance_paired'],
                                    'stage_status': m['evaluation_stages']}, ensure_ascii=False, indent=2), '```', '',
               'Judged relevance counts are explicit; unjudged and unfinished essays are not counted as unchanged. '
+              'Reused baseline Sol judgments are counted separately and require the identical saved baseline input and judgment contract. '
               'A lower-priority stage marked not_run was not dispatched when the remaining budget could not fund the preceding stage.', '',
               '## Export, verification and budget', '',
               'Exports preserve the exact inference input and action JSON, with loss only on the target. Observations, prior reports, ledgers and tool results are masked. '
-              'The 0.80 threshold is literal for every agent; no-GLOBAL Composition sequences receive no special reward exemption. '
-              'No bulk generation, SFT or RFT was run.', '', '```json',
+              'The 0.80 threshold is literal for every agent; no-GLOBAL Composition sequences receive no special reward exemption. ' +
+              ('The separately authorized two-stage bulk generation has its own $25 ledger and report, `imple/reports/V3_TEACHER_BULK_TWO_STAGE.md`. '
+               'No SFT or RFT was run.' if version == 3 else 'No bulk generation, SFT or RFT was run.'), '', '```json',
               json.dumps({'export': m['export'], 'budget': m['budget'], 'baseline_hashes_unchanged': m['baseline_hashes_unchanged'],
                           'all_observations_have_question': m['all_observations_have_question'], 'validation': m['validation']}, ensure_ascii=False, indent=2), '```', '',
-              'All new extraction, teacher and Sol calls share a $6 ledger; conservative reservations block requests before crossing the cap. '
+              f'All new extraction, teacher and Sol calls in this pilot share a ${budget:g} ledger; conservative reservations block requests before crossing the cap. '
               'Priority: question audit → graph extraction/quality → 92 corruptions → 30 real essays → Sol markers → Sol relevance. '
               'Usage costs use the existing pinned ledger rates, with reasoning already included in output tokens.', '',
-              'Environment preflight: the first launch lacked the Bareun key used by existing launchers. Its 12 started essays '
+              ('Environment preflight: the first launch lacked the Bareun key used by existing launchers. Its 12 started essays '
               'were archived separately (11 result files plus partial events), all costs remain charged, and one interrupted request retains '
               'its conservative reservation. The actual pilot began only after a live Bareun preflight; PREVIEW JSON nesting was also clarified '
-              'before the final runtime was frozen. These environment-invalid attempts are excluded from design outcomes, not erased.', '',
-              'A subsequent one-essay integration run verified live edits but exposed multiple/malformed JSON responses. It is archived as protocol preflight. '
+              'before the final runtime was frozen. These environment-invalid attempts are excluded from design outcomes, not erased.' if version == 2 else
+               'V3 uses a distinct output directory and ledger; earlier v2 graphs, trajectories, requests and reports are preserved. '
+               'Live stages check Bareun availability before paid model calls. Saved contracts are audited without new model or analyzer calls.'), '',
+              ('A subsequent one-essay integration run verified live edits but exposed multiple/malformed JSON responses. It is archived as protocol preflight. '
               'The formal pilot constrains action JSON syntax with role-specific schemas; semantic errors and budgets are still checked by the environment. '
-              'No baseline was rerun and every preflight cost remains in the same cap.', '',
+              'No baseline was rerun and every preflight cost remains in the same cap.' if version == 2 else
+               'The formal pilot retains role-specific action JSON schemas and the 8,192-token context. Syntactic constraints do not establish semantic '
+               'correctness. Graph agreement remains a model judgment; source false flags are a proxy, and the small paired design comparison '
+               'does not establish held-out performance. Editor auto-reports mean budget exhaustion, not verified completion of the assigned task.'), '',
               '```json', json.dumps({'environment_preflight': m['environment_preflight'], 'protocol_preflight': m['protocol_preflight'],
+                                    'preflight_test_results': m.get('preflight_test_results', {}),
                                     'runtime_files_unchanged': m['runtime_files_unchanged']},
                                    ensure_ascii=False, indent=2), '```', '',
               'Final test suite: `' + m['test_result'] + '`.', '',
-              'Validation logs: `verak/v3/outputs/agentic_pilot/tests_live.txt` (sandbox-only socket failures preserved in `tests.txt`); all raw events, requests, failures, graph responses and exports are local under '
-              '`verak/v3/outputs/agentic_pilot/`.', '', '## Three full example trajectories', '',
+              f'Validation logs: `{output_rel}/tests_live.txt`; all raw events, requests, failures, graph responses and exports are local under '
+              f'`{output_rel}/`.', '', '## Three full example trajectories', '',
               'Examples favor short completed episodes involving all three roles, including a blocked report and a PREVIEW. '
               'This readability selection does not affect aggregate outcomes.', '']
     # Prefer one blocked-report episode, one preview episode, then other short
@@ -428,5 +549,6 @@ def render(config, m, rows):
                 lines += ['```json', event['raw'], '```', '']
             elif event['event'] in {'action', 'editor_return', 'end'}:
                 lines += ['```json', json.dumps(event, ensure_ascii=False, indent=2), '```', '']
-    path = config['paths']['repo'] / 'imple/reports/V3_AGENTIC_PILOT.md'
+    filename = 'V3_AGENTIC_PILOT_V3.md' if version == 3 else 'V3_AGENTIC_PILOT.md'
+    path = config['paths']['repo'] / 'imple/reports' / filename
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')

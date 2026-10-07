@@ -16,8 +16,9 @@ def main():
     parser.add_argument('stage', choices=['audit', 'graphs', 'corrupted', 'real', 'markers', 'relevance', 'report', 'prompts'])
     parser.add_argument('--max-api-calls', type=int, required=True)
     parser.add_argument('--limit', type=int)
+    parser.add_argument('--version', type=int, choices=[2, 3], default=2)
     args = parser.parse_args()
-    config = config_for('gpt-6.1-sol' if args.stage in {'markers', 'relevance'} else 'gpt-6-luna')
+    config = config_for('gpt-6.1-sol' if args.stage in {'markers', 'relevance'} else 'gpt-6-luna', version=args.version)
     root = config['paths'][PHASE + '_output']
     if args.stage == 'audit':
         print(json.dumps(question_audit(config), ensure_ascii=False))

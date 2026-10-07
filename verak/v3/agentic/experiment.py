@@ -11,7 +11,7 @@ from ..train.pilot2_data import bounded_map
 from .data import PHASE, prepare
 from .accounting import audit_reward
 from . import graph
-from .environment import AgenticEnv, PROMPTS
+from .environment import AgenticEnv, prompts_for
 from .runner import run, PILOT_STAGE
 
 
@@ -37,7 +37,7 @@ def extract(config, api, item, document, question):
     value = {'id': item, 'input_hash': sha_text(document.text), 'question': question,
              'sentence_ids': smap, 'paragraph_ids': pmap, 'input_layout': document.snapshot(),
              'status': 'error', 'runs': [], 'validation_stage': 'intersection'}
-    messages, schema = graph.request(document, question)
+    messages, schema = graph.request(document, question, version=config[PHASE].get('version', 2))
     try:
         for number in (1, 2):
             response = api.request(messages, stage='graph_extract', item_id=f'{item}:run{number}',
@@ -114,8 +114,9 @@ def graphs(config, api, limit=None):
 
 
 def prompt_check(config, tokenizer):
-    counts = {r: len(tokenizer.encode(p, add_special_tokens=False)) for r, p in PROMPTS.items()}
-    counts['graph'] = len(tokenizer.encode(graph.PROMPT, add_special_tokens=False))
+    version = config[PHASE].get('version', 2)
+    counts = {r: len(tokenizer.encode(p, add_special_tokens=False)) for r, p in prompts_for(version).items()}
+    counts['graph'] = len(tokenizer.encode(graph.PROMPT_V3 if version == 3 else graph.PROMPT, add_special_tokens=False))
     write_json(config['paths'][PHASE + '_output'] / 'prompt_tokens.json', counts)
     if any(n > 400 for n in counts.values()):
         raise ValueError('Prompt exceeds 400 policy tokens: ' + str(counts))
@@ -128,6 +129,14 @@ def pilot(config, api, cohort, limit=None):
     resources = Resources(config, examples, output_key=PHASE + '_output')
     prompt_check(config, resources.worker().tokenizer)
     ids = design['corrupted_ids' if cohort == 'corrupted' else 'real_ids']
+    if config[PHASE].get('version', 2) == 3:
+        # Fail before any paid policy call if the frozen scorer cannot load.
+        sample = train.get(ids[0])
+        doc = resources.corrupted(sample) if sample else resources.source(ids[0])
+        question = sample['question'] if sample else examples[ids[0]].question
+        score = resources.score(question, doc.text)
+        write_json(root / (cohort + '_scorer_preflight.json'),
+                   {'episode_id': ids[0], 'score': score, 'api_calls': 0})
     def one(item):
         target = root / 'episodes' / (safe_id(item) + '.json')
         if target.exists():
@@ -149,7 +158,8 @@ def pilot(config, api, cohort, limit=None):
                   'question_id': 'Q:' + ex.question_hash, 'document': resources.source(item)}
         assert sha_text(ep['document'].text) == saved['input_hash']
         state = resources.worker()
-        env = AgenticEnv(ep, saved['discourse'], analysis=state.analysis, scorer=resources)
+        env = AgenticEnv(ep, saved['discourse'], analysis=state.analysis, scorer=resources,
+                         version=config[PHASE].get('version', 2))
         # Final accounting is separate from the frozen policy loop: all control
         # actions except read tools/ledgers retain the combined step cost.
         result = audit_reward(run(env, api, state.tokenizer, config, root / 'events' / (safe_id(item) + '.jsonl')))
@@ -164,7 +174,7 @@ def pilot(config, api, cohort, limit=None):
         print(json.dumps({'pilot': item, 'completed': result['completed'], 'error': result['runtime_error'],
                           'cost': api.accounting()['confirmed_usd']}), flush=True)
         if result['runtime_error'] and result['runtime_error']['type'] == 'CallBudgetExceeded':
-            raise CallBudgetExceeded('Shared six-dollar cap reached')
+            raise CallBudgetExceeded('Shared pilot cap reached')
     try:
         errors = bounded_map(ids[:limit] if limit else ids, one)
     finally:

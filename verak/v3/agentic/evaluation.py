@@ -2,7 +2,7 @@
 from collections import defaultdict
 import json
 
-from ..common import read_json, write_json
+from ..common import read_json, write_json, file_sha
 from ..phase2 import write_jsonl
 from ..observation.markers import at, FIELD, contract
 from ..observation.graph import object_schema, enum, array_schema
@@ -104,6 +104,18 @@ def relevance(config, api):
                                 'off_topic_edits': array_schema({'type': 'string'}), 'note': {'type': 'string'}})
         messages = [{'role': 'system', 'content': RELEVANCE_PROMPT}, {'role': 'user', 'content': json.dumps(
             {'question': examples[i].question, 'original': examples[i].text, 'final': final}, ensure_ascii=False)}]
+        if setting == 'baseline' and config[PHASE].get('version', 2) == 3:
+            previous_root = config['paths']['repo'] / 'verak/v3/outputs/agentic_pilot'
+            previous_path = previous_root / 'relevance' / path.name
+            if previous_path.exists():
+                previous = read_json(previous_path)
+                request = read_json(previous_root / 'api/requests' / f"{previous['phase_call']:06}.json")
+                if (request['messages'] != messages or request['schema'] != schema or
+                        request['model'] != 'gpt-6.1-sol' or request['reasoning_effort'] != 'high'):
+                    raise ValueError('Saved baseline relevance contract differs')
+                write_json(path, {**previous, 'reused_from': str(previous_path),
+                                  'reused_sha256': file_sha(previous_path), 'new_api_calls': 0})
+                return
         response = api.request(messages, stage='relevance', item_id=setting + ':' + i,
                                effort='high', max_output=4096, schema=schema)
         write_json(path, {'id': i, 'setting': setting, 'judgment': json.loads(response['raw']), 'phase_call': response['phase_call']})
