@@ -630,3 +630,12 @@ reservations. Saved comparisons and failures are preserved. The optional
 `continue` command supervises the authorized sequence from existing GLOBAL
 and Luna process IDs and closes only the vLLM server it owns. No command starts
 RFT or reads the test split.
+
+`python -m verak.v3.train.sft_composition` reads the frozen export manifest and
+saved trajectory rewards on CPU, without models or API calls. It records
+structural-action versus STOP-only composition, per-operator full/partial
+recovery counts, and train/validation breakdowns in `export_composition.json`.
+The SFT evaluation report also counts GLOBAL STOP without a structural attempt
+and without an accepted structural action among dev essays with GLOBAL records.
+Missing GLOBAL decisions remain unknown; a later KOREAN failure does not erase
+an observed GLOBAL decision. These diagnostics never modify training inputs.

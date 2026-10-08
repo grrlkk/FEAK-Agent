@@ -12,6 +12,7 @@ from ..eval.summary import distribution, fmt, table
 from ..reward.overedit import overedit
 from .pilot import safe_id
 from .sft_data import PHASE, ROLES
+from .sft_composition import export_composition, global_inaction
 from .sft_eval import CONDITIONS, action_kind, prepare, saved_rows
 from .teacher_bulk import load_environment
 
@@ -121,7 +122,10 @@ def report(config):
     design, corpus, examples = prepare(config)
     root = config['paths'][PHASE + '_output']
     data = read_json(root / 'data/manifest.json')
-    metrics = {'design': design, 'data': data, 'training': {}, 'conditions': {},
+    composition = export_composition(root, config['paths']['active_corrupt'] / 'agent_train.jsonl',
+        partial_path=config['paths']['phase7_teacher_output'] / 'completed_global_evaluation.json')
+    metrics = {'design': design, 'data': data, 'data_composition': composition['roles'],
+               'training': {}, 'conditions': {},
                'markers': marker_summary(config), 'api': {s: accounting(root, s) for s in ('luna', 'sol')}}
     for role in ROLES:
         path = root / 'adapters' / role
@@ -138,6 +142,10 @@ def report(config):
         stats = summarize(dev, intended=100)
         stats['by_level'] = {level: summarize([r for r in dev if r['level'] == level], intended=25)
                              for level in ('L1', 'L2', 'L3', 'L4')}
+        stats['global_inaction'] = global_inaction(dev, corpus, design['contract']['dev_ids'])
+        for level, group in stats['by_level'].items():
+            group['global_inaction'] = global_inaction(dev, corpus,
+                [i for i in design['contract']['dev_ids'] if corpus[i]['level'] == level])
         stats['by_operator'] = {op: summarize([r for r in dev if any(rec['op'] == op for rec in corpus[r['corpus_episode_id']]['records'])],
             intended=sum(any(rec['op'] == op for rec in corpus[i]['records']) for i in design['contract']['dev_ids']))
                                 for op in sorted({rec['op'] for i in design['contract']['dev_ids'] for rec in corpus[i]['records']})}
@@ -200,6 +208,28 @@ def report(config):
             [[r, p, f"{data['roles'][r][p]['compacted_turns']}/{data['roles'][r][p]['turns']}",
               data['roles'][r][p]['json_invalid_targets'], data['roles'][r][p]['protocol_invalid_targets']]
              for r in ROLES for p in ('train', 'validation')]), '',
+        '### Exported trajectory composition', '',
+        'Structural actions are MOVE or sentence insertion/deletion. Attempts include rejected actions; '
+        'accepted actions are also counted separately. STOP-only means all attempted role actions are STOP '
+        '(including rejected STOP retries), with a terminal STOP. The frozen selections and running training '
+        'were not changed for this diagnostic.', '',
+        table(['GLOBAL partition', 'trajectories', 'structural attempt', 'accepted structural action',
+               'STOP-only', 'other', 'STOP-only with GLOBAL records'],
+            [[p, (s := composition['roles']['global'][p])['trajectories'], s['with_structural_attempt'],
+              s['with_accepted_structural_action'], s['STOP_only'], s['other_than_structural_or_STOP_only'],
+              s['STOP_only_with_global_records']] for p in ('all', 'train', 'validation')]), '',
+        'Operator counts below count selected trajectories, not individual actions or records. '
+        'Full recovery means saved main recovery equals 1; GLOBAL is measured after GLOBAL, '
+        'and KOREAN local records at the final state. Any positive recovery includes partial recovery. '
+        'A trajectory with several operators appears in several rows. Per-record counts and trajectory IDs '
+        'are retained in `export_composition.json`.', '',
+        table(['role', 'operator', 'contains operator', 'at least one fully recovered', 'all fully recovered',
+               'any positive recovery', 'train / validation fully recovered'],
+            [[r, op, (s := composition['roles'][r]['all']['operators'][op])['selected_trajectories_with_operator'],
+              s['at_least_one_fully_recovered'], s['all_fully_recovered'], s['any_positive_recovery'],
+              f"{composition['roles'][r]['train']['operators'][op]['all_fully_recovered']} / "
+              f"{composition['roles'][r]['validation']['operators'][op]['all_fully_recovered']}"]
+             for r in ROLES for op in composition['roles'][r]['all']['operators']]), '',
         '## Evaluation contract', '',
         f"Seed 73 selected 100 active agent_dev corruption instances, 25 per L1–L4, from {design['contract']['dev_unique_sources']} "
         'distinct source essays. The same 30 Phase-6 real essays were used in all conditions. These are development '
@@ -226,7 +256,22 @@ def report(config):
         table(['condition', 'role', 'reward n', 'R', 'R_rec', 'R_q', 'R_over', 'R_step'],
             [[c, r, metrics['conditions'][c]['dev']['reward'][r]['R']['n'],
               *[fmt(metrics['conditions'][c]['dev']['reward'][r][k]['mean']) for k in ('R', 'R_rec', 'R_q', 'R_over', 'R_step')]]
-             for c in CONDITIONS for r in (*ROLES, 'combined')]), '', '### By curriculum level', '',
+             for c in CONDITIONS for r in (*ROLES, 'combined')]), '',
+        '### GLOBAL STOP without structural action when GLOBAL damage is present', '',
+        'The denominator is all selected dev essays with at least one GLOBAL corruption record, '
+        'including failed episodes. The numerator requires an observed GLOBAL STOP. '
+        'Both no structural attempt (including rejected attempts) and no accepted structural action '
+        'are shown. A completed GLOBAL stage remains observable if KOREAN later fails. '
+        'Missing GLOBAL decisions stay unknown; a point rate is withheld until all such decisions are known. '
+        'The no-record STOP teaching examples are excluded from this denominator.', '',
+        table(['condition', 'GLOBAL-record essays', 'unknown GLOBAL decisions',
+               'STOP / no structural attempt', 'share', 'STOP / no accepted structural action', 'share'],
+            [[c, (s := metrics['conditions'][c]['dev']['global_inaction'])['intended_with_global_records'],
+              s['unknown'], s['STOP_without_structural_attempt']['n'],
+              fmt(s['STOP_without_structural_attempt']['rate']), s['STOP_without_accepted_structural_action']['n'],
+              fmt(s['STOP_without_accepted_structural_action']['rate'])] for c in CONDITIONS]), '',
+        'Counts, bounds, essay IDs and L1–L4 breakdowns are retained in `metrics.json`.', '',
+        '### By curriculum level', '',
         table(['condition', 'level', 'complete / 25', 'GLOBAL R', 'KOREAN R', 'combined R', 'R_over', 'steps', 'valid action'],
             [[c, level, f"{(s := metrics['conditions'][c]['dev']['by_level'][level])['completed']}/25",
               *[fmt(s['reward'][r]['R']['mean']) for r in (*ROLES, 'combined')],
