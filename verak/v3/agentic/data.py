@@ -11,10 +11,17 @@ from ..train.pilot import safe_id
 PHASE = 'agentic_pilot'
 
 
-def config_for(model='gpt-6-luna'):
+def config_for(model='gpt-6-luna', *, version=2):
+    if version not in (2, 3):
+        raise ValueError('Agentic pilot version must be 2 or 3')
     config = load_config()
-    config['paths'][PHASE + '_output'] = config['paths']['repo'] / 'verak/v3/outputs' / PHASE
-    config[PHASE] = {'model': model, 'phase_api_ceiling': 12000, 'max_cost_usd': 6., 'max_concurrent_requests': 4}
+    output = PHASE if version == 2 else PHASE + '_v3_protected'
+    config['paths'][PHASE + '_output'] = config['paths']['repo'] / 'verak/v3/outputs' / output
+    config[PHASE] = {'model': model, 'phase_api_ceiling': 12000,
+                    'max_cost_usd': 6. if version == 2 else 7., 'max_concurrent_requests': 4}
+    if version == 3:
+        config[PHASE]['version'] = version
+        config[PHASE]['relevance_protection'] = True
     return config
 
 
@@ -79,11 +86,22 @@ def prepare(config):
               'quality_population': 'all active agent_dev G_OFFTOPIC essays and their distinct source essays',
               'baseline_files': {i: {'path': str(p), 'sha256': file_sha(p)} for i, p in baseline.items()},
               'corpus_sha256': {s: file_sha(config['paths']['active_corrupt'] / (s + '.jsonl')) for s in ('agent_train', 'agent_dev')},
-              'model': 'gpt-6-luna', 'reasoning': 'low', 'context': 8192, 'output': 1024, 'budget_usd': 6.,
+              'model': 'gpt-6-luna', 'reasoning': 'low', 'context': 8192, 'output': 1024,
+              'budget_usd': config[PHASE]['max_cost_usd'],
               'held_out': False, 'priority': ['question_audit', 'graphs_quality', 'corrupted', 'real', 'markers', 'relevance'],
               'completion_definition': 'Orchestrator FINISH reached and reward saved for corrupted essays',
               'decision_rule': 'both cohorts completion >= .90; paired 95% CI upper bound for combined R difference >= 0',
               'low_tool_call_rate': .05, 'bootstrap_seed': 89, 'bootstrap_samples': 10000}
+    if config[PHASE].get('version', 2) == 3:
+        design.update(version=3, off_topic_rule='explicit off_topic labels in BOTH extractions minus relevance protection',
+                      relevance_protection={'seeds': 'addresses Q in EITHER extraction', 'edges': 'union',
+                          'labels': ['supports', 'example_of', 'contrasts'], 'direction': 'target to source',
+                          'max_hops': 2, 'meaning': 'protection only, never proof of relevance'},
+                      budget_scope='combined initial v3 and corrected protected run',
+                      score_limit=1, score_only_first_action=True, delegation_limit=3,
+                      delete_limit_per_delegation=2, delete_requires_task_id_and_same_state_preview=True,
+                      cohesion_requires_disturbed_markers=True, final_editor_notice_steps_left=2,
+                      editor_budget_report='done (budget)')
     target = root / 'design.json'
     if target.exists() and read_json(target) != design:
         raise ValueError('Frozen design/baseline changed')

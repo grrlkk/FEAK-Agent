@@ -13,12 +13,21 @@ from ..agentic.data import PHASE, config_for, question_audit, prepare
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('stage', choices=['audit', 'graphs', 'corrupted', 'real', 'markers', 'relevance', 'report', 'prompts'])
+    parser.add_argument('stage', choices=['audit', 'graphs', 'protection', 'corrupted', 'real', 'diagnostics', 'markers', 'relevance', 'report', 'prompts'])
     parser.add_argument('--max-api-calls', type=int, required=True)
     parser.add_argument('--limit', type=int)
+    parser.add_argument('--version', type=int, choices=[2, 3], default=2)
     args = parser.parse_args()
-    config = config_for('gpt-6.1-sol' if args.stage in {'markers', 'relevance'} else 'gpt-6-luna')
+    if args.stage in {'protection', 'diagnostics'} and args.version != 3:
+        parser.error(args.stage + ' requires --version 3')
+    config = config_for('gpt-6.1-sol' if args.stage in {'markers', 'relevance'} else 'gpt-6-luna', version=args.version)
     root = config['paths'][PHASE + '_output']
+    if args.version == 3:
+        from ..agentic.revision import initialize, reuse_graphs
+        initialize(config)
+        if args.stage == 'protection':
+            print(json.dumps(reuse_graphs(config), ensure_ascii=False))
+            return
     if args.stage == 'audit':
         print(json.dumps(question_audit(config), ensure_ascii=False))
         prepare(config)
@@ -32,6 +41,13 @@ def main():
     if args.stage == 'report':
         from ..agentic.report import report
         report(config)
+        return
+    if args.stage == 'diagnostics':
+        from ..agentic.preservation import real_overedit
+        from ..agentic.redelegation import redelegation_rewards
+        real = real_overedit(config, allow_local_bareun=True)
+        delegated = redelegation_rewards(config, allow_local_bareun=True)
+        print(json.dumps({'real_overedit': real['summary'], 'redelegations': delegated['summary']}, ensure_ascii=False))
         return
     load_api_environment()
     # Match the established local launchers: pass keys into the process

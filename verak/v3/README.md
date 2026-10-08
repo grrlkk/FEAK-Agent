@@ -1,4 +1,58 @@
-# VERAK v3 — Agentic design pilot
+# VERAK v3 — Agentic pilot v3 and two-stage teacher collection
+
+현재 작업은 별도 장부의 두 실험이다. `agentic_pilot --version 3`는 초기 실행을 포함해 $7,
+`teacher_bulk_two_stage`는 $25 상한이며 SFT/RFT는 실행하지 않는다.
+이전 v2 출력과 두 기준선은 보존한다.
+
+```bash
+python -m verak.v3.cli.agentic_pilot audit --version 3 --max-api-calls 0
+python -m verak.v3.cli.agentic_pilot prompts --version 3 --max-api-calls 0
+python -m verak.v3.cli.agentic_pilot protection --version 3 --max-api-calls 0
+python -m verak.v3.cli.agentic_pilot corrupted --version 3 --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot real --version 3 --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot diagnostics --version 3 --max-api-calls 0
+python -m verak.v3.cli.agentic_pilot markers --version 3 --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot relevance --version 3 --max-api-calls 12000
+python -m verak.v3.cli.agentic_pilot report --version 3 --max-api-calls 0
+```
+
+V3의 off_topic_candidate는 두 추출이 모두 명시한 off_topic 문장에서 보호 집합을 뺀다.
+어느 한 추출에서라도 Q에 addresses인 문장을 시작점으로 삼고, 두 추출의 supports /
+example_of / contrasts 합집합을 target→source 방향으로 최대 2단계 따라 보호한다.
+이는 관련성의 증명이 아니라 무관 후보 표시를 막는 보호 규칙이다. 일반 담화 관계는
+계속 교집합이다. 기존 두 추출을 재사용하며 모델에 다시 추출시키지 않는다.
+AUDIT는 바른 사실·dangling edges와 이 후보만 보여 주며 unsupported는 제외한다.
+구성 편집의 DELETE는 task에 명시된 문장만, 동일 상태의 정확한 PREVIEW 뒤에,
+위임당 최대 2회 허용한다. UNDO는 삭제 횟수를 돌려주지 않는다. 총괄의 SCORE는
+첫 행동으로 최대 1회, DELEGATE는 최대 3회이며 응집 위임은 범위에 흔들린 표지가
+있어야 한다. 편집 행동 2개가 남으면 최종 알림을 보내고 REPORT 없이 소진하면
+controller의 `done (budget)`을 반환한다. 이는 과제 해결 판정이나 학습 타깃이 아니다.
+
+초기 출력은 `outputs/agentic_pilot_v3/`에 보존한다. 초기의 닫힌 API 장부와 요청을
+한 번 복사해 모든 초기 비용·미확인 예약을 $7 상한에 포함하고, 수정 파일럿은
+`pilot_protected_*` 요청 공간에서 새로 실행한다. `diagnostics`는 정책 실행 종료 후
+로컬 분석·채점만 사용해 실제 글의 변화량과 AUDIT 뒤 재위임 전후의 combined R을
+검산한다. 이 보상은 정책에 전달하지 않으며 인과 효과로 해석하지 않는다.
+수정 출력은 `outputs/agentic_pilot_v3_protected/`, 보고서는
+`imple/reports/V3_AGENTIC_PILOT_V3.md`다. 이전 인터페이스는 `--version 2`로 재현한다.
+
+```bash
+python -m verak.v3.cli.teacher_bulk_two_stage prepare --max-api-calls 0
+python -m verak.v3.cli.teacher_bulk_two_stage preflight --max-api-calls 0
+python -m verak.v3.cli.teacher_bulk_two_stage run --max-api-calls 80000 --independent-unseeded
+python -m verak.v3.cli.teacher_bulk_two_stage report --max-api-calls 0
+```
+
+Bulk는 활성 agent_train 1,430편에 각 2회이며, 기존 Luna-low 92개를 실패까지
+포함하여 attempt 1로 재사용한다. pinned Luna low, two_stage, CHECK 없음,
+8,192/1,024와 기존 프롬프트·보상을 유지한다. Responses에는 모델 sampling seed
+인자가 없으므로 `--independent-unseeded`는 독립 요청 사용을 명시한다. 71/72는
+두 시도의 처리 순서를 정하는 seed이며 모델 sampling seed로 기록하지 않는다.
+완료·실패 시도는 불변이고, 재개 시 완료 요청만 replay하며 미확인 비용 예약은
+유지한다. 출력은 `outputs/teacher_bulk_two_stage/`, 보고서는
+`imple/reports/V3_TEACHER_BULK_TWO_STAGE.md`다.
+
+## Agentic pilot v2 (이전 단계)
 
 최신 설계 실험은 `agentic/`의 총괄·구성 편집·응집 편집 세 역할이다.
 기존 two-stage 설계와 비교하며, 저장된 Luna-low 92편과 observation
@@ -25,7 +79,7 @@ python -m verak.v3.cli.agentic_pilot report --max-api-calls 0
 `audit`는 활성 코퍼스에 문항 텍스트와 hash 기반 ID를 보완하고 원본을 로컬에
 보존한다. `report`는 실제 전송 입력과 행동 JSON을 역할별 SFT 형식으로 내보내되
 학습하지 않는다. 출력·비용·실패·검증은 `outputs/agentic_pilot/`, 보고서는
-`imple/reports/V3_AGENTIC_PILOT.md`에 보관한다. Bulk 생성·SFT·RFT 진입점은 없다.
+`imple/reports/V3_AGENTIC_PILOT.md`에 보관한다. 이 이전 단계에서는 bulk와 학습을 실행하지 않았다.
 
 역할 보상은 편집 write만 step 비용으로 세고, combined R은 기존 모든 행동
 비용에서 SCORE/QUERY/AUDIT/PREVIEW/PLAN/PROGRESS만 제외한다. 종료 후
@@ -36,8 +90,8 @@ python -m verak.v3.cli.agentic_pilot report --max-api-calls 0
 
 현재 코퍼스는 `config.paths.active_corrupt`의 `corrupt_scope_v3/`다.
 `L_CONJ_DROP`은 비활성화했고 이전 코퍼스와 복구 코드는 재현용으로 보존한다.
-시제·상 프로필 필드는 추가하지 않는다. 아래 bounded comparison만 실행하며
-bulk teacher generation, SFT, RFT 진입점은 제공하지 않는다.
+시제·상 프로필 필드는 추가하지 않는다. 이 이전 단계에서는 아래 bounded comparison만
+실행했으며 bulk teacher generation, SFT, RFT를 실행하지 않았다.
 
 ```bash
 python -m verak.v3.cli.teacher_comparison prepare --max-api-calls 0

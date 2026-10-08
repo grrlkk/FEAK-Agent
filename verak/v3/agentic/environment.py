@@ -1,6 +1,7 @@
 """Sequential execution of teacher-selected tools, with atomic editor writes."""
 from copy import deepcopy
 import json
+import re
 
 from ..common import sha_text
 from ..env.actions import ActionExecutor
@@ -39,6 +40,43 @@ PROMPTS = {
 - REPORT(status:done|blocked,summary): 보고, 200자 이하; 위치 문제면 blocked
 흔들린 표지 목록부터 확인한다. 글에 없는 내용은 만들지 않는다.'''}
 PROMPTS = {k: v + FORMAT for k, v in PROMPTS.items()}
+PROMPTS_V3 = {
+    'orchestrator': '''너는 글 수정을 총괄한다. 직접 고치지 않고 계획하고 맡기고 점검한다.
+- SCORE(): 시작의 첫 행동으로만 점수 확인, 최대 1번
+- QUERY(target:문장ID|unsupported|off_topic|문단ID): 관계 조회
+- AUDIT(): 바른의 표지 변화·문체, 끊긴 관계, 명시적 무관 후보 확인
+- PLAN(text) / PROGRESS(text): 계획·진행 기록, 각 300자 이하
+- DELEGATE(agent:composition|cohesion,task,scope): 최대 3번; task 200자, scope all 또는 P1-P3
+- FINISH(summary,needs_explanation): 종료; [{sid,reason}] 최대 2개
+문항에 답하도록 맡긴다. 삭제할 문장은 task에 ID를 명시한다. 응집은 범위에 흔들린 표지가 있을 때만 맡긴다.
+끝내기 전 AUDIT. AUDIT에 문제가 없으면 바로 FINISH.''',
+    'composition': '''너는 글의 구성을 고친다. 문장 안은 고치지 않는다.
+- PREVIEW(action:{action,args}): 복사본에 적용해 변화 확인
+- QUERY(target:문장ID|unsupported|off_topic|문단ID): 관계 조회
+- MOVE(target,position): 문장·연속범위·문단을 before:ID 또는 after:ID로 이동
+- INSERT(target,new_text): before:문장ID 또는 after:문장ID에 삽입
+- DELETE(target): 맡은 일에 명시된 문장ID만 삭제, 위임당 최대 2번
+- UNDO(): 이번 위임의 마지막 수정 취소
+- REPORT(status:done|blocked,summary): 보고, 200자 이하
+맡은 일만 한 뒤 REPORT. 이동 전 PREVIEW. 삭제는 같은 상태에서 정확히 같은 DELETE를 PREVIEW한 뒤에만 한다.
+글에 없는 내용은 만들지 않는다. 예: {"action":"PREVIEW","args":{"action":{"action":"DELETE","args":{"target":"S1"}}}}''',
+    'cohesion': '''너는 문장 안의 한국어 표지를 바로잡는다: 연결어미, 접속어, 생략된 주어, 문체.
+문장을 옮기거나 넣고 빼지 않는다. 맡은 범위 안만 고친다.
+- EDIT(target,new_text): 문장ID 또는 문장ID:부분문자열 수정
+- UNDO(): 이번 위임의 마지막 수정 취소
+- REPORT(status:done|blocked,summary): 보고, 200자 이하; 위치 문제면 blocked
+흔들린 표지 목록부터 확인한다. 맡은 일만 한 뒤 REPORT. 글에 없는 내용은 만들지 않는다.'''}
+PROMPTS_V3 = {k: v + FORMAT for k, v in PROMPTS_V3.items()}
+
+
+def prompts_for(version):
+    return PROMPTS_V3 if version == 3 else PROMPTS
+
+
+def named_sentence_ids(task):
+    """Only literal public IDs count; a range does not authorize unnamed members."""
+    return set(re.findall(r'(?<![A-Za-z0-9_])(?:S\d+|N\d+)(?![A-Za-z0-9_])', task))
+
 ALLOWED = {
     'orchestrator': {'SCORE', 'QUERY', 'AUDIT', 'PLAN', 'PROGRESS', 'DELEGATE', 'FINISH'},
     'composition': {'PREVIEW', 'QUERY', 'MOVE', 'INSERT', 'DELETE', 'UNDO', 'REPORT'},
@@ -85,7 +123,8 @@ def validate(value, role):
 
 
 class AgenticEnv:
-    def __init__(self, episode, discourse, *, analysis, scorer):
+    def __init__(self, episode, discourse, *, analysis, scorer, version=2):
+        self.version = version
         self.episode = episode
         self.question = episode['question']
         self.question_id = episode['question_id']
@@ -112,6 +151,15 @@ class AgenticEnv:
         self.last_result = {}
         self.last_audit = None
         self.done = False
+        self.delete_count = 0
+        self.delete_previews = set()
+
+    def state_key(self):
+        return sha_text(dumps(self.public_rows()))
+
+    def disturbed_in_scope(self, scope):
+        selected = {self.sids[u.sid] for p in self.document.paragraphs if p.pid in scope for u in p.units}
+        return list({(f['sid'], f['type']): f for f in self.notices if f['sid'] in selected}.values())
 
     def structure(self, document=None):
         return alias_structure((document or self.document).structure(), self.sids, self.pids)
@@ -153,6 +201,7 @@ class AgenticEnv:
         if args.get('scope', 'all') != 'all':
             self.scopes_used.add(tuple(p.pid for p in self.document.paragraphs if p.pid in self.scope))
         self.task, self.undo, self.last_result = args['task'], [], {}
+        self.delete_count, self.delete_previews = 0, set()
 
     def observation(self, role, steps_left):
         rows = self.public_rows()
@@ -161,6 +210,9 @@ class AgenticEnv:
                  '[맡은 일] ' + (self.task if role != 'orchestrator' else '글 수정 총괄')]
         if role != 'orchestrator':
             lines.append('[범위] ' + ','.join(self.pids[p.pid] for p in self.document.paragraphs if p.pid in self.scope))
+            if self.version == 3 and steps_left <= 2:
+                lines.append('[최종 알림] 이번 위임의 행동이 ' + str(steps_left) +
+                             '개 남았다. 맡은 일을 마치고 REPORT하라. 보고 없이 소진하면 done (budget)으로 자동 보고한다.')
         if role == 'cohesion':
             allowed = {self.pids[p] for p in self.scope}
             selected = [r for r in rows if r['paragraph'] in allowed]
@@ -170,10 +222,7 @@ class AgenticEnv:
             structure = self.structure()
             structure.annotations = [a for a in structure.annotations if a.paragraph in allowed]
             lines.append('[한국어 문서 프로필]\n' + render_structural(structure, compact=True))
-            selected_ids = {r['sid'] for r in selected}
-            # Coalesce repeated facts by sentence/type while preserving the full raw log.
-            disturbed = {(f['sid'], f['type']): f for f in self.notices if f['sid'] in selected_ids}
-            lines.append('[흔들린 표지] ' + dumps([f['message'] for f in disturbed.values()]))
+            lines.append('[흔들린 표지] ' + dumps([f['message'] for f in self.disturbed_in_scope(self.scope)]))
             rows = selected
         lines.append('[글]')
         paragraph = None
@@ -183,6 +232,8 @@ class AgenticEnv:
                 lines.append('[' + paragraph + ']')
             lines.append(row['sid'] + ' | ' + row['text'])
         if role == 'orchestrator':
+            if self.version == 3:
+                lines.append('[흔들린 표지 문장] ' + dumps(sorted({f['sid'] for f in self.disturbed_in_scope(set(self.pids))})))
             lines.append('[문단 요약: 각 문단 첫 문장의 발췌]')
             lines.extend(self.pids[p.pid] + ': ' + (p.units[0].text[:80] if p.units else '(빈 문단)')
                          for p in self.document.paragraphs)
@@ -201,6 +252,13 @@ class AgenticEnv:
             candidate = self.undo[-1].clone()
             changed = {u.sid for u in before.units + candidate.units}
         else:
+            if self.version == 3 and name == 'DELETE':
+                if args['target'] not in named_sentence_ids(self.task):
+                    raise ValueError('DELETE는 맡은 일에 명시된 문장 ID만 가능')
+                if self.delete_count >= 2:
+                    raise ValueError('위임당 DELETE 최대 2회')
+                if not preview and (self.state_key(), args['target']) not in self.delete_previews:
+                    raise ValueError('같은 상태에서 정확히 같은 DELETE를 먼저 PREVIEW해야 함')
             if name == 'INSERT' and not args['target'].startswith(('before:', 'after:')):
                 raise ValueError('INSERT target은 before:문장ID 또는 after:문장ID')
             if name == 'DELETE' and (':' in args['target'] or '-' in args['target']):
@@ -233,6 +291,8 @@ class AgenticEnv:
             else:
                 self.undo.append(before)
             self.document = candidate
+            if name == 'DELETE':
+                self.delete_count += 1
             if role == 'composition':
                 self.notices.extend(facts)
         return result, changed
@@ -255,14 +315,17 @@ class AgenticEnv:
                 if n not in {'MOVE', 'INSERT', 'DELETE'}:
                     raise ValueError('PREVIEW는 MOVE/INSERT/DELETE만 가능')
                 result, _ = self.apply_write(n, a, role, preview=True)
+                if self.version == 3 and n == 'DELETE':
+                    self.delete_previews.add((self.state_key(), a['target']))
             elif name == 'QUERY':
                 result = graph.query(self.graph(), args['target'])
             elif name == 'AUDIT':
-                result = graph.audit(self.graph(), self.initial_graph)
+                result = graph.audit(self.graph(), self.initial_graph, version=self.version)
                 self.last_audit = {'result': deepcopy(result), 'text_hash': sha_text(self.document.text)}
             elif name == 'SCORE':
-                if self.score_calls >= 2:
-                    raise ValueError('SCORE 최대 2회')
+                limit = 1 if self.version == 3 else 2
+                if self.score_calls >= limit or (self.version == 3 and self.actions):
+                    raise ValueError('SCORE는 시작 첫 행동으로 최대 1회' if self.version == 3 else 'SCORE 최대 2회')
                 self.score_calls += 1
                 score = self.score()
                 result = {'rubrics': RUBRICS.get(self.episode['genre']), 'expected_scores': score['expected'], 'Q': score['mean']}
@@ -270,11 +333,17 @@ class AgenticEnv:
                 setattr(self, name.lower(), args['text'])
                 result = {name.lower(): args['text']}
             elif name == 'DELEGATE':
-                if self.delegations >= 4:
-                    raise ValueError('DELEGATE 최대 4회')
-                self.resolve_scope(args.get('scope', 'all'))
+                limit = 3 if self.version == 3 else 4
+                if self.delegations >= limit:
+                    raise ValueError(f'DELEGATE 최대 {limit}회')
+                scope = self.resolve_scope(args.get('scope', 'all'))
+                disturbed = self.disturbed_in_scope(scope)
+                if self.version == 3 and args['agent'] == 'cohesion' and not disturbed:
+                    raise ValueError('범위에 흔들린 표지가 있을 때만 응집 편집 위임 가능')
                 self.delegations += 1
                 result = {'delegate': deepcopy(args)}
+                if self.version == 3:
+                    result['disturbed_markers'] = deepcopy(disturbed)
             elif name == 'REPORT':
                 self.latest_report = {**args, 'agent': role, 'origin': 'agent'}
                 result = deepcopy(self.latest_report)
@@ -283,7 +352,7 @@ class AgenticEnv:
                     raise ValueError('설명 대상은 현재 문장 ID여야 함')
                 self.done = True
                 result = {**args, 'last_audit': self.last_audit,
-                          'audit_at_finish': graph.audit(self.graph(), self.initial_graph)}
+                          'audit_at_finish': graph.audit(self.graph(), self.initial_graph, version=self.version)}
             record.update(valid=True, result=result, error=None)
         except (ValueError, KeyError, TypeError, AttributeError, RuntimeError) as exc:
             self.document = before
@@ -297,7 +366,7 @@ class AgenticEnv:
 
 def context(env, role, steps_left, tokenizer, history):
     observation = env.observation(role, steps_left)
-    base = [{'role': 'system', 'content': PROMPTS[role]}, {'role': 'user', 'content': observation}]
+    base = [{'role': 'system', 'content': prompts_for(env.version)[role]}, {'role': 'user', 'content': observation}]
     count = lambda ms: len(tokenizer.apply_chat_template(ms, tokenize=True, add_generation_prompt=True))
     if count(base) > 7168:
         raise ValueError('Mandatory current observation exceeds 7168 tokens; no document truncation')
