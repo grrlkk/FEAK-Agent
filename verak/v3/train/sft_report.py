@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from ..common import file_sha, read_json, write_json
-from ..corrupt.document import Document
+from ..agentic.preservation import restore_final
 from ..eval.measurement import changes
 from ..eval.resources import Resources
 from ..eval.summary import distribution, fmt, table
@@ -35,10 +35,11 @@ def measure_real(config):
                     continue
                 try:
                     state = resources.worker()
-                    before = Document.restore(row['initial_layout'], state.bank)
-                    after = Document.restore(row['final_layout'], state.bank)
-                    for document in (before, after):
-                        state.analysis.refresh(document, {p.pid for p in document.paragraphs})
+                    # Keep stable units from the saved layout. Bareun's isolated
+                    # sentence split can differ from the original paragraph split.
+                    original_text = resources.source(row['source_id']).text
+                    before = restore_final(row['initial_layout'], original_text, state.analysis)
+                    after = restore_final(row['final_layout'], row['final_text'], state.analysis)
                     actions = [a for values in row['actions_by_role'].values() for a in values]
                     result = {'episode_id': row['corpus_episode_id'], 'condition': condition,
                         'episode_sha256': file_sha(source), 'completed': row['completed'],
@@ -137,8 +138,12 @@ def report(config):
         stats = summarize(dev, intended=100)
         stats['by_level'] = {level: summarize([r for r in dev if r['level'] == level], intended=25)
                              for level in ('L1', 'L2', 'L3', 'L4')}
-        stats['by_operator'] = {op: summarize([r for r in dev if any(rec['op'] == op for rec in corpus[r['corpus_episode_id']]['records'])])
+        stats['by_operator'] = {op: summarize([r for r in dev if any(rec['op'] == op for rec in corpus[r['corpus_episode_id']]['records'])],
+            intended=sum(any(rec['op'] == op for rec in corpus[i]['records']) for i in design['contract']['dev_ids']))
                                 for op in sorted({rec['op'] for i in design['contract']['dev_ids'] for rec in corpus[i]['records']})}
+        stats['by_damage_level'] = {level: summarize([r for r in dev if any(rec['level'] == level for rec in corpus[r['corpus_episode_id']]['records'])],
+            intended=sum(any(rec['level'] == level for rec in corpus[i]['records']) for i in design['contract']['dev_ids']))
+            for level in ('GLOBAL', 'WORD', 'SENTENCE', 'TEXT')}
         stats['by_seen_question'] = {str(seen): summarize([r for r in dev if r['seen_by_scorer'] == seen]) for seen in (False, True)}
         stats['by_genre'] = {genre: summarize([r for r in dev if r['genre'] == genre]) for genre in sorted({r['genre'] for r in dev})}
         real_stats = summarize(real, intended=30)
@@ -236,8 +241,16 @@ def report(config):
               fmt(s['reward']['combined']['R_over']['mean']),
               fmt(metrics['conditions'][c]['dev']['recovery_by_operator'].get(op, {}).get('recovery', {}).get('mean'))]
              for c in CONDITIONS for op in metrics['conditions'][c]['dev']['by_operator']]), '',
-        'Full reward components, WORD/SENTENCE/TEXT record recovery, genre and scorer-question exposure breakdowns '
-        'are retained in `metrics.json`.', '', '### Action counts', '',
+        '### By damage level', '',
+        'These episode groups overlap when an essay contains several damage levels.', '',
+        table(['condition', 'damage level', 'complete / intended', 'GLOBAL R', 'KOREAN R', 'combined R', 'R_over', 'steps'],
+            [[c, level, f"{(s := metrics['conditions'][c]['dev']['by_damage_level'][level])['completed']}/{s['intended']}",
+              *[fmt(s['reward'][r]['R']['mean']) for r in (*ROLES, 'combined')],
+              fmt(s['reward']['combined']['R_over']['mean']), fmt(s['steps_all_attempted']['mean'])]
+             for c in CONDITIONS for level in ('GLOBAL', 'WORD', 'SENTENCE', 'TEXT')]), '',
+        'Full completion, validity, STOP rates, reward components, record recovery, steps and action counts for each '
+        'curriculum/damage/operator group, plus genre and scorer-question exposure breakdowns, are retained in `metrics.json`.', '',
+        '### Action counts', '',
         table(['condition', 'cohort', 'attempted action counts', 'accepted action counts'],
             [[c, cohort, json.dumps(metrics['conditions'][c][cohort]['action_counts_attempted'], sort_keys=True),
               json.dumps(metrics['conditions'][c][cohort]['action_counts_valid'], sort_keys=True)]
