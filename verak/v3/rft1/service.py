@@ -170,8 +170,11 @@ def continue_work(config):
                 result = read_json(root / 'rollout_status.json')
                 if not result['sampling_complete'] or result['saved'] != 5720 or result['errors']:
                     raise RuntimeError('Collection not complete; inspect saved errors before resuming')
-                execute('exporting', ['export'])
                 stop_owned_server(root / 'rollout_server.json')
+                from ..data_boost.rescore import at_boundary
+                state('extra_teacher_pre_training_boundary')
+                at_boundary(config, 'pre_rft_training')
+                execute('exporting', ['export'])
                 for role in ('global', 'korean'):
                     output = root / 'adapters' / role
                     if not (output / 'complete.json').exists():
@@ -191,6 +194,8 @@ def continue_work(config):
                 write_json(root / 'a_complete.json', {'completed': True, 'at': time.time(),
                     'report': read_json(root / 'report_status.json')})
                 state('a_complete')
+            from ..data_boost.rescore import at_boundary
+            at_boundary(config, 'post_rft_evaluation')
             # Read this after A, so a hold requested during collection takes effect.
             # A remains authorized and independent of the one-shot comparison.
             hold_path = root / 'oneshot_hold.json'
