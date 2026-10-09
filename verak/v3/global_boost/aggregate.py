@@ -407,6 +407,9 @@ def finalize(config):
             write_json(status_path, {'stage': 'waiting_generation', 'at': time.time(),
                 'generation_stage': expansion.get('stage'), 'gpu_used': False, 'training': False})
             time.sleep(30)
+        if (root / 'v4/plan.json').exists():
+            from .v4_pre_gpu import report as pre_gpu_report
+            pre_gpu_report(config)
         cpu_ready(config)
         while not (root.parent / 'gpu_rescore/global_complete.json').exists():
             write_json(status_path, {'stage': 'waiting_root_gpu_reference_slot', 'at': time.time(), 'gpu_used': False})
