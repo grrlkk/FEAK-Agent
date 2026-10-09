@@ -3,6 +3,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 import math
 import shutil
+import sqlite3
 import time
 
 from .common import REPO,ROOT,read_json,write_json,file_sha,collection_lock
@@ -13,7 +14,20 @@ def optional(path):
 
 
 def budget_record(path,cap):
-    value=optional(path)
+    # accounting.json is a close-time snapshot. Read the live ledger without
+    # constructing an API client or modifying an in-flight reservation.
+    ledger=path.with_name('ledger.sqlite')
+    if ledger.exists():
+        with sqlite3.connect(ledger.as_uri()+'?mode=ro',uri=True,timeout=5) as db:
+            rows=db.execute('SELECT stage,status,reserved,confirmed FROM calls').fetchall()
+        value={'calls':sum(r[1]!='blocked_before_send' for r in rows),
+            'client_attempts':len(rows),'blocked_before_send':sum(r[1]=='blocked_before_send' for r in rows),
+            'confirmed_usd':sum(r[3] for r in rows),'reserved_usd':sum(r[2] for r in rows),
+            'pending':sum(r[1]=='pending' for r in rows),
+            'by_stage':{stage:{'calls':sum(r[0]==stage and r[1]!='blocked_before_send' for r in rows),
+                'confirmed_usd':sum(r[3] for r in rows if r[0]==stage)} for stage in sorted({r[0] for r in rows})}}
+    else:
+        value=optional(path)
     if value is None:
         return None
     for key in ('confirmed_usd','reserved_usd'):
@@ -141,8 +155,9 @@ def watch():
         time.sleep(30)
 
 
-def launch():
+def launch(*,restart=False):
     import os
+    import signal
     import subprocess
     import sys
     directory=ROOT/'report_worker'
@@ -155,7 +170,21 @@ def launch():
             except FileNotFoundError:
                 cmdline=b''
             if b'verak.v4.report' in cmdline and b'--watch' in cmdline:
-                return prior
+                if not restart:
+                    return prior
+                # Only this local-file report writer is owned here. Collection,
+                # scorer, training, and RFT processes are never restarted.
+                os.kill(prior['pid'],signal.SIGTERM)
+                for _ in range(50):
+                    try:
+                        remaining=Path(f'/proc/{prior["pid"]}/cmdline').read_bytes()
+                    except FileNotFoundError:
+                        remaining=b''
+                    if not remaining:
+                        break
+                    time.sleep(.1)
+                else:
+                    raise RuntimeError('The owned local report writer did not stop')
         directory.mkdir(parents=True,exist_ok=True)
         with (directory/'worker.log').open('ab',buffering=0) as log:
             process=subprocess.Popen([sys.executable,'-m','verak.v4.report','--watch'],
@@ -176,9 +205,12 @@ if __name__=='__main__':
     group=parser.add_mutually_exclusive_group()
     group.add_argument('--watch',action='store_true')
     group.add_argument('--launch',action='store_true')
+    parser.add_argument('--restart',action='store_true')
     args=parser.parse_args()
+    if args.restart and not args.launch:
+        parser.error('--restart only applies to the local report writer launcher')
     if args.launch:
-        print(launch())
+        print(launch(restart=args.restart))
     elif args.watch:
         watch()
     else:
