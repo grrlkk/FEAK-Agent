@@ -123,6 +123,23 @@ def accepted_insertions(raw, *, explicit=True):
     return found
 
 
+def insertion_retention(raw):
+    """Track actual created sentence IDs through GLOBAL and final endpoint layouts."""
+    def units(layout):
+        return {u['sid']: u['text'] for p in (layout or {}).get('paragraphs', []) for u in p['units']}
+    middle, final = units(raw.get('stage1_layout')), units(raw.get('final_layout'))
+    actions = raw.get('actions_by_role', {}).get('global', [])
+    rows = []
+    for inserted in accepted_insertions(raw, explicit=False):
+        created = set(inserted['created_sids'])
+        undo = [a for a in actions if a.get('valid') and a['action'] == 'UNDO' and a['t'] > inserted['t']
+                and created.intersection(a.get('removed_sids', []))]
+        rows.append({**inserted, 'retained_GLOBAL': {sid: middle[sid] for sid in sorted(created & middle.keys())},
+            'retained_final': {sid: final[sid] for sid in sorted(created & final.keys())},
+            'removed_by_UNDO': bool(undo), 'UNDO_reasons': [a.get('thought', '') for a in undo]})
+    return rows
+
+
 def run_phase(config, phase, *, max_api_calls, paid_approved):
     if not paid_approved:
         raise PermissionError('Explicit paid authorization is required')
@@ -297,6 +314,8 @@ def finish_test_report(config):
     rows = []
     for row, task in zip(result['rows'], design['tasks']):
         item = dict(row)
+        raw = read_json(row['path']) if row['saved'] else {}
+        item['retention'] = insertion_retention(raw)
         candidate = read_json(task['candidate']['path'])
         target = candidate['records'][0]['recovery_target']
         item['source_target'] = target
@@ -308,6 +327,8 @@ def finish_test_report(config):
             item['reason'] = 'Recovery is unmeasured; not a zero.'
         elif not item['inserted']:
             item['reason'] = 'No accepted sentence insertion.'
+        elif all(x['removed_by_UNDO'] and not x['retained_GLOBAL'] for x in item['retention']):
+            item['reason'] = 'UNDONE: the agent executed INSERT, then explicitly removed the created sentence with UNDO.'
         elif item['GLOBAL_main_recovery'] == 1:
             item['reason'] = 'At least one inserted sentence within source position ±1 received Luna yes.'
         elif item['GLOBAL_main_recovery'] == .5:
@@ -337,6 +358,14 @@ def finish_test_report(config):
         'observed_recovery_lower_bound_over_all20': result['recovery']['sum_over_all20'],
         'unknown_recovery_count': result['recovery']['unknown'],
         'mean_R_over': sum(over)/len(over) if over else None, 'R_over_available': len(over),
+        'retained_INSERT_essays_GLOBAL': sum(any(x['action'] == 'INSERT' and x['retained_GLOBAL'] for x in r['retention']) for r in rows),
+        'retained_INSERT_essays_final': sum(any(x['action'] == 'INSERT' and x['retained_final'] for x in r['retention']) for r in rows),
+        'retained_any_insertion_essays_GLOBAL': sum(any(x['retained_GLOBAL'] for x in r['retention']) for r in rows),
+        'retained_any_insertion_essays_final': sum(any(x['retained_final'] for x in r['retention']) for r in rows),
+        'created_sentence_ids': sum(len(x['created_sids']) for r in rows for x in r['retention']),
+        'retained_sentence_ids_GLOBAL': sum(len(x['retained_GLOBAL']) for r in rows for x in r['retention']),
+        'retained_sentence_ids_final': sum(len(x['retained_final']) for r in rows for x in r['retention']),
+        'explicitly_undone_insertions': sum(x['removed_by_UNDO'] for r in rows for x in r['retention']),
         'examples': examples, 'rows': rows, 'old_saved_at_pause': pause['saved_attempts'],
         'diagnostic_saved_cohort': diagnosed,
         'extra_old_attempts_preserved_outside_diagnosis': pause['saved_attempts']-diagnosed,
@@ -355,6 +384,15 @@ def finish_test_report(config):
         f"Required:6/20. Decision:**{result['decision']}**. "
         'The gate counts accepted actions that created a sentence and changed the text. Thoughts, STOP suggestions, '
         'invalid actions and SPLIT do not qualify. Later UNDO is reported by final-stage recovery.', '',
+        '| Insertion endpoint | Explicit INSERT essays / 20 | Any insertion essays / 20 |',
+        '|---|---:|---:|',
+        f"| Executed | {result['explicit_INSERT_essays']} | {result['any_accepted_insertion_essays']} |",
+        f"| Retained at GLOBAL end | {value['retained_INSERT_essays_GLOBAL']} | {value['retained_any_insertion_essays_GLOBAL']} |",
+        f"| Retained in final essay | {value['retained_INSERT_essays_final']} | {value['retained_any_insertion_essays_final']} |", '',
+        f"Created sentence IDs: {value['created_sentence_ids']}; retained at GLOBAL end: "
+        f"{value['retained_sentence_ids_GLOBAL']}; retained in the final essay: {value['retained_sentence_ids_final']}. "
+        f"Insertions explicitly undone: {value['explicitly_undone_insertions']}. "
+        'The predeclared resume gate uses executed actions, not retained sentences or recovery.', '',
         f"Recovery: full {result['recovery']['full']}, partial {result['recovery']['partial']}, "
         f"none {result['recovery']['none']}, unknown {result['recovery']['unknown']}. "
         f"Mean among judged={result['recovery']['mean_judged']}; observed lower bound over all20="
@@ -370,6 +408,9 @@ def finish_test_report(config):
         paragraphs += [f"- `{row['source_id']}`; recovery={row['GLOBAL_main_recovery']}; R_over={row['R_over']}",
             '  - Deleted original: '+row['deleted_original'],
             '  - Actual inserted: '+(' / '.join(x['text'] for x in row['inserted']) or '(none)'),
+            '  - Retained at GLOBAL end: '+(' / '.join(text for x in row['retention'] for text in x['retained_GLOBAL'].values()) or '(none)'),
+            '  - Retained in final essay: '+(' / '.join(text for x in row['retention'] for text in x['retained_final'].values()) or '(none)'),
+            '  - UNDO explanation: '+(' / '.join(reason for x in row['retention'] for reason in x['UNDO_reasons']) or '(none)'),
             '  - Recovery finding: '+row['reason'], '']
     if mismatch:
         paragraphs += ['Legacy EDIT insertions change the 30% decision; automatic continuation is held for interpretation.', '']

@@ -3,7 +3,7 @@ from verak.v3.common import file_sha, read_json, write_json
 
 from verak.v3.agent.runner import system_prompt as v1_prompt
 from verak.v3.v2_ops.prompts import system_prompt as v2_prompt
-from verak.v3.insertion_boost.prompt_fix import RULE, accepted_insertions, system_prompt
+from verak.v3.insertion_boost.prompt_fix import RULE, accepted_insertions, insertion_retention, system_prompt
 
 
 def test_replacement_changes_only_global_content_rules():
@@ -35,6 +35,27 @@ def test_gate_counts_actual_insert_and_reports_legacy_edit_separately():
     raw = {'actions_by_role': {'global': [action(), action('EDIT')]}}
     assert len(accepted_insertions(raw)) == 1
     assert len(accepted_insertions(raw, explicit=False)) == 2
+
+
+def test_undone_insertion_is_executed_but_not_retained():
+    raw = {'actions_by_role': {'global': [action(), {'t': 2, 'action': 'UNDO', 'valid': True,
+        'removed_sids': ['new:1'], 'thought': '중복이므로 취소한다.'}]},
+        'stage1_layout': {'paragraphs': []}, 'final_layout': {'paragraphs': []}}
+    assert len(accepted_insertions(raw)) == 1
+    row = insertion_retention(raw)[0]
+    assert row['removed_by_UNDO']
+    assert row['UNDO_reasons'] == ['중복이므로 취소한다.']
+    assert row['retained_GLOBAL'] == row['retained_final'] == {}
+
+
+def test_retention_reads_actual_global_and_korean_endpoint_texts():
+    raw = {'actions_by_role': {'global': [action()]},
+        'stage1_layout': {'paragraphs': [{'units': [{'sid': 'new:1', 'text': '소개 문장이다.'}]}]},
+        'final_layout': {'paragraphs': [{'units': [{'sid': 'new:1', 'text': '소개 문장입니다.'}]}]}}
+    row = insertion_retention(raw)[0]
+    assert row['retained_GLOBAL'] == {'new:1': '소개 문장이다.'}
+    assert row['retained_final'] == {'new:1': '소개 문장입니다.'}
+    assert not row['removed_by_UNDO']
 
 
 def test_catalog_preserves_old_files_and_uses_new_design_for_missing_slot(tmp_path):
