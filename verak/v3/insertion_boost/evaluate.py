@@ -8,8 +8,9 @@ from ..train.teacher_bulk import atomic_new
 from ..v2_ops.config import PHASE
 from ..v2_ops.local import load_environment
 from ..v2_ops.reward import rewards_v2
-from ..v2_ops.teacher import RecoveryJudge, attempt_path
+from ..v2_ops.teacher import RecoveryJudge
 from .teacher import Resources, prepare, recover_global
+from .collection import entries
 
 
 def global_reward(config, candidate, raw, resources, score, *, identity_allowed=False):
@@ -52,31 +53,28 @@ def run(config, *, wait_for_gpu=True):
     design, corpus = prepare(config)
     resources = Resources(config)
     errors, done = [], 0
-    for attempt in (1, 2):
-        for episode_id in design['orders'][str(attempt)]:
-            path = attempt_path(root, attempt, episode_id)
-            if not path.exists():
-                continue
-            destination = root / f'provisional_scored/attempt_{attempt}' / path.name
-            if destination.exists():
-                if read_json(destination)['raw_episode_sha256'] != file_sha(path):
-                    raise ValueError('Saved raw episode changed after provisional scoring')
-                continue
-            raw = read_json(path)
-            if raw.get('stage1_layout') is None:
-                continue
-            try:
-                reward, values, identity = global_reward(config, corpus[episode_id], raw, resources,
-                    lambda cfg, q, text: client.provisional_score(cfg, q, text,
-                        requester=f'insertion:{attempt}:{episode_id}'), identity_allowed=True)
-                atomic_new(destination, measured_row(raw, path, reward, values,
-                    source='provisional_cpu_approximation', identity=identity))
-                done += 1
-            except Exception as exc:
-                errors.append({'attempt': attempt, 'episode_id': episode_id,
-                               'type': type(exc).__name__, 'message': str(exc)})
-            write_json(root / 'scoring_status.json', {'stage': 'provisional_cpu', 'scored_this_run': done,
-                'terminal_errors': errors, 'paid_calls': 0, 'gpu_used': False, 'training': False})
+    for item in entries(config):
+        attempt, episode_id, path = item['attempt'], item['episode_id'], item['path']
+        destination = item['provisional_path']
+        if destination.exists():
+            if read_json(destination)['raw_episode_sha256'] != file_sha(path):
+                raise ValueError('Saved raw episode changed after provisional scoring')
+            continue
+        raw = read_json(path)
+        if raw.get('stage1_layout') is None:
+            continue
+        try:
+            reward, values, identity = global_reward(config, corpus[episode_id], raw, resources,
+                lambda cfg, q, text: client.provisional_score(cfg, q, text,
+                    requester=f'insertion:{attempt}:{episode_id}'), identity_allowed=True)
+            atomic_new(destination, measured_row(raw, path, reward, values,
+                source='provisional_cpu_approximation', identity=identity))
+            done += 1
+        except Exception as exc:
+            errors.append({'attempt': attempt, 'episode_id': episode_id,
+                           'type': type(exc).__name__, 'message': str(exc)})
+        write_json(root / 'scoring_status.json', {'stage': 'provisional_cpu', 'scored_this_run': done,
+            'terminal_errors': errors, 'paid_calls': 0, 'gpu_used': False, 'training': False})
     result = {'scored_this_run': done, 'errors': [], 'terminal_errors': errors,
         'paid_calls': 0, 'gpu_used': False, 'training': False, 'reward_scope': 'global_only_provisional'}
     write_json(root / 'scoring_status.json', result)

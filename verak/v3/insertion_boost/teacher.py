@@ -107,6 +107,8 @@ def run(config, *, max_api_calls, paid_approved, limit=None):
     if not paid_approved:
         raise PermissionError('Explicit user authorization required')
     root = config['paths'][PHASE + '_output']
+    if (root / 'prompt_fix/pause/snapshot.json').exists():
+        raise RuntimeError('Original prompt collection was paused by the user; use the versioned prompt-test controller')
     with collection_lock(root):
         load_environment(config)
         design, corpus = prepare(config)

@@ -8,7 +8,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('stage', choices=['prepare', 'qc', 'summary', 'serve_cpu', 'serve_bf16', 'prepare_bf16_probe',
         'bf16_probe_result', 'calibrate_cpu', 'prefetch_calibration', 'prepare_audit_200', 'audit_200', 'schedule_cpu',
-        'teacher', 'score', 'gpu-finalize', 'report', 'continue', 'stop_cpu_if_done'])
+        'teacher', 'score', 'gpu-finalize', 'report', 'continue', 'stop_cpu_if_done',
+        'prepare_prompt_test', 'prompt_test', 'prompt_resume', 'prompt_continue'])
     parser.add_argument('--config', choices=['v2'])
     parser.add_argument('--max-api-calls', type=int, default=0)
     parser.add_argument('--paid-approval', choices=['Proceed'])
@@ -70,6 +71,20 @@ def main():
             parser.error('Explicit authorization and bounded --max-api-calls are required')
         from ..insertion_boost.teacher import run
         result = run(config, max_api_calls=args.max_api_calls, paid_approved=True, limit=args.limit)
+    elif args.stage == 'prepare_prompt_test':
+        from ..insertion_boost.prompt_fix import prepare
+        result = prepare(config)[0]
+    elif args.stage in ('prompt_test', 'prompt_resume', 'prompt_continue'):
+        if args.paid_approval != 'Proceed' or args.max_api_calls <= 0:
+            parser.error('Explicit authorization and bounded --max-api-calls are required')
+        from ..insertion_boost.prompt_fix import run_test, run_phase
+        if args.stage == 'prompt_test':
+            result = run_test(config, max_api_calls=args.max_api_calls, paid_approved=True)
+        elif args.stage == 'prompt_resume':
+            result = run_phase(config, 'resume_v1', max_api_calls=args.max_api_calls, paid_approved=True)
+        else:
+            from ..insertion_boost.prompt_fix import continue_run
+            result = continue_run(config, max_api_calls=args.max_api_calls)
     elif args.stage == 'score':
         from ..insertion_boost.evaluate import run
         result = run(config)

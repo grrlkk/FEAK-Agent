@@ -8,52 +8,50 @@ from ..train.teacher_bulk import atomic_new
 from ..train.teacher_comparison import absolute_selection
 from ..v2_ops.config import PHASE
 from ..v2_ops.report import accounting
-from ..v2_ops.teacher import attempt_path
 from .calibrate import layout_text
 from .cpu_score import gpu_reference_fingerprint, gpu_reference_score, shared_root
 from .evaluate import global_reward, measured_row
 from .teacher import Resources, prepare
+from .collection import entries, finished
 
 
 def publish_manifest(config, *, errors=()):
     root = config['paths'][PHASE + '_output']
     design, corpus = prepare(config)
     teacher_status = read_json(root / 'teacher_status.json')
-    if teacher_status['saved_attempts'] != teacher_status['planned_attempts'] and not any(
-            row['type'] == 'CallBudgetExceeded' for row in teacher_status['errors']):
+    if not finished(teacher_status):
         raise ValueError('Teacher collection has not finished or stopped cleanly at the cap')
     episodes, requests, sources = [], {}, set()
-    for attempt in (1, 2):
-        for eid in design['orders'][str(attempt)]:
-            path = attempt_path(root, attempt, eid)
-            if not path.exists():
-                continue
-            raw = read_json(path)
-            if raw.get('stage1_layout') is None:
-                continue
-            row = corpus[eid]
-            keys = {}
-            for name, text in [('corrupted', row['corrupted_text']), ('stage1', layout_text(raw['stage1_layout']))]:
-                key = pair_key(row['question'], text)
-                requests[key] = {'key': key, 'question': row['question'], 'text': text, 'text_sha256': sha_text(text)}
-                keys[name] = key
-            measured = root / f'provisional_scored/attempt_{attempt}' / path.name
-            item = {'episode_id': eid, 'source_id': row['source_id'], 'attempt': attempt,
-                'genre': row['genre'], 'raw_path': str(path), 'raw_sha256': file_sha(path),
-                'input_keys': keys, 'operator': 'G_DEL_LINK'}
-            if measured.exists():
-                values = read_json(measured)
-                item.update(provisional_path=str(measured), provisional_sha256=file_sha(measured),
-                    provisional_R=values['global_only_reward']['R'], identity_quality=values.get('identity_quality'))
-                sources.update(v['scorer_fingerprint'] for v in values['quality_scores'])
-            else:
-                item['provisional_status'] = 'terminal_measurement_error'
-            episodes.append(item)
+    for entry in entries(config):
+        attempt, eid, path = entry['attempt'], entry['episode_id'], entry['path']
+        raw = read_json(path)
+        if raw.get('stage1_layout') is None:
+            continue
+        row = corpus[eid]
+        keys = {}
+        for name, text in [('corrupted', row['corrupted_text']), ('stage1', layout_text(raw['stage1_layout']))]:
+            key = pair_key(row['question'], text)
+            requests[key] = {'key': key, 'question': row['question'], 'text': text, 'text_sha256': sha_text(text)}
+            keys[name] = key
+        measured = root / f'provisional_scored/attempt_{attempt}' / path.name
+        item = {'episode_id': eid, 'source_id': row['source_id'], 'attempt': attempt,
+            'genre': row['genre'], 'raw_path': str(path), 'raw_sha256': file_sha(path),
+            'input_keys': keys, 'operator': 'G_DEL_LINK', 'prompt_variant': entry['variant'],
+            'prompt_design_path': str(entry['design_path']), 'prompt_design_sha256': entry['design_sha256']}
+        if measured.exists():
+            values = read_json(measured)
+            item.update(provisional_path=str(measured), provisional_sha256=file_sha(measured),
+                provisional_R=values['global_only_reward']['R'], identity_quality=values.get('identity_quality'))
+            sources.update(v['scorer_fingerprint'] for v in values['quality_scores'])
+        else:
+            item['provisional_status'] = 'terminal_measurement_error'
+        episodes.append(item)
     budget = accounting(root)
     if budget['pending']:
         raise ValueError('Cannot release GPU work while teacher API calls are live')
     value = {'schema_version': 1, 'component': 'insertion',
         'teacher_design_sha256': file_sha(root / 'teacher_design.json'),
+        'teacher_stop_reason': teacher_status.get('stop_reason', 'original_collection'),
         'reference_gpu_fingerprint': gpu_reference_fingerprint(config),
         'episodes': episodes, 'requests': [requests[k] for k in sorted(requests)],
         'provisional_score_sources': sorted(sources), 'terminal_cpu_measurement_errors': list(errors),

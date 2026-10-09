@@ -7,9 +7,9 @@ from ..common import file_sha, read_json, write_json
 from ..train.teacher_comparison import absolute_selection
 from ..v2_ops.config import PHASE
 from ..v2_ops.report import accounting, table
-from ..v2_ops.teacher import attempt_path
 from .cpu_score import shared_root
 from .data import summary
+from .collection import entries
 
 
 def average(values):
@@ -58,75 +58,73 @@ def report(config, *, final=False):
     generation, termination, actions = Counter(), Counter(), Counter()
     scored_devices, best_recovery, recovery_over = Counter(), {}, []
     if design:
-        for attempt in (1, 2):
-            for eid in design['orders'][str(attempt)]:
-                path = attempt_path(root, attempt, eid)
-                slot = {'episode_id': eid, 'attempt': attempt, 'status': 'not_attempted'}
-                slots.append(slot)
-                if not path.exists():
+        for entry in entries(config, include_missing=True):
+            attempt, eid, path = entry['attempt'], entry['episode_id'], entry['path']
+            slot = {'episode_id': eid, 'attempt': attempt, 'status': 'not_attempted'}
+            slot['prompt_variant'] = entry['variant']
+            slots.append(slot)
+            if not path.exists():
+                continue
+            row = read_json(path)
+            candidate = read_json(design['corpus'][eid]['path'])
+            generation['saved'] += 1
+            generation['completed'] += row['completed']
+            generation['global_stage_saved'] += row.get('stage1_layout') is not None
+            slot['status'] = 'completed' if row['completed'] else 'runtime_failure'
+            slot['path'] = str(path)
+            termination.update([row['termination'].get('global', 'runtime_failure')])
+            actions.update(a['action'] for a in row['actions_by_role'].get('global', []))
+            recovery_path = entry['recovery_path']
+            stage = None
+            if recovery_path.exists():
+                saved = read_json(recovery_path)
+                if saved['episode_sha256'] != file_sha(path):
+                    raise ValueError('Recovery provenance changed')
+                stage = saved['stages'].get('global')
+                if stage:
+                    value = stage['per_record'][0]['main']
+                    recoveries.append(value)
+                    best_recovery[eid] = max(value, best_recovery.get(eid, 0))
+                    if 'R_over' in stage:
+                        recovery_over.append(stage['R_over'])
+            scored = root / f'scored/attempt_{attempt}' / path.name
+            reward = None
+            if scored.exists():
+                enriched = read_json(scored)
+                if enriched['raw_episode_sha256'] != file_sha(path):
+                    raise ValueError('Scored trajectory provenance changed')
+                if enriched.get('score_source') != 'gpu_reference' or any(
+                       s.get('execution_device') != 'gpu_reference' or
+                       s.get('scorer_fingerprint') != approval.get('fingerprint') for s in enriched['quality_scores']):
+                    generation['superseded_scored_attempts'] += 1
+                else:
+                    reward = enriched['global_only_reward']
+                    rewards.append(reward)
+                    scored_devices.update(s['execution_device'] for s in enriched['quality_scores'])
+                    keep = absolute_selection(enriched, candidate)
+                    if keep['korean']:
+                        raise AssertionError('No new KOREAN selection is authorized')
+                    if keep['global']:
+                        item = {'attempt': attempt, 'path': str(scored), 'sha256': file_sha(scored),
+                            'R': reward['R'], 'operator': 'G_DEL_LINK', 'source_id': candidate['source_id']}
+                        previous = selected.get(eid)
+                        if previous is None or (item['R'], -attempt) > (previous['R'], -previous['attempt']):
+                            selected[eid] = item
+            inserted = []
+            for action in row['actions_by_role'].get('global', []):
+                if not action.get('valid'):
                     continue
-                row = read_json(path)
-                if row['v2']['design_sha256'] != file_sha(design_path):
-                    raise ValueError('Teacher provenance changed')
-                candidate = read_json(design['corpus'][eid]['path'])
-                generation['saved'] += 1
-                generation['completed'] += row['completed']
-                generation['global_stage_saved'] += row.get('stage1_layout') is not None
-                slot['status'] = 'completed' if row['completed'] else 'runtime_failure'
-                slot['path'] = str(path)
-                termination.update([row['termination'].get('global', 'runtime_failure')])
-                actions.update(a['action'] for a in row['actions_by_role'].get('global', []))
-                recovery_path = root / f'attempt_{attempt}/recovery' / path.name
-                stage = None
-                if recovery_path.exists():
-                    saved = read_json(recovery_path)
-                    if saved['episode_sha256'] != file_sha(path):
-                        raise ValueError('Recovery provenance changed')
-                    stage = saved['stages'].get('global')
-                    if stage:
-                        value = stage['per_record'][0]['main']
-                        recoveries.append(value)
-                        best_recovery[eid] = max(value, best_recovery.get(eid, 0))
-                        if 'R_over' in stage:
-                            recovery_over.append(stage['R_over'])
-                scored = root / f'scored/attempt_{attempt}' / path.name
-                reward = None
-                if scored.exists():
-                    enriched = read_json(scored)
-                    if enriched['raw_episode_sha256'] != file_sha(path):
-                        raise ValueError('Scored trajectory provenance changed')
-                    if enriched.get('score_source') != 'gpu_reference' or any(
-                           s.get('execution_device') != 'gpu_reference' or
-                           s.get('scorer_fingerprint') != approval.get('fingerprint') for s in enriched['quality_scores']):
-                        generation['superseded_scored_attempts'] += 1
-                    else:
-                        reward = enriched['global_only_reward']
-                        rewards.append(reward)
-                        scored_devices.update(s['execution_device'] for s in enriched['quality_scores'])
-                        keep = absolute_selection(enriched, candidate)
-                        if keep['korean']:
-                            raise AssertionError('No new KOREAN selection is authorized')
-                        if keep['global']:
-                            item = {'attempt': attempt, 'path': str(scored), 'sha256': file_sha(scored),
-                                'R': reward['R'], 'operator': 'G_DEL_LINK', 'source_id': candidate['source_id']}
-                            previous = selected.get(eid)
-                            if previous is None or (item['R'], -attempt) > (previous['R'], -previous['attempt']):
-                                selected[eid] = item
-                inserted = []
-                for action in row['actions_by_role'].get('global', []):
-                    if not action.get('valid'):
-                        continue
-                    if action['action'] == 'INSERT':
-                        inserted.append(action['args']['text'])
-                    elif action['action'] == 'EDIT' and action['args'].get('target', '').startswith(('before:', 'after:')):
-                        inserted.append(action['args']['new_text'])
-                example = {'episode_id': eid, 'attempt': attempt, 'source_id': candidate['source_id'],
-                        'deleted_original': ' / '.join(candidate['records'][0]['original_text'].values()),
-                        'inserted': inserted, 'GLOBAL_main_recovery': stage['per_record'][0]['main'] if stage else None,
-                        'GLOBAL_R_over': reward['R_over'] if reward else stage.get('R_over') if stage else None,
-                        'GLOBAL_R': reward['R'] if reward else None, 'path': str(path),
-                        'insertion_outcome': 'accepted_insertion' if inserted else 'no_accepted_insertion'}
-                (examples if inserted else failures).append(example)
+                if action['action'] == 'INSERT':
+                    inserted.append(action['args']['text'])
+                elif action['action'] == 'EDIT' and action['args'].get('target', '').startswith(('before:', 'after:')):
+                    inserted.append(action['args']['new_text'])
+            example = {'episode_id': eid, 'attempt': attempt, 'source_id': candidate['source_id'],
+                    'deleted_original': ' / '.join(candidate['records'][0]['original_text'].values()),
+                    'inserted': inserted, 'GLOBAL_main_recovery': stage['per_record'][0]['main'] if stage else None,
+                    'GLOBAL_R_over': reward['R_over'] if reward else stage.get('R_over') if stage else None,
+                    'GLOBAL_R': reward['R'] if reward else None, 'path': str(path),
+                    'insertion_outcome': 'accepted_insertion' if inserted else 'no_accepted_insertion'}
+            (examples if inserted else failures).append(example)
     examples.sort(key=lambda r: (-(r['GLOBAL_main_recovery'] or 0), r['episode_id'], r['attempt']))
     diverse, seen = [], set()
     for row in examples:
@@ -179,6 +177,14 @@ def report(config, *, final=False):
         'scorer_selection_approval': approval,
         'score_source': 'gpu_reference', 'gpu_used': gpu_selection is not None,
         'gpu_calls_by_component': 0, 'training': False}
+    teacher_status_path = root / 'teacher_status.json'
+    metrics['teacher_stop_reason'] = (read_json(teacher_status_path).get('stop_reason', 'original_collection')
+        if teacher_status_path.exists() else 'collection_pending')
+    appendix_paths = [root / 'prompt_fix/diagnosis82.md', root / 'prompt_fix/test_v1/report.md']
+    metrics['prompt_fix_appendices'] = [{'path': str(p), 'sha256': file_sha(p)} for p in appendix_paths if p.exists()]
+    test_path = root / 'prompt_fix/test_v1/result.json'
+    if test_path.exists():
+        metrics['prompt_test'] = read_json(test_path)
     write_json(root / 'metrics.json', metrics)
     if final:
         write_json(root / 'best_role_trajectories.json', metrics['selected'])
@@ -195,8 +201,10 @@ def report(config, *, final=False):
             ['combined', 580, qc['combined']['judged'], qc['combined']['passed'], qc['combined']['qc_pass_rate']]]), '',
         f"Gate: **{qc['decision']}**. New role/surface exclusions: {qc['new_train']['role_or_surface_failure']}; "
         f"new unknown QC: {qc['new_train'].get('unknown_qc', 0)}. Passing train supply: {qc['passing_train_records']}.", '',
-        'Pinned Luna low runs the unchanged v2 two-stage agents, no CHECK, 8,192 context/1,024 output, '
-        'two independent unseeded attempts with ordering seeds 79/80. KOREAN still runs normally; only GLOBAL '
+        'Pinned Luna low runs two-stage v2, no CHECK, 8,192 context/1,024 output. Original trajectories use '
+        'ordering seeds 79/80; the separately versioned content-rule test uses seed89 on 20 distinct missing slots. '
+        'The appendix records the GLOBAL-only prompt replacement and its predeclared resume gate. '
+        'Old trajectories remain unchanged; each original slot has at most one saved attempt. KOREAN still runs normally; only GLOBAL '
         'is scored and selected. Best per essay uses the original SFT GLOBAL R >= .80 rule, without adding '
         'the later RFT STOP/rejection gates. Raw failed attempts and reservations are preserved.', '',
         table(['planned slots', 'saved', 'completed', 'GLOBAL recovery judged', 'main recovery', 'R_over', 'selected GLOBAL'], [[
@@ -241,13 +249,17 @@ def report(config, *, final=False):
         'or new task-A Bareun errors. Only the root controller uses GPUs in the authorized gap or after RFT '
         'evaluation; this component never starts a GPU process. Active RFT runtime/corpora are untouched, '
         'and insertion selections remain separate for round 2.', '',
-        'Artifacts: `'+str(root)+'`. KOREAN selections: 0; KOREAN and combined reward unmeasured.']
+        'Artifacts: `'+str(root)+'`. KOREAN selections: 0; KOREAN and combined reward unmeasured.', '',
+        'Teacher collection stop reason: `'+metrics['teacher_stop_reason']+'`.']
+    for appendix in metrics['prompt_fix_appendices']:
+        lines += ['', Path(appendix['path']).read_text(encoding='utf-8').rstrip(), '']
     path = root / 'component_report.md'
     path.write_text('\n'.join(lines)+'\n', encoding='utf-8')
     if final:
         write_json(root / 'component_metrics.json', metrics)
         write_json(root / 'complete.json', {
-            'status': 'budget_stop' if metrics['not_attempted'] else 'complete',
+            'status': 'budget_stop' if metrics['teacher_stop_reason'] == 'budget_cap' else 'complete',
+            'teacher_stop_reason': metrics['teacher_stop_reason'],
             'metrics_path': str(root / 'component_metrics.json'),
             'metrics_sha256': file_sha(root / 'component_metrics.json'),
             'report_path': str(path), 'report_sha256': file_sha(path),
