@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from verak.v3.common import file_sha, pair_key, read_json, write_json
-from verak.v3.data_boost.rescore import assert_slot, boundary_plan, ready, authorize_after_evaluation
+from verak.v3.data_boost.rescore import assert_slot, boundary_plan, ready, authorize_after_evaluation, complete_reference_pass
 from verak.v3.rft1.selection import extra_global, rebalance, counts
 
 
@@ -121,3 +121,18 @@ def test_extra_teacher_still_requires_rft_stop_and_rejection_gate(tmp_path):
     write_json(merge, {**read_json(merge), 'selection_sha256': file_sha(path)})
     entries, info = extra_global(config, {}, set())
     assert entries == [] and info['excluded'] == {'role_did_not_STOP': 1}
+
+
+def test_aggregate_requires_both_consumers_and_is_immutable(tmp_path):
+    config, root = configuration(tmp_path)
+    gpu = root / 'gpu_rescore'
+    for name in ('global', 'insertion'):
+        write_json(gpu / (name + '_complete.json'), {'fingerprint': 'frozen'})
+    write_json(gpu / 'global_consumer_complete.json', {'selection_sha256': 'first'})
+    assert complete_reference_pass(config) is None
+    write_json(gpu / 'insertion_consumer_complete.json', {'selection_sha256': 'second'})
+    value = complete_reference_pass(config)
+    assert complete_reference_pass(config) == value
+    write_json(gpu / 'global_consumer_complete.json', {'selection_sha256': 'changed'})
+    with pytest.raises(ValueError, match='artifacts changed'):
+        complete_reference_pass(config)
