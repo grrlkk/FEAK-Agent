@@ -123,6 +123,7 @@ def report(config, approval):
         'canonical_for_selection': True, 'scorer_approval': approval,
         'score_source': 'gpu_reference', 'gpu_reference_rescoring_used': True,
         'selection_changes': read_json(root / 'gpu_selection.json')['selection_changes'],
+        'provisional_score_sources': read_json(root / 'gpu_rescore_manifest.json')['provisional_score_sources'],
         'cpu_score_audit': read_json(approval['calibration_path']),
         'completion': {'teacher_requested': sum(r['teacher_planned'] for r in metrics.values()),
             'teacher_saved': sum(r['teacher_saved'] for r in metrics.values()),
@@ -145,8 +146,8 @@ def report(config, approval):
         lines.append(f"|{op}|{r['generated']}|{r['distinct_sources']}|{r['qc']['passed']}/{r['qc']['judged']}|"
             f"{r['teacher_saved']}/{r['teacher_planned']}|{number(r['teacher_main_recovery'])}|{number(r['R_over'])}|{r['selected_global']}|")
     changes = value['selection_changes']
-    lines += ['', '|CPU provisional / GPU reference comparison|Count|', '|---|---:|',
-        f"|CPU provisional GLOBAL selections|{changes['cpu_provisional_selected']}|",
+    lines += ['', '|Mixed provisional / GPU reference comparison|Count|', '|---|---:|',
+        f"|Provisional GLOBAL selections (CPU + exact saved GPU cache)|{changes['cpu_provisional_selected']}|",
         f"|Final GPU-reference GLOBAL selections|{changes['gpu_selected']}|",
         f"|Attempt eligibility flips at R >= 0.80|{changes['attempt_eligibility_flip_count']}|",
         f"|Best-attempt or membership changes|{changes['best_attempt_or_membership_change_count']}|"]
@@ -156,6 +157,11 @@ def report(config, approval):
         'The unchanged two-stage v1 teacher runs both editors, but only GLOBAL reward states and GLOBAL selections are measured here. '
         'KOREAN/combined rewards are unmeasured. No KOREAN data was selected and this component did not train. '
         'Generation used API/CPU; the root-owned deferred GPU reference pass supplied every final quality reward.', '',
+        'The provisional comparison combines CPU scores with exact-input, exact-fingerprint saved GPU cache hits; '
+        'identical scorer inputs also have a proven zero quality delta without an absolute score. '
+        'These explicitly mixed provisional values never supply the final reward table or final selections.', '',
+        'Provisional scored-state provenance: ' + ', '.join(
+            f"{s['execution_device']}={s['states']}" for s in value['provisional_score_sources']) + '.', '',
         f"Final selection and reported R use GPU-reference fingerprint `{approval['fingerprint']}` exclusively. "
         'CPU values and internal decisions are retained only for the >=200-essay compatibility audit and eligibility-flip comparison.', '',
         'Unattempted or unmeasured slots and terminal errors remain explicit in component_metrics.json; '
