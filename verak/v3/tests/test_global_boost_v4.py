@@ -122,3 +122,20 @@ def test_gpu_handoff_applies_v4_cap_and_stop_gate_before_immutable_publication(t
     assert result['selected_global']==4 and result['selected_korean']==0
     old_sha=file_sha(root/'gpu_selection.json')
     assert aggregate.gpu_finalize(config)==result and file_sha(root/'gpu_selection.json')==old_sha
+
+
+def test_rescue_export_masks_non_json_target_without_rewriting_runtime_context_or_reward():
+    from verak.v3.global_boost.v4_selection import rescue_action_targets
+    malformed={'role':'global','turn':'1:0','raw':'not JSON','messages':[{'role':'user','content':'question'}]}
+    valid={'role':'global','turn':'1:1','raw':'{"action":"STOP","args":{"summary":"done"}}',
+        'messages':[{'role':'user','content':'question'},{'role':'assistant','content':'not JSON'},
+                    {'role':'user','content':'JSON retry'}]}
+    korean={'role':'korean','turn':'1:0','raw':'unchanged KOREAN'}
+    row={'calls':[malformed,valid,korean],'global_only_reward':{'R':.95},
+        'actions_by_role':{'global':[{'action':'STOP','valid':True}]},'termination':{'global':'STOP'}}
+    before=deepcopy(row);exported=rescue_action_targets(row)
+    assert row==before and exported['calls']==[valid,korean]
+    assert exported['calls'][0]['messages'][1]['content']=='not JSON'
+    assert exported['global_only_reward']==row['global_only_reward']
+    assert exported['actions_by_role']==row['actions_by_role']
+    assert len(exported['action_only_export']['masked_non_action_targets'])==1

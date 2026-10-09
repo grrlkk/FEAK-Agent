@@ -359,10 +359,25 @@ def gpu_finalize(config):
         gpu_pre_cap_count=len(selected)
         if v4:
             from .v4_data import holdouts
-            from .v4_selection import source_cap
+            from .v4_selection import source_cap, rescue_action_targets
             held,_=holdouts(config)
             selected={i:e for i,e in selected.items() if e['source_id'] not in held}
             selected,cap_excluded=source_cap(selected)
+            for eid,entry in selected.items():
+                if entry['attempt']!=3:
+                    continue
+                original=read_json(entry['path'])
+                exported=rescue_action_targets(original)
+                exported['source_gpu_measured_trajectory']={'path':entry['path'],'sha256':entry['sha256']}
+                target=root/'v4/action_only_exports'/(eid.replace(':','_')+'.json')
+                if target.exists():
+                    if read_json(target)!=exported:
+                        raise ValueError('Immutable Sol action-only export changed')
+                else:
+                    atomic_new(target,exported)
+                entry.update(source_gpu_measured_path=entry['path'],source_gpu_measured_sha256=entry['sha256'],
+                             path=str(target),sha256=file_sha(target),
+                             action_only_export=exported['action_only_export'])
         value = {'version': 'v1', 'role': 'global', 'score_source': 'gpu_reference',
             'fingerprint': complete['fingerprint'], 'manifest_sha256': ready['manifest_sha256'],
             'gpu_complete_sha256': file_sha(complete_path), 'slot': complete['slot'],
