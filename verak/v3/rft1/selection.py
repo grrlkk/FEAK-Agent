@@ -141,7 +141,8 @@ def extra_global(config, active_corpus, held):
             source_scores = read_json(config['paths']['phase3_output'] / 'sources_agent_train.json')['rows']
         signature = validate_source(candidate, active_sources,
             prior_path=root / 'global/v4/prior_positions.json',
-            holdout_path=config['paths']['phase7_sft_output'] / 'data/manifest.json',
+            holdout_path=config['paths'].get('phase7_sft_output',
+                config['paths']['repo'] / 'verak/v3/outputs/phase7_sft') / 'data/manifest.json',
             source_scores=source_scores or {})
         if signature != 'historical_unused_source':
             if signature in new_positions:
@@ -167,7 +168,8 @@ def extra_global(config, active_corpus, held):
             'partition': 'train', 'score_source': 'gpu_reference',
             'global_only_reward': row.get('global_only_reward') if not row.get('reward') else None})
     entries, capped = cap_source_practices(entries)
-    excluded['per_source_operator_cap_4'] += len(capped)
+    if capped:
+        excluded['per_source_operator_cap_4'] += len(capped)
     return entries, {'included': bool(entries), 'selected': len(selection['selected']), 'merged': len(entries),
         'source_policy': 'Historical unused sources plus proved new positions from eligible agent_train, including active sources; maximum4 practices per source/operator.',
         'distinct_sources_by_operator': {op: len({e['source_id'] for e in entries if op in e['operators']})
