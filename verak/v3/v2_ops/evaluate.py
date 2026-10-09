@@ -103,4 +103,9 @@ def run(config):
         finally:
             if scorer is not None:
                 scorer.close()
-        return {'scored_this_run': done, 'errors': errors, 'device': 'physical_GPU1', 'paid_calls': 0}
+        status = {'scored_this_run': done, 'errors': errors, 'device': 'physical_GPU1',
+                  'model_loaded': scorer is not None, 'gpu_used': scorer is not None,
+                  'exported_counts': {s: len(v) for s, v in exported.items()},
+                  'paid_calls': 0, 'training': False}
+        write_json(root / 'scoring_status.json', status)
+        return status
