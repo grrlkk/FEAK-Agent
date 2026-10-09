@@ -64,9 +64,14 @@ def enqueue(config):
 
 def watch(config):
     root = config['paths'][PHASE + '_output']
+    shared = config['paths'].get('global_boost_shared_root', root)
     while True:
+        # Completion markers mean all requested measurements were finalized.
+        # Do not queue any additional files after the component or task stops.
+        if (root / 'complete.json').exists() or (shared / 'complete.json').exists() or (shared.parent / 'report_complete.json').exists():
+            return {'stopped': True, 'reason': 'completion_marker', 'added_this_scan': 0}
         result = enqueue(config)
         status = read_json(root / 'status.json') if (root / 'status.json').exists() else {}
-        if status.get('stage') in {'measure', 'report', 'complete', 'failed'}:
+        if status.get('stage') in {'measure', 'report', 'initial_cpu_provisional_finished', 'complete', 'failed'}:
             return result
         time.sleep(30)
