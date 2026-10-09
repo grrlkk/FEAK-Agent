@@ -80,8 +80,12 @@ class CPUResources:
     def worker(self):
         if not hasattr(self.local, 'analysis'):
             root = self.config['paths'][PHASE + '_output']
-            self.local.analysis = PriorityParagraphs(self.config, cache_dir=root / 'bareun_paragraphs')
-            self.local.bank = BareunBank(self.config, cache_dir=root / 'bareun_units')
+            paragraphs, bank = PriorityParagraphs, BareunBank
+            if self.config.get('v2_retry', {}).get('enabled'):
+                from .retry_resources import RetryParagraphs, RetryBank
+                paragraphs, bank = RetryParagraphs, RetryBank
+            self.local.analysis = paragraphs(self.config, cache_dir=root / 'bareun_paragraphs')
+            self.local.bank = bank(self.config, cache_dir=root / 'bareun_units')
             self.local.tokenizer = self.tokenizer_class.from_pretrained(str(self.config['paths']['policy_base']), local_files_only=True)
         return self.local
 

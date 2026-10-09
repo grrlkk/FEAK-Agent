@@ -8,7 +8,7 @@ from ..common import file_sha, read_json, write_json
 from ..train.teacher_bulk import atomic_new, collection_lock
 from .local import load_environment
 from .candidates import build
-from .config import PHASE, OPERATORS, require_v2
+from .config import PHASE, operators, require_v2
 from .data import source_pools
 from .judges import contract_key, label_contract, qc_contract, passes_qc, validate
 from .paid import V2API
@@ -118,9 +118,10 @@ def label(config, api):
 
 def candidate_paths(config):
     root = config['paths'][PHASE + '_output']
-    grouped = {op: sorted((root / 'candidates' / op).glob('*/*.json')) for op in OPERATORS}
+    enabled = operators(config)
+    grouped = {op: sorted((root / 'candidates' / op).glob('*/*.json')) for op in enabled}
     return [grouped[op][i] for i in range(max(map(len, grouped.values()), default=0))
-            for op in OPERATORS if i < len(grouped[op])]
+            for op in enabled if i < len(grouped[op])]
 
 
 def judge(config, api):
@@ -161,10 +162,16 @@ def summary(config):
     root = config['paths'][PHASE + '_output']
     plan = read_json(root / 'source_plan.json')
     results = {}
-    for op in OPERATORS:
+    for op in operators(config):
         counts, splits = Counter(), {}
         for split in ('agent_train', 'agent_dev'):
-            part = Counter(planned=len(plan['plans'][op][split]))
+            available = len(plan['plans'][op][split])
+            requested = plan.get('requested_source_counts', {}).get(split, available)
+            if requested < available:
+                raise ValueError('Selected source count exceeds the frozen request')
+            part = Counter(planned=requested)
+            if requested > available:
+                part['source_shortfall'] = requested - available
             for entry in plan['plans'][op][split]:
                 name = entry['source_id'].replace(':', '_') + '.json'
                 path = root / 'candidates' / op / split / name
@@ -215,7 +222,7 @@ def run(config, *, max_api_calls, paid_approved=False):
             api.settle_interrupted()
             label(config, api)
             stage = 'local_candidates'
-            for op in OPERATORS:
+            for op in operators(config):
                 build(config, operator=op)
             stage = 'instance_qc'
             judge(config, api)
