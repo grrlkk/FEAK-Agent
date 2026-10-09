@@ -5,6 +5,16 @@ GLOBAL/KOREAN SFT epoch-2 adapters. It imports the unchanged v1 environment,
 prompts, action protocol, observations and rewards. It does not authorize a
 second round, DPO, v2 training or an Orchestrator.
 
+The latest data-boost instruction adds a reference-scoring slot between rollout
+completion and training. Ready v1 GLOBAL G_PARA_SWAP/G_SENT_MOVE teacher additions
+are GPU-rescored, filtered under the RFT STOP/rejection rules and merged before
+export. Insertion v2 data remains separate. Data not ready at that boundary waits
+until RFT evaluation ends and cannot change this round's frozen training set.
+All targets carry `sft_teacher`, `extra_teacher` or `rft_rollout` source tags.
+GLOBAL full-recovery duplication applies per operator only below200 merged unique
+train recoveries; L_CONJ duplication remains2x. The report separates operator and
+source counts and attributes gains jointly to rollouts and any extra teachers.
+
 Artifacts remain local under `verak/v3/outputs/phase8_rft1`; one-shot artifacts
 go under `verak/v3/outputs/oneshot_baseline`. The original repository's pinned
 paths are obtained from the existing SFT configuration. No dataset, model,
@@ -33,9 +43,10 @@ requires R>=.80 for GLOBAL-record examples and KOREAN; the user-confirmed existi
 no-GLOBAL STOP-within2/no-structural-attempt/R_over0 exception replaces GLOBAL's
 reward threshold when no GLOBAL record exists. Every selected teacher or rollout
 trajectory additionally needs a valid terminal STOP and at most one rejected
-action. GLOBAL STOP-only training trajectories are capped at35%; full recovery
-of G_PARA_SWAP/G_SENT_MOVE (GLOBAL) or L_CONJ (KOREAN) receives total weight2,
-without compounding. Data exports use the actual per-turn inference contexts and
+action. GLOBAL STOP-only training trajectories are capped at35%. Full recovery
+of G_PARA_SWAP/G_SENT_MOVE receives total weight2 only below200 merged unique
+training recoveries for that operator; full L_CONJ retains weight2 without
+compounding. Data exports use the actual per-turn inference contexts and
 mask everything except the current action and end-of-turn target.
 
 The two-GPU trainer is launched with:
@@ -85,11 +96,24 @@ and `report` for C. There are no new teacher calls.
 They must run in an execution context that preserves child processes; a transient
 sandbox may reap detached children. The controller's `continue` stage waits for
 the owned rollout worker, validates all5,720 attempts, exports, trains GLOBAL then
-KOREAN, evaluates and reports A, and only then starts C. It stops its own servers
-and exits after C. Ownership requires matching PID, process group and pinned
+KOREAN, evaluates and reports A, and only then considers C. An explicit
+`{"hold": true}` in `phase8_rft1/oneshot_hold.json` makes the controller exit at
+`a_complete_c_on_hold` without starting any C subprocess. This hold leaves A
+unchanged and remains in force until the user explicitly resumes C. A controller
+already waiting for rollouts can load this guard with `restart-controller`, which
+restarts only the waiting manager and leaves collection and serving untouched.
+Without a hold, it stops its own servers and exits after C.
+Ownership requires matching PID, process group and pinned
 model command; unrelated GPU processes are never terminated.
 
 `status.json`, `rollout_progress.json`, stage logs and `controller/steps.jsonl`
 are the durable progress sources. A failed stage stops advancement and records
 the exact error; inspect it before resuming. The independent v2 retry is CPU/API
 only and does not share this training pipeline or its budget ledger.
+
+`rft1.coverage.snapshot` reads a frozen list of saved rollout files without calls
+or reward recomputation. Its primary denominator contains only essays with all
+four samples saved. A success requires every record of that operator to be fully
+recovered within one sample; separate fields report main recovery and complete
+recovery including coupled changes. Unobserved rewards remain unknown with
+coverage bounds, and immutable file hashes identify the snapshot.

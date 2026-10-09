@@ -201,18 +201,33 @@ def write_report(config, condition='rft1'):
             'the R threshold. Every teacher and rollout selection additionally requires terminal valid STOP '
             'and at most one rejected action. These added terminal/rejection gates are stricter than the '
             'historical SFT export. No held-out SFT source is used for gradient training.', '',
+            'The revised round1 design combines student rollouts with extra v1 GLOBAL teacher data '
+            'when those additions were ready at the rollout boundary. Its gains cannot then be '
+            'attributed to student rollouts alone. Only GPU-reference rewards enter training. '
+            'G_DEL_LINK v2 additions remain separate for round2; KOREAN receives no extra teacher data.', '',
+            f"Extra-teacher merge: `{selection.get('extra_teacher', {})}`.", '',
             table(['role', 'eligible rollout best', 'merged', 'train unique', 'train weighted', 'validation', 'STOP-only train share'],
                 [[role, (s := selection['summaries'][role])['rollout_best']['unique_trajectories'],
                   s['merged']['unique_trajectories'], s['train']['unique_trajectories'],
                   s['train']['weighted_trajectories'], s['validation']['unique_trajectories'],
                   fmt(s['train']['STOP_only_share_unique'])] for role in ROLES]), '',
             'GLOBAL STOP-only is capped at35% before weighting and remains below35% afterwards. '
-            'Full G_PARA_SWAP/G_SENT_MOVE GLOBAL recovery or full L_CONJ KOREAN recovery gets total '
-            'weight2, once even if several duplication criteria match. Validation is unweighted.', '',
+            'A fully recovered G_PARA_SWAP or G_SENT_MOVE trajectory receives weight2 only if that '
+            'operator has fewer than200 fully recovered unique train trajectories after the merge. '
+            'Full L_CONJ KOREAN recovery retains weight2. Several matching criteria still give '
+            'total weight2 once. Validation is unweighted.', '',
             table(['role', 'operator', 'train unique', 'weighted', 'fully recovered unique', 'fully recovered weighted'],
                 [[role, op, v['unique_trajectories'], v['weighted_trajectories'], v['fully_recovered_unique'],
                   v['fully_recovered_weighted']] for role in ROLES
                  for op, v in selection['summaries'][role]['train']['operators'].items()]), '']
+        lines += ['## Training composition by source', '',
+            table(['role', 'source', 'operator', 'unique', 'weighted', 'fully recovered unique'],
+                [[role, source, op, count['unique_trajectories'], count['weighted_trajectories'],
+                  count['fully_recovered_unique']]
+                 for role in ROLES for op, counts in selection['summaries'][role]['train']['operators'].items()
+                 for source, count in counts['by_source'].items()]), '',
+            'Source tags are sft_teacher, extra_teacher and rft_rollout; every exported action target '
+            'retains its trajectory source tag, source essay and GPU score provenance.', '']
     else:
         data = metrics['data']
         lines = ['# VERAK v3 — one-shot trained baseline', '',

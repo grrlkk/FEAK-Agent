@@ -153,6 +153,29 @@ def test_oneshot_global_quality_gate_only_when_global_records_exist():
     assert choose_target([(1, row)], corpus)[1] == 'higher_combined_attempt_fails_GLOBAL'
 
 
+def test_controller_honors_user_hold_before_any_oneshot_work(tmp_path, monkeypatch):
+    import json
+    from verak.v3.rft1 import config as configuration, service
+    from verak.v3.common import write_json
+
+    root = tmp_path / 'phase8_rft1'
+    root.mkdir()
+    write_json(root / 'a_complete.json', {'completed': True})
+    write_json(root / 'oneshot_hold.json', {'hold': True, 'reason': 'explicit user request'})
+    monkeypatch.setattr(configuration, 'runtime_hashes', lambda config: {})
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('No subprocess, scorer, or GPU work is allowed for held C')
+
+    monkeypatch.setattr(service.subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(service, 'idle_gpus', forbidden)
+    service.continue_work({'paths': {configuration.PHASE + '_output': root}})
+    state = json.loads((root / 'status.json').read_text())
+    assert state['stage'] == 'a_complete_c_on_hold'
+    assert state['C'] == 'held_until_explicit_user_resume'
+    assert not (tmp_path / 'oneshot_baseline').exists()
+
+
 def test_oneshot_marker_case_uses_only_final_pair_and_reuses_judge_contract():
     from verak.v3.rft1.markers import oneshot_cases
     from verak.v3.observation.markers import contract

@@ -65,7 +65,7 @@ def operator_evidence(row, role, corpus):
 
 
 def rebalance(entries, role):
-    """Unique STOP-only share <=35%; eligible hard-recovery examples get weight2 once."""
+    """Cap STOP-only; duplicate weak GLOBAL operators only below200 recoveries."""
     values = deepcopy(entries)
     removed = []
     if role == 'global':
@@ -76,6 +76,9 @@ def rebalance(entries, role):
         removed = [e['episode_id'] for e in stops[allowed:]]
         values = active + stops[:allowed]
     wanted = {'G_PARA_SWAP', 'G_SENT_MOVE'} if role == 'global' else {'L_CONJ'}
+    if role == 'global':
+        wanted = {op for op in wanted if sum(e['operators'].get(op, {}).get('all_fully_recovered', False)
+                                             for e in values) < 200}
     for e in values:
         e['duplicated_for'] = sorted(op for op in wanted if e['operators'].get(op, {}).get('all_fully_recovered'))
         e['weight'] = 2 if e['duplicated_for'] else 1
@@ -90,11 +93,71 @@ def counts(entries):
         own = [e for e in entries if op in e['operators']]
         operators[op] = {'unique_trajectories': len(own), 'weighted_trajectories': sum(e.get('weight', 1) for e in own),
             'fully_recovered_unique': sum(e['operators'][op]['all_fully_recovered'] for e in own),
-            'fully_recovered_weighted': sum(e.get('weight', 1) for e in own if e['operators'][op]['all_fully_recovered'])}
+            'fully_recovered_weighted': sum(e.get('weight', 1) for e in own if e['operators'][op]['all_fully_recovered']),
+            'by_source': {source: {'unique_trajectories': len(group),
+                'weighted_trajectories': sum(e.get('weight', 1) for e in group),
+                'fully_recovered_unique': sum(e['operators'][op]['all_fully_recovered'] for e in group)}
+                for source in sorted({e['origin'] for e in own})
+                for group in [[e for e in own if e['origin'] == source]]}}
     return {'unique_trajectories': n, 'weighted_trajectories': weighted, 'STOP_only': stops,
         'STOP_only_share_unique': stops/n if n else None,
         'STOP_only_share_weighted': sum(e.get('weight',1) for e in entries if e['STOP_only'])/weighted if weighted else None,
         'origins': dict(Counter(e['origin'] for e in entries)), 'operators': operators}
+
+
+def extra_global(config, active_corpus, held):
+    """Only the frozen, GPU-only v1 addition available before training may merge."""
+    root = config['paths']['repo'] / 'verak/v3/outputs/data_boost'
+    merge_path = root / 'rft1_extra_merge.json'
+    if not merge_path.exists():
+        return [], {'included': False, 'reason': 'no_extra_merge_authorization'}
+    merge = read_json(merge_path)
+    if not merge['include_extra_global']:
+        return [], {'included': False, 'reason': merge['reason'], 'merge_sha256': file_sha(merge_path)}
+    path = Path(merge['selection_path'])
+    if file_sha(path) != merge['selection_sha256']:
+        raise ValueError('GPU-rescored extra selection changed after the RFT boundary')
+    selection = read_json(path)
+    if (selection.get('version') != 'v1' or selection.get('role') != 'global'
+            or selection.get('score_source') != 'gpu_reference'):
+        raise ValueError('Only GPU-reference v1 GLOBAL additions may enter RFT1')
+    complete = read_json(root / 'gpu_rescore/global_complete.json')
+    if (complete['slot'] != 'pre_rft_training' or complete['fingerprint'] != selection['fingerprint']
+            or complete['manifest_sha256'] != selection['manifest_sha256']):
+        raise ValueError('Extra selection lacks the pre-training GPU reference evidence')
+    entries, excluded = [], Counter()
+    active_sources = {row['source_id'] for row in active_corpus.values()}
+    for eid, selected in selection['selected'].items():
+        candidate = selected['candidate']
+        if (eid in active_corpus or candidate['source_id'] in active_sources
+                or candidate.get('split') != 'agent_train'
+                or any(r['level'] != 'GLOBAL' or r['op'] not in {'G_PARA_SWAP', 'G_SENT_MOVE'}
+                       for r in candidate['records']) or len(candidate['records']) != 1):
+            raise ValueError('Extra teacher data violates unused-source, role, split or operator constraints')
+        trajectory_path = Path(selected['path'])
+        if file_sha(trajectory_path) != selected['sha256']:
+            raise ValueError('GPU-rescored extra trajectory changed')
+        row = read_json(trajectory_path)
+        if row.get('score_source') != 'gpu_reference':
+            raise ValueError('CPU-scored extra reward cannot enter RFT training')
+        if candidate['source_id'] in held:
+            excluded['held_out_source'] += 1
+            continue
+        keep, reason = eligible(row, 'global', candidate)
+        if not keep:
+            excluded[reason] += 1
+            continue
+        entries.append({'episode_id': eid, 'source_id': candidate['source_id'], 'role': 'global',
+            'origin': 'extra_teacher', 'sample': selected['attempt'], 'path': str(trajectory_path),
+            'sha256': selected['sha256'], 'R': role_reward(row, 'global')['R'],
+            'STOP_only': stop_only(row, 'global'), 'operators': operator_evidence(row, 'global', candidate),
+            'partition': 'train', 'score_source': 'gpu_reference',
+            'global_only_reward': row.get('global_only_reward') if not row.get('reward') else None})
+    return entries, {'included': bool(entries), 'selected': len(selection['selected']), 'merged': len(entries),
+        'excluded': dict(excluded), 'selection_sha256': file_sha(path), 'merge_sha256': file_sha(merge_path),
+        'gpu_complete_sha256': file_sha(root / 'gpu_rescore/global_complete.json'),
+        'selection_changes': selection.get('selection_changes'),
+        'interpretation': 'Gains combine student rollouts and extra teacher data; no v2 data was merged.'}
 
 
 def select(config):
@@ -114,6 +177,7 @@ def select(config):
 
     def entry_for(row, path, role, eid, origin, sample):
         return {'episode_id': eid, 'source_id': corpus[eid]['source_id'], 'role': role, 'origin': origin,
+            'score_source': 'gpu_reference',
             'sample': sample, 'path': str(path), 'sha256': file_sha(path), 'R': role_reward(row, role)['R'],
             'STOP_only': stop_only(row, role), 'operators': operator_evidence(row, role, corpus[eid]),
             'partition': 'validation' if corpus[eid]['source_id'] in held else 'train',
@@ -131,7 +195,7 @@ def select(config):
                 reasons[role]['rollout:' + reason] += 1
                 slot['eligibility'][role] = reason
                 if keep:
-                    entry = entry_for(row, path, role, eid, 'rollout', sample)
+                    entry = entry_for(row, path, role, eid, 'rft_rollout', sample)
                     old = rollout_best[role].get(eid)
                     if old is None or (entry['R'], -sample) > (old['R'], -old['sample']):
                         rollout_best[role][eid] = entry
@@ -148,10 +212,15 @@ def select(config):
             keep, reason = eligible(row, role, corpus[eid])
             reasons[role]['teacher:' + reason] += 1
             if keep:
-                entry = entry_for(row, path, role, eid, 'teacher', original['attempt'])
+                entry = entry_for(row, path, role, eid, 'sft_teacher', original['attempt'])
                 old = best[role].get(eid)
                 if old is None or entry['R'] >= old['R']:  # Teacher wins a reward tie.
                     best[role][eid] = entry
+    additions, addition_provenance = extra_global(config, corpus, held)
+    for entry in additions:
+        if entry['episode_id'] in best['global']:
+            raise ValueError('An extra teacher practice collides with the original corpus')
+        best['global'][entry['episode_id']] = entry
     selections, summaries, dropped = {}, {}, {}
     for role in ROLES:
         merged = list(best[role].values())
@@ -172,7 +241,8 @@ def select(config):
         'no_GLOBAL_exception': 'explicitly confirmed by user on 2026-10-09; applies to teacher and rollout selections',
         'teacher_gate': 'explicit current RFT criteria also applied to accepted teacher selections',
         'merge_tie': 'teacher; rollout ties lower sample ID', 'holdout_sources': sorted(held),
-        'rebalancing': 'cap unique train GLOBAL STOP-only at35%; weight2 once per eligible role-specific hard operator; validation unchanged',
+        'rebalancing': 'cap unique train GLOBAL STOP-only at35%; weight2 for full G_PARA_SWAP/G_SENT_MOVE only when merged train full-recovery count is below200 per operator; full L_CONJ remains weight2; validation unchanged',
+        'extra_teacher': addition_provenance,
         'selections': selections, 'summaries': summaries, 'eligibility_reasons': reasons,
         'STOP_only_removed_ids': dropped, 'rollout_slots': slots}
     destination = root / 'selection.json'
@@ -229,6 +299,7 @@ def export(config):
                         for sample in samples:
                             sample.update(source_id=entry['source_id'], source_path=entry['path'],
                                 source_sha256=entry['sha256'], origin=entry['origin'], sample=entry['sample'],
+                                score_source=entry['score_source'],
                                 duplicate_index=duplicate, partition=part)
                             stream.write(json.dumps(sample, ensure_ascii=False) + '\n')
                             sizes.append(sample['total_tokens']); targets.append(sample['loss_tokens'])
