@@ -167,13 +167,9 @@ def judge(row,items,attempts,api):
     path=ROOT/'D/judgments'/(safe_id(row['source_id'])+'.json')
     if path.exists():
         return read_json(path)
-    if any(a['status'] in {'error','budget_stop'} for a in attempts):
-        value={'source_id':row['source_id'],'status':'unjudgeable_teacher_failure'}
-        atomic_new(path,value)
-        return value
     payload={'question':row['question'],'original':row['paragraphs'],'items':items,
         'attempts':[{'attempt':a['attempt'],'revision_stage':a['phase_text'].get('revision'),
-            'final_text':a['final_text'],'termination':a['termination'],
+            'final_text':a['final_text'],'termination':a['termination'],'execution_status':a['status'],
             'writer_notes':[r['value']['issues'] for role in a['actions'].values() for r in role
                 if r['valid'] and r['action']=='STOP']} for a in attempts]}
     try:
@@ -197,8 +193,9 @@ def selection(items,attempt,verdict):
         'meaning_yes':verdict['meaning_preserved']=='yes','better_yes':verdict['better_than_original']=='yes',
         'at_least_half_addressed':bool(assigned) and 2*fully>=len(assigned)}
     quality_keep=all(flags.values())
-    # Quality acceptance and executable-demonstration eligibility are separate.
-    return {'quality_keep':quality_keep,'export_keep':quality_keep and attempt['complete'],
+    # D has its own explicit four-part quality gate. Do not silently add the
+    # corruption/SFT STOP gate to these content demonstrations.
+    return {'quality_keep':quality_keep,'export_keep':quality_keep,
         'criteria':flags,'assigned_items':len(assigned),'fully_addressed':fully,
         'all_items':len(items),'all_fully_addressed':len(addressed),'complete':attempt['complete']}
 
@@ -337,15 +334,17 @@ def report(*,tokenizer=None):
         'manual_review_cases':len(review),'selection_denominator':design['selection_denominator'],
         'quality_failure_counts':{k:sum(not c['selection']['criteria'][k] for c in cases) for k in
             ('invented_no','meaning_yes','better_yes','at_least_half_addressed')},
-        'errors':errors,'api':read_json(root/'api/accounting.json'),'gpu_used':False,'scorer_calls':0,'training':False}
+        'errors':errors,'teacher_errors':[{'source_id':a['source_id'],'attempt':a['attempt'],
+            'status':a['status'],'error':a.get('error')} for a in attempts if a['status']!='completed'],
+        'api':read_json(root/'api/accounting.json'),'gpu_used':False,'scorer_calls':0,'training':False}
     write_json(root/'metrics.json',values)
     lines=['### D. Content/expression pilot','',
         f'{len(attempts)}/200 attempts; {judged}/100 pairs judged. Quality-kept {values["quality_kept_attempts"]}; '
         f'executable exports {values["export_kept_attempts"]} from {values["distinct_export_sources"]} source essays.',
         'Low/middle: bottom two thirds of the B training human-score distribution within genre; ties retained before fixed-seed sampling.',
         design['selection_denominator'],
-        'Both quality-kept attempts are retained when eligible; the Sol preference is recorded separately. '
-        'Quality acceptance and STOP-complete demonstration export are reported separately.',
+        'Both quality-kept attempts are retained; the Sol preference and STOP/step-limit endings are recorded separately. '
+        'Only the requested four quality conditions gate D; no extra terminal-STOP selection gate is imposed.',
         'Only valid action targets are exported. Teacher items/scores are absent from public observations; '
         'observations, marker notices, and tool results have label -100. No training was started.','',
         '|Role|Attempts|STOP|Step limit|Valid actions|All actions|','|---|---:|---:|---:|---:|---:|']

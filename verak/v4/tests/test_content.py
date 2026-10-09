@@ -75,7 +75,7 @@ def test_quality_gate_counts_full_items_not_partials_or_deferrals():
     assert not selection(items,attempt,verdict)['quality_keep']
     verdict['invented_experiences']='no'
     result=selection(items,{'complete':False},verdict)
-    assert result['quality_keep'] and not result['export_keep']
+    assert result['quality_keep'] and result['export_keep']
 
 
 def test_judge_rejects_missing_or_duplicate_item_verdicts():
