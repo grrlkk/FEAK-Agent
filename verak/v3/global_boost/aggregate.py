@@ -1,5 +1,7 @@
 """Final component artifacts across all immutable GLOBAL practice batches."""
 from collections import Counter
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -227,7 +229,11 @@ def cpu_ready(config):
         'canonical_for_selection': False, 'generation_stop_reason': expansion['stop_reason'],
         'source_plan_parent_sha256': file_sha(root / 'source_plan.json'), 'api': account}
     manifest_path = root / 'gpu_rescore_manifest.json'
-    atomic_new(manifest_path, manifest)
+    if manifest_path.exists():
+        if read_json(manifest_path) != manifest:
+            raise ValueError('Interrupted readiness manifest differs; preserve it for review')
+    else:
+        atomic_new(manifest_path, manifest)
     marker = {'status': 'ready', 'manifest_path': str(manifest_path), 'manifest_sha256': file_sha(manifest_path),
         'no_live_paid_calls': True, 'teacher_collection_finished': True, 'cpu_measurements_finished': True,
         'gpu_used': False, 'training': False, 'at': time.time()}
@@ -235,11 +241,26 @@ def cpu_ready(config):
     return marker
 
 
+@contextmanager
+def gpu_selection_lock(root):
+    directory = root / 'gpu_selection'
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / 'collection.lock').open('a+') as stream:
+        # Both the RFT boundary controller and this background finalizer may
+        # consume the same completed GPU pass. The second waits, then returns
+        # the immutable selection instead of failing the RFT controller.
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
+
+
 def gpu_finalize(config):
     """Synchronous no-API consumer, independent of the insertion/audit schedule."""
     from .measure import run as measure
     root = root_for(config)
-    with collection_lock(root / 'gpu_selection'):
+    with gpu_selection_lock(root):
         ready = read_json(root / 'cpu_ready.json')
         manifest = read_json(ready['manifest_path'])
         if file_sha(ready['manifest_path']) != ready['manifest_sha256']:
@@ -255,7 +276,8 @@ def gpu_finalize(config):
         old_path = root / 'gpu_selection.json'
         if old_path.exists():
             old = read_json(old_path)
-            if old['manifest_sha256'] != ready['manifest_sha256'] or old['fingerprint'] != complete['fingerprint']:
+            if (old['manifest_sha256'] != ready['manifest_sha256'] or old['fingerprint'] != complete['fingerprint']
+                    or old['gpu_complete_sha256'] != file_sha(complete_path)):
                 raise ValueError('Immutable GPU selection identity changed')
             return old
         configs = {str(c['paths'][PHASE + '_output']): c for c in batch_configs(config)}
