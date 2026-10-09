@@ -13,6 +13,10 @@ from .measure import measured_path
 
 
 def report(config):
+    if (config[PHASE].get('measurement_source') != 'gpu_reference'
+            or not config[PHASE].get('score_fingerprint')
+            or not config[PHASE].get('scorer_approval_sha256')):
+        raise RuntimeError('Final GLOBAL reports require deferred GPU-reference rewards; CPU observations are provisional only')
     root = config['paths'][PHASE + '_output']
     plan = read_json(root / 'source_plan.json')
     qc = summarize(config)
@@ -98,9 +102,10 @@ def report(config):
         'selection_rule': 'Existing SFT absolute_selection, best GLOBAL R per practice; no additional RFT-only STOP/rejection gate.',
         'new_teacher_roles': ['global', 'korean'], 'selected_roles': ['global'],
         'unmeasured_reward_roles': ['korean', 'combined'],
-        'method': 'Unchanged v1 two-stage prompts/actions/recovery; hidden reward deferred and CPU NF4 scored.',
+        'method': 'Unchanged v1 two-stage prompts/actions/recovery; hidden reward deferred and finalized with root-owned GPU-reference scores.',
+        'score_source': 'gpu_reference', 'gpu_reference_rescoring_used': True,
         'gpu_used': False, 'training': False}
-    result['canonical_for_selection'] = bool(config[PHASE].get('score_fingerprint'))
+    result['canonical_for_selection'] = True
     result['scorer_approval_sha256'] = config[PHASE].get('scorer_approval_sha256')
     result['score_device_observations'] = dict(score_devices)
     result['completion'] = {
@@ -111,10 +116,8 @@ def report(config):
         'stop_reason': read_json(root / 'teacher_status.json').get('stop_reason')
             if (root / 'teacher_status.json').exists() else 'teacher_not_started',
     }
-    cpu_audit = config['paths'].get('global_boost_shared_root', root).parent / 'cpu_scorer/calibration.json'
-    if cpu_audit.exists():
-        audit = read_json(cpu_audit)
-        result['cpu_score_audit'] = {k: v for k, v in audit.items() if k not in {'comparisons', 'decisions'}}
+    result['cpu_score_audit_path'] = str(config['paths'].get('global_boost_shared_root', root).parent
+                                       / 'cpu_scorer/audit_200/calibration.json')
     write_json(root / 'best_global_trajectories.json', {'global': selected, 'korean': {}})
     write_json(root / 'component_metrics.json', result)
     lines = ['# GLOBAL data boost', '',
@@ -134,6 +137,7 @@ def report(config):
     lines += ['', f"Confirmed API cost ${account['confirmed_usd']:.6f}; retained reservation "
         f"${account['reserved_usd']:.6f}; cap $12. Selected KOREAN: 0. GPU calls: 0. Training: none.", '',
         result['selection_rule'], '', 'Teacher prompt and tool behavior use v1. Scoring runs after generation because CHECK is disabled. '
-        'CPU scoring has separate provenance; numerical comparison with saved GPU values is in cpu_scorer/calibration.json.', '']
+        'Every reported reward and final selection uses deferred GPU-reference values. CPU scores remain provisional; '
+        'the >=200-source comparison is in cpu_scorer/audit_200/calibration.json and summarized in the aggregate report.', '']
     (root / 'component_report.md').write_text('\n'.join(lines), encoding='utf-8')
     return {k: v for k, v in result.items() if k != 'selected'}
