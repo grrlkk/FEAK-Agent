@@ -1,7 +1,9 @@
 # Weak-GLOBAL teacher expansion
 
 This data-only pipeline supplements G_PARA_SWAP and G_SENT_MOVE while RFT round 1
-continues. It never starts training, policy serving, or a GPU scorer. The KOREAN
+continues. It never starts training, policy serving, or a GPU scorer. The root
+controller later obtains GPU reference scores in an authorized RFT gap; this
+component consumes those saved results without making GPU calls. The KOREAN
 prompt, operators, permissions, observations and hand-off are the existing v1
 implementation. KOREAN runs as the second teacher stage, but only GLOBAL
 trajectories are selected.
@@ -22,11 +24,14 @@ The v1 8,192/1,024 token contract and no-CHECK environment remain unchanged.
 
 Because rewards are invisible without CHECK, the original v1 action loop can
 finish before scoring. Raw generation files remain immutable; separately saved
-measured files add the exact v1 GLOBAL reward from corrupted/stage-1 scores on
+measured files add provisional v1 GLOBAL rewards from corrupted/stage-1 scores on
 the shared frozen NF4 CPU scorer. KOREAN and combined rewards are unmeasured;
 their final text is not scored for this GLOBAL-only selection. CPU arithmetic
-has separate cache provenance and is compared with saved
-GPU scores. No fabricated quality score is used. Selection imports the actual
+has separate cache provenance and is compared with GPU scores on at least 200
+distinct source essays. CPU rewards and eligibility remain internal. Every
+teacher episode subsequently gets GPU-reference quality inputs; final rewards
+and selection use GPU values only. No fabricated quality score is used.
+Selection imports the actual
 SFT `absolute_selection` rule and takes the best qualifying GLOBAL attempt per
 practice; ties prefer attempt 1. Source IDs are retained for future validation
 grouping. This task does not train or make a validation split.
@@ -34,10 +39,15 @@ grouping. This task does not train or make a validation split.
 Exact saved GPU score-cache hits may be reused after the entire frozen scorer
 fingerprint matches; the background task never invokes a GPU. The CPU service
 preserves the frozen NF4/double-quantized weights and records its arithmetic
-contract separately. The initial FP32 execution showed a material discrepancy
-and is not canonical. Final selection waits for a validated
-`cpu_scorer/selection_approval.json`, uses that fingerprint only, and saves
-`measured_<fingerprint-prefix>` outputs without reusing earlier FP32 measurements.
+contract separately. FP32 execution is allowed for provisional measurement only.
+`cpu_ready.json` freezes the raw episodes, provisional measurements and quality
+input manifest. The root schedules GPU scoring after rollouts and before RFT
+training if GLOBAL is ready, otherwise after RFT evaluation. `gpu-finalize`
+consumes `gpu_rescore/global_complete.json` and immediately writes GPU-only
+`gpu_selection.json` for the root's conditional RFT merge. It does not wait for
+the >=200-essay audit; the final report does. CPU and GPU measurements use distinct
+source/fingerprint directories. An explicitly failed GPU input remains an error
+and never falls back to CPU.
 Each score records its execution device and fingerprint. `launch-prefetch` queues only corrupted/stage-1 states
 of already saved episodes while teacher collection continues, sharing the
 idempotent file queue with the insertion boost.
@@ -56,10 +66,12 @@ interruption reconciliation never settles a concurrent original-teacher call.
 The hard per-call reservation cap applies even if actual usage exceeds a cost
 projection. Reports distinguish a projection/cap stop from source supply.
 
-The worker hides CUDA, runs at nice 19 on CPUs 104–111, and uses one teacher
-worker. Both boosts share cache-first Bareun access at no more than one new
+The worker hides CUDA, runs at nice 19 on CPUs 104–111, and uses two independent
+teacher workers. Existing frozen single-worker manifests remain intact; runtime
+concurrency is recorded separately. Both boosts share cache-first Bareun access at no more than one new
 request per second. Busy/timeout or new RFT Bareun errors suspend background
-cache misses. A separate CPU model service serves both boosts sequentially.
+cache misses, and elevated recent latency downgrades GLOBAL to one worker. A
+separate CPU model service serves both boosts sequentially.
 
 Run from the isolated worktree:
 
@@ -72,7 +84,8 @@ python -m verak.v3.cli.global_boost launch-finalizer
 ```
 
 Individual resumable stages are `qc`, `teacher`, `measure`, and `report`.
-`continue` runs those stages sequentially. `restart` reloads the data controller
+`continue` runs generation and provisional CPU measurement only; it exports no
+CPU-based final selection/report. `restart` reloads the data controller
 only after its locked ledger confirms no pending API request; saved responses
 replay and no GPU process is touched. Artifacts are under
 `verak/v3/outputs/data_boost/global` in the configured original repository.
@@ -80,8 +93,14 @@ replay and no GPU process is touched. Artifacts are under
 `component_report.md` feed the combined `V3_DATA_BOOST.md` report. No data,
 credentials, model weights or generated report is committed.
 
-The finalizer waits for all generation batches and the approved scorer, measures
-GLOBAL only, and writes aggregate artifacts plus `complete.json` with their
+The finalizer freezes CPU readiness, consumes the GPU pass, waits for the
+>=200-essay audit, and writes aggregate artifacts plus `complete.json` with their
 hashes. That marker requires no live paid calls, accounted terminal outcomes,
 completed available measurements, and either all requested teacher slots or an
 explicit budget stop. A code PR or a launched process is not task completion.
+
+When question, rendered essay, and scorer contract serialize to identical input
+bytes, the provisional quality delta is exactly zero without scoring. Absolute
+before/after Q stay null, and identity hashes prove the shortcut. The GPU manifest
+still includes those inputs. All non-quality reward terms and SFT gates are
+unchanged.

@@ -12,7 +12,7 @@ def config_for():
         'model': read_json(config['paths']['phase4_output'] / 'models.json')['luna_model'],
         'sol_model': 'gpt-6.1-sol', 'max_cost_usd': 12., 'max_concurrent_requests': 2,
         'phase_api_ceiling': 20000, 'seed': 97, 'ordering_seeds': [71, 72],
-        'per_operator': 400, 'attempts': 2,
+        'per_operator': 400, 'attempts': 2, 'teacher_workers': 2,
     }
     config['paths'][PHASE + '_output'] = config['paths']['repo'] / 'verak/v3/outputs/data_boost/global'
     if config['env']['mode'] != 'two_stage' or config['env']['enable_check']:

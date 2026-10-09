@@ -104,14 +104,15 @@ def run(config):
     from .qc import run as qc
     from .teacher import run as teacher
     from .measure import run as measure
-    from .report import report
     root = config['paths'][PHASE + '_output']
     status = {'pid': os.getpid(), 'gpu_used': False, 'training': False}
     try:
-        for name, function in [('qc', qc), ('teacher', teacher), ('measure', measure), ('report', report)]:
+        # CPU results remain internal. Only the aggregate finalizer may export
+        # selection/report artifacts after the root-owned GPU reference pass.
+        for name, function in [('qc', qc), ('teacher', teacher), ('measure', measure)]:
             write_json(root / 'status.json', {**status, 'stage': name, 'at': time.time()})
             function(config)
-        write_json(root / 'status.json', {**status, 'stage': 'complete', 'at': time.time()})
+        write_json(root / 'status.json', {**status, 'stage': 'initial_cpu_provisional_finished', 'at': time.time()})
     except Exception as exc:
         write_json(root / 'status.json', {**status, 'stage': 'failed', 'failed_stage': name,
             'error': {'type': type(exc).__name__, 'message': str(exc)}, 'at': time.time()})

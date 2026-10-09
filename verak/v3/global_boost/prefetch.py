@@ -30,6 +30,13 @@ def enqueue(config):
             done[key] = {'sha256': digest, 'requests': [], 'reason': 'no_completed_global_stage'}
             continue
         row = rows[result['corpus_episode_id']]
+        # No quality delta can arise from the identical scorer input. Keep an
+        # explicit identity proof in measurement; the final GPU manifest still
+        # contains this input, as required by the later GPU-reference audit.
+        if row['corrupted_text'].encode('utf-8') == snapshot_text(result['stage1_layout']).encode('utf-8'):
+            done[key] = {'sha256': digest, 'requests': [], 'reason': 'identical_scorer_input',
+                         'pair_key': pair_key(row['question'], row['corrupted_text'])}
+            continue
         requests, cached = [], []
         for text in (row['corrupted_text'], snapshot_text(result['stage1_layout'])):
             request_key = pair_key(row['question'], text)

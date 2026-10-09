@@ -239,6 +239,7 @@ def test_expansion_round_robin_reuses_sources_with_distinct_one_record_practices
 
 
 def test_unapproved_fp32_measurements_are_not_reused_for_canonical_selection(tmp_path):
+    from verak.v3.common import file_sha
     from verak.v3.global_boost.aggregate import approved
     from verak.v3.global_boost.measure import measured_path
     config = config_for()
@@ -250,7 +251,184 @@ def test_unapproved_fp32_measurements_are_not_reused_for_canonical_selection(tmp
     write_json(approval, {'canonical_for_selection': False, 'fingerprint': 'old_fp32'})
     assert approved(config) is None
     write_json(approval, {'canonical_for_selection': True, 'fingerprint': 'new_bf16_fingerprint'})
+    assert approved(config) is None  # Small CPU engineering checks never authorize final selection.
+    calibration = tmp_path / 'cpu_scorer/audit_200/calibration.json'
+    write_json(calibration, {'unique_source_essays': 200})
+    write_json(tmp_path / 'gpu_rescore/global_complete.json', {'fingerprint': 'gpu_reference_fingerprint'})
+    write_json(approval, {'canonical_for_selection': True, 'fingerprint': 'gpu_reference_fingerprint',
+        'score_source': 'gpu_reference', 'calibration_essays': 200,
+        'calibration_path': str(calibration), 'calibration_sha256': file_sha(calibration)})
     verified = approved(config)
     config[PHASE]['score_fingerprint'] = verified['fingerprint']
     assert measured_path(config, 1, raw) != old
     assert not measured_path(config, 1, raw).exists() and old.exists()
+
+
+@pytest.mark.parametrize('undo', [False, True])
+def test_identical_input_quality_matches_score_backed_global_reward_without_absolute_q(tmp_path, monkeypatch, setup_env, undo):
+    from verak.v3.common import read_json
+    from verak.v3.corrupt.operators import apply, Proposal
+    from verak.v3.global_boost import measure, resources
+    from verak.v3.global_boost.teacher import attempt_path
+    from verak.v3.reward.total import rewards
+    base, episode, analysis = setup_env
+    source = episode['document']
+    class Bank:
+        def tokens(self, text):
+            return []
+    corrupted, record = apply(source, Proposal('G_PARA_SWAP', [u.sid for u in source.units],
+                                              {'paragraph_indices': [0, 1]}), Bank())
+    episode.update(document=corrupted, source=source, records=[record])
+    base.reset(episode)
+    if undo:
+        base.step(action('MOVE', target='P2', position='before:P1'))
+        base.step(action('UNDO'))
+    base.step(action('STOP', summary='확인'))
+    actions = list(base.actions['global'])
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path
+    row = {'episode_id': 'case', 'source_id': 'source', 'question': '문항', 'genre': '논증',
+        'records': [record], 'corrupted_layout': corrupted.snapshot(), 'preexisting_spell_spans': []}
+    raw = {'completed': True, 'reward': None, 'stage1_layout': corrupted.snapshot(),
+           'actions_by_role': {'global': actions, 'korean': []}}
+    path = attempt_path(tmp_path, 1, 'case')
+    write_json(path, raw)
+    monkeypatch.setattr(measure, 'prepare_teacher', lambda _: ({'orders': {'1': ['case'], '2': ['case']}}, {'case': row}))
+    class Resources:
+        analysis = SimpleNamespace(suspended=lambda: False)
+        def __init__(self, _): pass
+        def source(self, _): return source.clone()
+        def restore(self, layout): return Document.restore(layout, Bank())
+    monkeypatch.setattr(resources, 'CPUResources', Resources)
+    monkeypatch.setattr(resources, 'score_cpu', lambda *_: pytest.fail('Identical scorer input needs no absolute Q'))
+    result = measure.run(config)
+    assert not result['errors']
+    actual = read_json(tmp_path / 'attempt_1/measured' / path.name)['global_only_reward']
+    expected = rewards(source, corrupted, corrupted, [record], genre='논증', q_corrupted=6.123,
+        q_stage1=6.123, q_final=6.123, config=config['reward'], mode='two_stage', stage1=corrupted,
+        stage1_actions=actions, stage2_actions=[])['global']
+    assert {k:v for k,v in actual.items() if k!='quality'} == {k:v for k,v in expected.items() if k!='quality'}
+    assert actual['quality']['before'] is None and actual['quality']['after'] is None
+    assert actual['quality']['delta'] == 0 and actual['quality']['value'] == 0
+    proof = actual['quality']['identity']
+    assert proof['before_input_sha256'] == proof['after_input_sha256']
+
+
+def test_two_teacher_workers_keep_independent_episodes_and_resume_saved_slots(tmp_path, monkeypatch):
+    import threading
+    import time
+    from verak.v3.common import file_sha
+    from verak.v3.global_boost import teacher, resources
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path / 'global'
+    config['paths']['repo'] = tmp_path
+    root = config['paths'][PHASE + '_output']
+    write_json(root / 'teacher_design.json', {'frozen_fixture': True})
+    design = {'orders': {'1': ['a', 'b'], '2': ['b', 'a']}, 'teacher_workers': 1}
+    rows = {i: {'episode_id': i, 'source_id': i, 'question': '문항', 'genre': '논증', 'level': 'L3',
+                'records': [], 'preexisting_spell_spans': [], 'corrupted_layout': {}, 'operator': 'G_SENT_MOVE'}
+            for i in ('a', 'b')}
+    monkeypatch.setattr(teacher, 'prepare_teacher', lambda _: (design, rows))
+    monkeypatch.setattr(teacher, 'load_environment', lambda _: None)
+    worker_ids, called = set(), []
+    lock = threading.Lock()
+    activity = {'live': 0, 'peak': 0}
+    class Resources:
+        analysis = SimpleNamespace(suspended=lambda: False)
+        tokenizer = None
+        def __init__(self, _):
+            worker_ids.add(threading.get_ident())
+        def source(self, _): return None
+        def restore(self, _): return None
+    def episode(env, value, backend, **kwargs):
+        with lock:
+            activity['live'] += 1
+            activity['peak'] = max(activity['peak'], activity['live'])
+            called.append((backend.condition, value['episode_id']))
+        time.sleep(.03)
+        with lock:
+            activity['live'] -= 1
+        return {'episode_id': 'teacher:two_stage:'+value['episode_id'], 'corpus_episode_id': value['episode_id'],
+                'completed': True, 'runtime_error': None, 'reward': None}
+    monkeypatch.setattr(resources, 'CPUResources', Resources)
+    monkeypatch.setattr(teacher, 'run_episode', episode)
+    first = teacher.run(config)
+    assert first['stop_reason'] == 'all_slots_attempted' and not first['errors']
+    assert activity['peak'] == 2 and len(worker_ids) == 2 and len(set(called)) == 4
+    saved = {str(p): file_sha(p) for p in root.glob('attempt_*/episodes/*.json')}
+    assert len(saved) == 4
+    assert teacher.run(config)['finished_this_run'] == 0
+    assert len(called) == 4 and saved == {str(p): file_sha(p) for p in root.glob('attempt_*/episodes/*.json')}
+
+
+@pytest.mark.parametrize('gpu_error', [False, True])
+def test_gpu_finalize_rebuilds_reward_and_eligibility_without_cpu_fallback(tmp_path, monkeypatch, setup_env, gpu_error):
+    from verak.v3.common import file_sha, pair_key, read_json
+    from verak.v3.corrupt.operators import apply, Proposal
+    from verak.v3.global_boost import aggregate, measure, resources
+    from verak.v3.global_boost.teacher import attempt_path
+    base, episode, _ = setup_env
+    source = episode['document']
+    class Bank:
+        def tokens(self, text): return []
+    corrupted, record = apply(source, Proposal('G_PARA_SWAP', [u.sid for u in source.units],
+                                              {'paragraph_indices': [0, 1]}), Bank())
+    config = config_for()
+    root = tmp_path / 'global'
+    config['paths'][PHASE + '_output'] = root
+    candidate = {'episode_id': 'case', 'source_id': 'valid:1', 'source_hash': sha_text(source.text),
+        'split': 'agent_train', 'operator': 'G_PARA_SWAP', 'question': '문항', 'genre': '논증',
+        'records': [record], 'source_text': source.text, 'corrupted_text': corrupted.text,
+        'corrupted_layout': corrupted.snapshot(), 'preexisting_spell_spans': []}
+    candidate_path = root / 'candidate.json'
+    write_json(candidate_path, candidate)
+    raw_path = attempt_path(root, 1, 'case')
+    raw = {'completed': True, 'generation_completed': True, 'reward': None, 'stage1_layout': source.snapshot(),
+        'calls': [], 'termination': {'global': 'STOP', 'korean': 'STOP'},
+        'actions_by_role': {'global': [], 'korean': []}}
+    write_json(raw_path, raw)
+    cpu = root / 'provisional.json'
+    write_json(cpu, {'global_only_reward': {'R': .79}})
+    requests = [{'key': pair_key('문항', t), 'question': '문항', 'text': t} for t in (corrupted.text, source.text)]
+    manifest = {'reference_gpu_fingerprint': 'reference', 'requests': requests, 'provisional_selected': {},
+        'episodes': [{'episode_id': 'case', 'attempt': 1, 'batch': str(root),
+            'raw_path': str(raw_path), 'raw_sha256': file_sha(raw_path),
+            'candidate_path': str(candidate_path), 'candidate_sha256': file_sha(candidate_path),
+            'provisional_path': str(cpu), 'provisional_sha256': file_sha(cpu),
+            'provisional_global_eligible': False, 'provisional_R': .79,
+            'quality_inputs': [{'key': r['key']} for r in requests]}]}
+    manifest_path = root / 'gpu_rescore_manifest.json'
+    write_json(manifest_path, manifest)
+    write_json(root / 'cpu_ready.json', {'manifest_path': str(manifest_path), 'manifest_sha256': file_sha(manifest_path)})
+    write_json(tmp_path / 'gpu_rescore/global_complete.json', {'component': 'global',
+        'manifest_sha256': file_sha(manifest_path), 'request_count': 2, 'fingerprint': 'reference',
+        'slot': 'pre_rft_training', 'errors': [{'key': requests[0]['key'], 'error': 'fixture'}] if gpu_error else []})
+    monkeypatch.setattr(aggregate, 'batch_configs', lambda _: [config])
+    monkeypatch.setattr(measure, 'prepare_teacher', lambda _: ({'orders': {'1': ['case'], '2': ['case']}}, {'case': candidate}))
+    class Resources:
+        analysis = SimpleNamespace(suspended=lambda: False)
+        def __init__(self, _): pass
+        def source(self, _): return source.clone()
+        def restore(self, value): return Document.restore(value, Bank())
+    calls = []
+    def gpu_score(_, question, text):
+        calls.append(text)
+        if gpu_error:
+            raise ValueError('GPU reference explicitly failed')
+        return {'mean': 5., 'execution_device': 'gpu_reference', 'scorer_fingerprint': 'reference'}
+    monkeypatch.setattr(resources, 'CPUResources', Resources)
+    monkeypatch.setattr(resources, 'score_gpu_reference', gpu_score)
+    monkeypatch.setattr(resources, 'score_cpu', lambda *_: pytest.fail('GPU final selection must never use CPU fallback'))
+    result = aggregate.gpu_finalize(config)
+    assert result['score_source'] == 'gpu_reference' and result['selected_korean'] == 0
+    if gpu_error:
+        assert not result['selected'] and len(result['failed_gpu_episodes']) == 1
+    else:
+        assert result['selection_changes']['attempt_eligibility_flip_count'] == 1
+        selected = result['selected']['case']
+        assert selected['candidate'] == candidate and selected['R'] == 1
+        assert selected['sha256'] == file_sha(selected['path'])
+        assert read_json(selected['path'])['score_source'] == 'gpu_reference'
+        assert calls == [corrupted.text, source.text]
+    count = len(calls)
+    assert aggregate.gpu_finalize(config) == result and len(calls) == count

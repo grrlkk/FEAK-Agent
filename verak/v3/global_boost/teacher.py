@@ -2,6 +2,8 @@
 import json
 import random
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from threading import local
 
 from feak_tc.runtime.openai import CallBudgetExceeded
 from ..agent.runner import run_episode, system_prompt
@@ -53,12 +55,17 @@ def prepare_teacher(config):
         'prompt': {role: system_prompt(role) for role in ('global', 'korean')},
         'reward': 'Exact v1 formulas after generation, frozen CPU NF4 scorer; no reward in the action observations.',
         'selected_roles': ['global'], 'teacher_roles': ['global', 'korean'],
-        'teacher_workers': 1, 'gpu_used': False, 'training': False}
+        'teacher_workers': config[PHASE].get('teacher_workers', 1), 'gpu_used': False, 'training': False}
     if config[PHASE].get('allow_unjudged_qc'):
         design['unjudged_qc_excluded'] = unjudged
     path = root / 'teacher_design.json'
-    if path.exists() and read_json(path) != design:
-        raise ValueError('Frozen teacher corpus/contract changed')
+    if path.exists():
+        frozen = read_json(path)
+        # Runtime concurrency was explicitly increased after freezing the first
+        # batch. Preserve its original manifest and per-episode request identity.
+        design['teacher_workers'] = frozen['teacher_workers']
+        if frozen != design:
+            raise ValueError('Frozen teacher corpus/contract changed')
     write_json(path, design)
     return design, rows
 
@@ -70,7 +77,6 @@ def run(config, *, max_api_calls=20000, limit=None):
         load_environment(config)
         design, rows = prepare_teacher(config)
         design_sha = file_sha(root / 'teacher_design.json')
-        resources = CPUResources(config)
         api = BoostAPI(config, max_api_calls, kind='luna')
         api.settle_interrupted()
         tasks = [(a, design['orders'][str(a)][i]) for i in range(len(rows)) for a in (1, 2)]
@@ -78,48 +84,82 @@ def run(config, *, max_api_calls=20000, limit=None):
         if limit is not None:
             tasks = tasks[:limit]
         completed, errors, stop_reason = [], [], 'all_slots_attempted'
+        workers = config[PHASE].get('teacher_workers', 1)
+        if workers not in (1, 2):
+            raise ValueError('Only the authorized one/two independent GLOBAL teacher workers')
+        write_json(root / 'teacher_runtime_policy.json', {'workers': workers,
+            'frozen_design_workers': design['teacher_workers'], 'shared_bareun_max_new_requests_per_second': 1,
+            'sampling_unchanged': True, 'gpu_used': False, 'at': time.time()})
+        state = local()
+        def one(task):
+            attempt, episode_id = task
+            if not hasattr(state, 'resources'):
+                state.resources = CPUResources(config)
+            resources = state.resources
+            row = rows[episode_id]
+            source = resources.source(row)
+            document = resources.restore(row['corrupted_layout'])
+            episode = {k: row[k] for k in ('episode_id', 'source_id', 'question', 'genre',
+                'level', 'records', 'preexisting_spell_spans')}
+            episode.update(source=source, document=document)
+            env = DeferredRewardEnv(config, mode='two_stage', analysis=resources.analysis,
+                                    tokenizer=resources.tokenizer)
+            backend = BulkTeacher(api, attempt, resources.tokenizer)
+            backend.condition = f'global_boost_attempt_{attempt}'
+            result = run_episode(env, episode, backend,
+                event_path=root / f'attempt_{attempt}/events' / (safe_id(episode_id) + '.jsonl'))
+            result['generation_completed'] = result['completed']
+            result['reward_status'] = 'deferred_cpu_scoring'
+            result['data_boost'] = {'attempt': attempt, 'design_sha256': design_sha,
+                'operator': row['operator'], 'provider_sampling_seed': None,
+                'ordering_seed': config[PHASE]['ordering_seeds'][attempt-1],
+                'selected_role': 'global', 'gpu_used': False}
+            with api.db() as db:
+                requests = db.execute('SELECT path FROM calls WHERE stage=? AND item_id LIKE ?',
+                    (backend.condition, result['episode_id'] + ':%')).fetchall()
+            result['confirmed_episode_cost'] = sum(read_json(p[0]).get('cost', {}).get('confirmed_usd', 0)
+                                                   for p in requests if p[0])
+            atomic_new(attempt_path(root, attempt, episode_id), result)
+            return result, resources.analysis.suspended()
+
+        def slow_bareun():
+            shared = config['paths']['repo'] / 'verak/v3/outputs/data_boost/bareun_latency.jsonl'
+            if not shared.exists():
+                return False
+            values = [json.loads(line) for line in shared.read_text().splitlines()[-20:]]
+            return any(v.get('error') for v in values) or (values and sum(v['seconds'] for v in values)/len(values) > .5)
         try:
-            for attempt, episode_id in tasks:
-                row = rows[episode_id]
-                source = resources.source(row)
-                document = resources.restore(row['corrupted_layout'])
-                episode = {k: row[k] for k in ('episode_id', 'source_id', 'question', 'genre',
-                    'level', 'records', 'preexisting_spell_spans')}
-                episode.update(source=source, document=document)
-                env = DeferredRewardEnv(config, mode='two_stage', analysis=resources.analysis,
-                                        tokenizer=resources.tokenizer)
-                backend = BulkTeacher(api, attempt, resources.tokenizer)
-                backend.condition = f'global_boost_attempt_{attempt}'
-                result = run_episode(env, episode, backend,
-                    event_path=root / f'attempt_{attempt}/events' / (safe_id(episode_id) + '.jsonl'))
-                result['generation_completed'] = result['completed']
-                result['reward_status'] = 'deferred_cpu_scoring'
-                result['data_boost'] = {'attempt': attempt, 'design_sha256': design_sha,
-                    'operator': row['operator'], 'provider_sampling_seed': None,
-                    'ordering_seed': config[PHASE]['ordering_seeds'][attempt-1],
-                    'selected_role': 'global', 'gpu_used': False}
-                with api.db() as db:
-                    requests = db.execute('SELECT path FROM calls WHERE stage=? AND item_id LIKE ?',
-                        (backend.condition, result['episode_id'] + ':%')).fetchall()
-                result['confirmed_episode_cost'] = sum(read_json(p[0]).get('cost', {}).get('confirmed_usd', 0)
-                                                       for p in requests if p[0])
-                atomic_new(attempt_path(root, attempt, episode_id), result)
-                if config[PHASE].get('prefetch_saved'):
-                    from .prefetch import enqueue
-                    enqueue(config)
-                completed.append([attempt, episode_id])
-                if result['runtime_error']:
-                    errors.append({'attempt': attempt, 'episode_id': episode_id, **result['runtime_error']})
-                write_json(root / 'teacher_progress.json', {'finished_this_run': len(completed),
-                    'requested_attempts': 2*len(rows), 'errors': errors, 'budget': api.accounting(), 'at': time.time()})
-                print(json.dumps({'attempt': attempt, 'id': episode_id, 'completed': result['completed'],
-                    'error': result['runtime_error'], 'budget': api.accounting()}), flush=True)
-                if result['runtime_error'] and result['runtime_error']['type'] == 'CallBudgetExceeded':
-                    stop_reason = 'budget_cap'
-                    break
-                if resources.analysis.suspended():
-                    stop_reason = 'bareun_priority_suspended'
-                    break
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                remaining, active = iter(tasks), {}
+                while True:
+                    if slow_bareun():
+                        workers = 1
+                    while len(active) < workers and stop_reason == 'all_slots_attempted':
+                        task = next(remaining, None)
+                        if task is None:
+                            break
+                        active[pool.submit(one, task)] = task
+                    if not active:
+                        break
+                    done, _ = wait(active, timeout=30, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        attempt, episode_id = active.pop(future)
+                        result, suspended = future.result()
+                        if config[PHASE].get('prefetch_saved'):
+                            from .prefetch import enqueue
+                            enqueue(config)
+                        completed.append([attempt, episode_id])
+                        if result['runtime_error']:
+                            errors.append({'attempt': attempt, 'episode_id': episode_id, **result['runtime_error']})
+                        if result['runtime_error'] and result['runtime_error']['type'] == 'CallBudgetExceeded':
+                            stop_reason = 'budget_cap'
+                        elif suspended and stop_reason != 'budget_cap':
+                            stop_reason = 'bareun_priority_suspended'
+                        print(json.dumps({'attempt': attempt, 'id': episode_id, 'completed': result['completed'],
+                            'error': result['runtime_error'], 'budget': api.accounting()}), flush=True)
+                    write_json(root / 'teacher_progress.json', {'finished_this_run': len(completed),
+                        'requested_attempts': 2*len(rows), 'errors': errors, 'workers': workers,
+                        'in_flight': list(active.values()), 'budget': api.accounting(), 'at': time.time()})
             if limit is not None and stop_reason == 'all_slots_attempted':
                 stop_reason = 'requested_limit'
         finally:
