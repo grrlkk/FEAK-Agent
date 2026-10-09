@@ -139,3 +139,42 @@ def test_rescue_export_masks_non_json_target_without_rewriting_runtime_context_o
     assert exported['global_only_reward']==row['global_only_reward']
     assert exported['actions_by_role']==row['actions_by_role']
     assert len(exported['action_only_export']['masked_non_action_targets'])==1
+
+
+def test_pre_gpu_report_exposes_raw_cap_inventory_without_role_rewards(tmp_path,monkeypatch):
+    from verak.v3.global_boost import v4_pre_gpu as module
+    from verak.v3.global_boost.teacher import attempt_path
+    from verak.v3.global_boost.prepare import safe_id
+    config=config_for();config['paths'][PHASE+'_output']=tmp_path
+    write_json(tmp_path/'expansion_status.json',{'stage':'generation_finished','stop_reason':'quota'})
+    write_json(tmp_path/'v4/plan.json',{'old_source_capped_counts':{'G_SENT_MOVE':4,'G_PARA_SWAP':0}})
+    write_json(tmp_path/'v4/sol_luna_same92.json',{'trigger':'G_SENT_MOVE'})
+    rows={f'old{i}':{'source_id':'source1','operator':'G_SENT_MOVE'} for i in range(5)}
+    rows['new']={'source_id':'source2','operator':'G_SENT_MOVE','source_provenance':{'active_corpus_source':True}}
+    for eid in rows:
+        write_json(tmp_path/'qc'/(safe_id(eid)+'.json'),{'passed':True})
+        raw={'corpus_episode_id':eid,'generation_completed':True,'termination':{'global':'STOP','korean':'STOP'},
+             'actions_by_role':{'global':[{'action':'STOP','valid':True}]},'runtime_error':None}
+        write_json(attempt_path(tmp_path,1,eid),raw)
+    failed={**raw,'corpus_episode_id':'new','generation_completed':False,
+            'runtime_error':{'type':'IncompleteResponse','message':'kept as an error'}}
+    write_json(attempt_path(tmp_path,2,'new'),failed)
+    write_json(attempt_path(tmp_path,3,'old0'),{**raw,'corpus_episode_id':'old0'})
+    monkeypatch.setattr(module,'batch_configs',lambda _:[config])
+    monkeypatch.setattr(module,'corpus',lambda _:rows)
+    account={'pending':0,'confirmed_usd':11.5,'reserved_usd':0}
+    monkeypatch.setattr(module,'BoostAPI',lambda *_:SimpleNamespace(accounting=lambda:account,close=lambda:None))
+    result=module.report(config)
+    op=result['operators']['G_SENT_MOVE']
+    assert op['Luna_saved_attempts']==7 and op['Luna_completed_attempts']==6
+    assert op['Sol_rescue_saved_attempts']==1 and len(op['teacher_errors'])==1
+    assert op['legacy_Luna_unattempted_slots']==5 and op['new_Luna_unattempted_slots']==0
+    assert op['source_cap_inventory']['potential_saved_excess_before_GPU_eligibility']==1
+    assert op['source_cap_inventory']['actual_final_cap_exclusions'] is None
+    assert result['final_role_R'] is None and result['final_selected_GLOBAL'] is None
+    assert result['distinct_sources']==2 and result['distinct_new_sources']==1
+    assert read_json(tmp_path/'component_pre_gpu.json')==read_json(tmp_path/'v4/component_pre_gpu.json')
+    assert not (tmp_path/'complete.json').exists() and not (tmp_path/'cpu_ready.json').exists()
+    write_json(tmp_path/'expansion_status.json',{'stage':'v4_collecting'})
+    with pytest.raises(RuntimeError,match='Finish all authorized'):
+        module.report(config)

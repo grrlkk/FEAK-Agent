@@ -11,7 +11,7 @@ def main():
         'continue', 'launch', 'restart', 'prefetch', 'prefetch-loop', 'launch-prefetch', 'restart-prefetch',
         'expand', 'launch-expansion', 'restart-expansion', 'expansion-plan', 'prepare-expansion',
         'audit-variants', 'cpu-ready', 'gpu-finalize', 'finalize', 'launch-finalizer', 'restart-finalizer',
-        'v4-stop-legacy', 'v4-compare', 'v4-prepare', 'v4-run', 'v4-launch'])
+        'v4-stop-legacy', 'v4-compare', 'v4-prepare', 'v4-run', 'v4-launch', 'v4-pre-gpu'])
     parser.add_argument('--max-api-calls', type=int, default=20000)
     parser.add_argument('--limit', type=int)
     args = parser.parse_args()
@@ -29,6 +29,10 @@ def main():
     elif args.stage in {'v4-run','v4-launch'}:
         from ..global_boost.v4_service import run, launch
         result = (run if args.stage == 'v4-run' else launch)(config)
+    elif args.stage == 'v4-pre-gpu':
+        from ..global_boost.v4_pre_gpu import report
+        value = report(config)
+        result = {key: value[key] for key in ('status', 'api', 'distinct_sources', 'distinct_new_sources')}
     elif args.stage == 'prepare':
         from ..global_boost.prepare import prepare
         result = prepare(config)
