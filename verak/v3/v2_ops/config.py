@@ -11,6 +11,14 @@ PHASE = 'v2_ops'
 OPERATORS = ('G_DEL_LINK', 'L_FUSE')
 
 
+def operators(config):
+    """Default remains the original two-operator experiment."""
+    selected = tuple(config[PHASE].get('operators', OPERATORS))
+    if not selected or len(set(selected)) != len(selected) or set(selected) - set(OPERATORS):
+        raise ValueError('Invalid opt-in v2 operator set')
+    return selected
+
+
 def config_for(*, version, base_config=None, overlay=None):
     if version != 'v2':
         raise ValueError('New operators require the explicit config v2')
