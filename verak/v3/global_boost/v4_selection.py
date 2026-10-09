@@ -1,5 +1,8 @@
 """GLOBAL eligibility and source caps for the approved diverse-data continuation."""
 from collections import defaultdict
+from copy import deepcopy
+
+from ..env.protocol import parse_action
 
 
 def eligible(row):
@@ -27,3 +30,23 @@ def source_cap(selected, *, cap=4):
                          'R': entry['R'], 'reason': 'max4_practices_per_source_operator'}
                         for eid,entry in values[cap:])
     return kept, excluded
+
+
+def rescue_action_targets(row):
+    """Keep failed format attempts as context, never as Sol action-loss targets."""
+    result=deepcopy(row)
+    calls=[];masked=[]
+    for index,call in enumerate(result['calls']):
+        if call.get('role')=='global':
+            try:
+                parse_action(call['raw'])
+            except ValueError:
+                masked.append({'call_index':index,'turn':call['turn'],'reason':'not_action_JSON'})
+                continue
+        calls.append(call)
+    result['calls']=calls
+    result['action_only_export']={'policy':'sol_global_action_json_targets_v1',
+        'scope':'GLOBAL malformed parse attempts excluded as targets; retained in subsequent context',
+        'masked_non_action_targets':masked,
+        'historical_messages_unchanged':True,'actions_and_rewards_unchanged':True}
+    return result
