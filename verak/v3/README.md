@@ -639,3 +639,45 @@ The SFT evaluation report also counts GLOBAL STOP without a structural attempt
 and without an accepted structural action among dev essays with GLOBAL records.
 Missing GLOBAL decisions remain unknown; a later KOREAN failure does not erase
 an observed GLOBAL decision. These diagnostics never modify training inputs.
+
+## Opt-in v2 operator data preparation
+
+`config_v2.yaml` adds GLOBAL-owned `G_DEL_LINK` and `L_FUSE` without changing
+the v1 runtime, reward implementation, KOREAN prompt, or Phase-2c closed sets.
+The v2 GLOBAL display name is `글 수정 에이전트`; INSERT and SPLIT produce the
+same factual hand-off notices as existing structural actions. Deleted references
+and QC judgments are private reward data and never enter policy observations.
+
+The new corpus uses 300 train / 80 dev source essays per operator, excluding
+both SFT evaluation cohorts by source ID and hash. L_FUSE generation alone adds
+ADDITION endings, excludes EXAMPLE/RESTATEMENT, and checks content morphemes
+and conjunction classes at restored boundaries. G_DEL_LINK recovery uses cached
+Luna role/content/no-new-facts judgments at source position ±1. Unmatched
+insertions, including legacy EDIT insertions, incur over-edit cost.
+
+```bash
+python -m verak.v3.cli.v2_ops prepare --config v2
+python -m verak.v3.cli.v2_ops build-local --config v2 --operator L_FUSE
+# Only after the user explicitly approves paid calls:
+python -m verak.v3.cli.v2_ops qc --config v2 --max-api-calls 20000 --paid-approval Proceed
+python -m verak.v3.cli.v2_ops teacher --config v2 --max-api-calls 20000 --paid-approval Proceed
+# Refuses to load a scorer until SFT v1 evaluation has completed; physical GPU1 only:
+python -m verak.v3.cli.v2_ops score --config v2
+python -m verak.v3.cli.v2_ops report --config v2 --final
+```
+
+Sol labeling/QC, both Luna attempts, and Luna recovery share one $10 ledger.
+Completed requests replay; incomplete or uncertain sent requests are preserved,
+with uncertain reservations retained. Source/QC/teacher manifests prevent silent
+resampling on resume. The approved retention threshold is 30% usable records
+out of the 380 planned sources, with QC pass/judged reported separately and
+unknown cases bounded. Teacher selection reuses v1's absolute per-role threshold
+and best-attempt rule. There is no v2 training command. Generation, QC and reports
+hide all GPUs; scoring exposes only GPU1 and uses a separate local score cache.
+
+`test_v2_v1_replay.py` replays the saved 92 Pilot-2 Luna trajectories using their
+recorded model responses, scorer results and Bareun caches, comparing all v1
+reward fields and action outcomes exactly. It makes no new model or analyzer
+calls. Other v2 tests cover action transactions, role isolation, marker hand-off,
+boundary/content recovery, insertion penalties, shared budget and resume,
+client initialization, and the GPU1 queue gate.
