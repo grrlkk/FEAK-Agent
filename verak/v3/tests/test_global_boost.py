@@ -363,6 +363,8 @@ def test_two_teacher_workers_keep_independent_episodes_and_resume_saved_slots(tm
 
 @pytest.mark.parametrize('gpu_error', [False, True])
 def test_gpu_finalize_rebuilds_reward_and_eligibility_without_cpu_fallback(tmp_path, monkeypatch, setup_env, gpu_error):
+    from concurrent.futures import ThreadPoolExecutor
+    import time
     from verak.v3.common import file_sha, pair_key, read_json
     from verak.v3.corrupt.operators import apply, Proposal
     from verak.v3.global_boost import aggregate, measure, resources
@@ -413,13 +415,18 @@ def test_gpu_finalize_rebuilds_reward_and_eligibility_without_cpu_fallback(tmp_p
     calls = []
     def gpu_score(_, question, text):
         calls.append(text)
+        time.sleep(.02)
         if gpu_error:
             raise ValueError('GPU reference explicitly failed')
         return {'mean': 5., 'execution_device': 'gpu_reference', 'scorer_fingerprint': 'reference'}
     monkeypatch.setattr(resources, 'CPUResources', Resources)
     monkeypatch.setattr(resources, 'score_gpu_reference', gpu_score)
     monkeypatch.setattr(resources, 'score_cpu', lambda *_: pytest.fail('GPU final selection must never use CPU fallback'))
-    result = aggregate.gpu_finalize(config)
+    with ThreadPoolExecutor(max_workers=2) as consumers:
+        first = consumers.submit(aggregate.gpu_finalize, config)
+        second = consumers.submit(aggregate.gpu_finalize, config)
+        result = first.result()
+        assert second.result() == result
     assert result['score_source'] == 'gpu_reference' and result['selected_korean'] == 0
     if gpu_error:
         assert not result['selected'] and len(result['failed_gpu_episodes']) == 1
