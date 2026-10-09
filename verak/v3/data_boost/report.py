@@ -7,7 +7,7 @@ import time
 
 from ..common import file_sha, read_json, write_json
 
-CAPS = {'global': 12., 'insertion': 6.}
+CAPS = {'global': 40., 'insertion': 6.}
 
 
 def component(root, name):
@@ -123,10 +123,12 @@ def finalize(repo):
         'passed96/270=35.56%; its earlier96/380 source yield remains a coverage finding. '
         'The additional batch and pooled QC rates are reported separately. See addendum Section10 '
         'items21–23. L_FUSE remains dropped.', '',
-        'Weak-operator practice variants use eligible source essays absent from the active corpus. '
+        'Weak-operator practice variants use eligible agent_train sources; newly generated variants '
+        'may reuse active-corpus sources only at proved new swap/move positions. '
         'The number of distinct source essays is reported separately from the number of distinct '
         'single-record practices; multiple valid variants do not add source diversity. '
-        'The requested caps are400 practices per weak operator, subject to the shared$12 cap.', '',
+        'The approved diversified pool is400 practices per weak operator, at most4 per source/operator, '
+        'subject to the cumulative$40 GLOBAL cap. Archived excess remains preserved.', '',
         '| Component | Stop status | Confirmed USD | Retained reservation USD | Cap USD |',
         '| --- | --- | ---: | ---: | ---: |']
     for name, value in components.items():
