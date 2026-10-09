@@ -188,7 +188,32 @@ def run_component(config, name, slot):
     root.mkdir(parents=True, exist_ok=True)
     with (root / 'dispatch.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return _run_component(config, name, slot)
+        result = _run_component(config, name, slot)
+        complete_reference_pass(config)
+        return result
+
+
+def complete_reference_pass(config):
+    """Publish one immutable aggregate after both GPU-only consumers finish."""
+    root = root_for(config) / 'gpu_rescore'
+    files = [root / (name + suffix) for name in COMPONENTS
+             for suffix in ('_complete.json', '_consumer_complete.json')]
+    if not all(path.exists() for path in files):
+        return None
+    hashes = {path.name: file_sha(path) for path in files}
+    fingerprints = {read_json(root / (name + '_complete.json'))['fingerprint'] for name in COMPONENTS}
+    if len(fingerprints) != 1:
+        raise ValueError('Components used different GPU reference scorers')
+    path = root / 'complete.json'
+    if path.exists():
+        value = read_json(path)
+        if value['component_artifact_sha256'] != hashes:
+            raise ValueError('Completed reference-pass artifacts changed')
+        return value
+    value = {'status': 'complete', 'score_source': 'gpu_reference', 'fingerprint': fingerprints.pop(),
+             'component_artifact_sha256': hashes, 'at': time.time(), 'paid_calls': 0, 'training': False}
+    write_json(path, value)
+    return value
 
 
 def _run_component(config, name, slot):
@@ -209,6 +234,8 @@ def _run_component(config, name, slot):
                      'MKL_NUM_THREADS': '8', 'HF_HUB_OFFLINE': '1'},
                 stdout=stream, stderr=subprocess.STDOUT)
     command = [sys.executable, '-m', 'verak.v3.cli.' + name + '_boost', 'gpu-finalize']
+    if name == 'insertion':
+        command += ['--config', 'v2']
     with (root / (name + '_selection.log')).open('a') as stream:
         subprocess.run(command, cwd=WORKTREES[name], check=True,
             env={**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1'},
@@ -247,8 +274,9 @@ def service_deferred(config):
     if not enabled(config):
         return
     for name in COMPONENTS:
-        completion = root_for(config) / 'gpu_rescore' / (name + '_complete.json')
+        completion = root_for(config) / 'gpu_rescore' / (name + '_consumer_complete.json')
         if completion.exists():
             continue
         if authorize_after_evaluation(config, name):
             run_component(config, name, 'post_rft_evaluation')
+    complete_reference_pass(config)
