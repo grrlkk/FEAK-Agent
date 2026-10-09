@@ -44,7 +44,7 @@ def run(config, *, max_api_calls):
         scored = score(config)
         if scored['errors']:
             raise RuntimeError('GLOBAL scoring has unresolved errors; inspect scoring_status.json')
-        calibration = config['paths']['data_boost_shared'] / 'cpu_scorer/calibration.json'
+        calibration = config['paths']['data_boost_shared'] / 'cpu_scorer/audit_200/calibration.json'
         update('waiting_for_cpu_calibration')
         while not calibration.exists():
             time.sleep(10)
