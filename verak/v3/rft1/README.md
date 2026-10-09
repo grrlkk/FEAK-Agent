@@ -85,11 +85,24 @@ and `report` for C. There are no new teacher calls.
 They must run in an execution context that preserves child processes; a transient
 sandbox may reap detached children. The controller's `continue` stage waits for
 the owned rollout worker, validates all5,720 attempts, exports, trains GLOBAL then
-KOREAN, evaluates and reports A, and only then starts C. It stops its own servers
-and exits after C. Ownership requires matching PID, process group and pinned
+KOREAN, evaluates and reports A, and only then considers C. An explicit
+`{"hold": true}` in `phase8_rft1/oneshot_hold.json` makes the controller exit at
+`a_complete_c_on_hold` without starting any C subprocess. This hold leaves A
+unchanged and remains in force until the user explicitly resumes C. A controller
+already waiting for rollouts can load this guard with `restart-controller`, which
+restarts only the waiting manager and leaves collection and serving untouched.
+Without a hold, it stops its own servers and exits after C.
+Ownership requires matching PID, process group and pinned
 model command; unrelated GPU processes are never terminated.
 
 `status.json`, `rollout_progress.json`, stage logs and `controller/steps.jsonl`
 are the durable progress sources. A failed stage stops advancement and records
 the exact error; inspect it before resuming. The independent v2 retry is CPU/API
 only and does not share this training pipeline or its budget ledger.
+
+`rft1.coverage.snapshot` reads a frozen list of saved rollout files without calls
+or reward recomputation. Its primary denominator contains only essays with all
+four samples saved. A success requires every record of that operator to be fully
+recovered within one sample; separate fields report main recovery and complete
+recovery including coupled changes. Unobserved rewards remain unknown with
+coverage bounds, and immutable file hashes identify the snapshot.
