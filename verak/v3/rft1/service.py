@@ -122,7 +122,7 @@ def start_server(config, condition):
 
 
 def continue_work(config):
-    """Finish A, then C once, and stop. B remains an independent CPU/API task."""
+    """Finish A, honor an explicit C hold, then run C only when authorized."""
     from ..train.teacher_bulk import collection_lock
     from .config import runtime_hashes
     root = config['paths'][PHASE + '_output']
@@ -191,6 +191,14 @@ def continue_work(config):
                 write_json(root / 'a_complete.json', {'completed': True, 'at': time.time(),
                     'report': read_json(root / 'report_status.json')})
                 state('a_complete')
+            # Read this after A, so a hold requested during collection takes effect.
+            # A remains authorized and independent of the one-shot comparison.
+            hold_path = root / 'oneshot_hold.json'
+            if hold_path.exists() and read_json(hold_path).get('hold') is True:
+                state('a_complete_c_on_hold', A=str(root / 'report_status.json'),
+                      C='held_until_explicit_user_resume', hold=str(hold_path),
+                      further_training=False)
+                return
             # No C command or GPU use occurs before the complete A marker.
             oneshot = root.parent / 'oneshot_baseline'
             if not (oneshot / 'complete.json').exists():
@@ -230,7 +238,7 @@ def launch_controller(config):
         child = subprocess.Popen(command, cwd=WORKTREE, stdin=subprocess.DEVNULL,
             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     value = {'pid': child.pid, 'command': command, 'at': time.time(), 'owner': PHASE,
-             'scope': 'finish A once, then C once; no further rounds; B independent'}
+             'scope': 'finish A once; honor oneshot_hold.json before C; no further rounds'}
     write_json(marker, value)
     return value
 
