@@ -115,7 +115,7 @@ def finalize(repo):
         + ('One-shot baseline C remains on hold until explicit user resumption. ' if hold['hold'] else
            'One-shot baseline C was held for this task and its hold has subsequently been released. ')
         + 'Only GPU-rescored v1 GLOBAL additions available before training may join RFT1; '
-        'G_DEL_LINK stays separate for round2 and no round2 training is authorized. '
+        'Under FEAK_AGENT_METHOD.md, G_DEL_LINK is retained for evaluation only; no new training is authorized. '
         'KOREAN actions, operators, prompt and extra selected training data are unchanged. '
         'Both teacher roles run, but only GLOBAL is selected.', '',
         '## Decisions and costs', '',
@@ -138,9 +138,8 @@ def finalize(repo):
     lines += ['', snapshot_section(snapshot), '', '## Weak GLOBAL operators', '',
               demote(components['global']['report']), '', '## G_DEL_LINK insertion', '',
               demote(components['insertion']['report']), '', '## Provenance and checks', '',
-              'Original SFT eligibility is used, with the best GLOBAL attempt per practice. '
-              'No later RFT-only STOP/rejection gate is added to the data-preparation selections; '
-              'the RFT1 merge additionally applies its terminal-STOP/rejection rules. '
+              'Current GLOBAL selections require role R>=0.80, terminal STOP and at most one rejected '
+              'action, with the best eligible attempt per practice and at most four practices per source/operator. '
               'All final rewards and selections below use the GPU reference scorer. CPU rewards '
               'are provisional comparison values only; unmeasured values are not zero.', '',
               f"CPU/GPU audit: {audit['unique_source_essays']} distinct source essays. Full audit: `{audit_path}`. "
