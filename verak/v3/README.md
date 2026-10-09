@@ -594,3 +594,48 @@ gate는 WORD coarse 관계 85%, SENTENCE 생략 90% 및 접속 관계 85%, TEXT 
 **LLM-verified 양쪽 true 비율**이며 사람 정확도가 아니다. 생략 주어의 referent_type은
 진단 분포로만 보고하고 gate에 넣지 않는다. 두 bool의 일치율과 이 진단 분류의 일치율은
 따로 보고한다. 결과와 남은 한계는 로컬 `imple/reports/V3_PHASE_2c.md`에 기록한다.
+
+## Accepted two-stage warm-start SFT
+
+The current authorization is SFT and development evaluation only, with no RFT.
+`sft_warm_start` exports the accepted bulk best-attempt index (810 GLOBAL / 903
+KOREAN), preserves exact inference contexts, and masks every token except the
+current action target. Source-group validation holds out 5% per role with no
+cross-role leakage. Data, checkpoints, reports and API records stay local under
+`verak/v3/outputs/phase7_sft/`.
+
+```bash
+python -m verak.v3.cli.sft_warm_start export
+python -m verak.v3.cli.sft_warm_start train --role global
+python -m verak.v3.cli.sft_warm_start train --role korean
+python -m verak.v3.cli.sft_warm_start prepare-eval
+# In the separate verak_vllm environment, after both roles finish:
+python -m verak.v3.cli.serve_policy --sft-root verak/v3/outputs/phase7_sft
+python -m verak.v3.cli.sft_warm_start evaluate --condition base
+python -m verak.v3.cli.sft_warm_start evaluate --condition epoch_1
+python -m verak.v3.cli.sft_warm_start evaluate --condition epoch_2
+python -m verak.v3.cli.sft_warm_start evaluate --condition luna_low --max-api-calls 8000
+python -m verak.v3.cli.sft_warm_start markers --max-api-calls 2000
+python -m verak.v3.cli.sft_warm_start measure-real
+python -m verak.v3.cli.sft_warm_start report
+```
+
+Training uses GPU0 and the pinned `c963a5f4f6496c749f94064a20b33028b0db9f19`
+base, QLoRA r=16/alpha=32, two epochs, and per-epoch checkpoints. Completed
+training is never restarted; `--resume` explicitly resumes an unfinished role.
+TRL 0.23.1 is installed without dependencies into the local output's
+`python_deps/`, leaving the scorer and vLLM environments unchanged. The fixed
+Luna and Sol ledgers each enforce a separate $3 cap, including uncertain
+reservations. Saved comparisons and failures are preserved. The optional
+`continue` command supervises the authorized sequence from existing GLOBAL
+and Luna process IDs and closes only the vLLM server it owns. No command starts
+RFT or reads the test split.
+
+`python -m verak.v3.train.sft_composition` reads the frozen export manifest and
+saved trajectory rewards on CPU, without models or API calls. It records
+structural-action versus STOP-only composition, per-operator full/partial
+recovery counts, and train/validation breakdowns in `export_composition.json`.
+The SFT evaluation report also counts GLOBAL STOP without a structural attempt
+and without an accepted structural action among dev essays with GLOBAL records.
+Missing GLOBAL decisions remain unknown; a later KOREAN failure does not erase
+an observed GLOBAL decision. These diagnostics never modify training inputs.
