@@ -8,20 +8,23 @@ from .config import PHASE
 
 def score_cpu(config, question, text):
     # The insertion worker owns one CPU-only model for both background tasks.
-    from ..insertion_boost.cpu_score import score_cpu as shared_score
-    return shared_score(config, question, text, requester='global_boost')
+    from ..insertion_boost.cpu_score import cached_gpu_score, score_cpu as shared_score
+    cached = cached_gpu_score(config, question, text)
+    return cached if cached is not None else shared_score(config, question, text,
+        requester='global_boost', timeout=86400)
 
 
 class CPUResources:
     def __init__(self, config):
         from transformers import AutoTokenizer
         from ..insertion_boost.resources import BoostBank, BoostParagraphs
+        from ..insertion_boost.cpu_score import shared_root
         self.config = config
-        root = config['paths'][PHASE + '_output']
+        root = config['paths'].get('global_boost_shared_root', config['paths'][PHASE + '_output'])
         self.bank = BoostBank(config, cache_dir=root / 'bareun_units')
         self.analysis = BoostParagraphs(config, cache_dir=root / 'bareun_paragraphs')
         self.analysis.suspended = lambda: (
-            (root.parent / 'bareun_pause.json').exists() and priority_active(config))
+            (shared_root(config) / 'bareun_pause.json').exists() and priority_active(config))
         self.tokenizer = AutoTokenizer.from_pretrained(str(config['paths']['policy_base']), local_files_only=True)
         self.examples = {e.id: e for e in load_episode_examples(config, 'agent_train')}
         self.sources = {}

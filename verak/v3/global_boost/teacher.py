@@ -29,11 +29,15 @@ def attempt_path(root, attempt, episode_id):
 def prepare_teacher(config):
     root = config['paths'][PHASE + '_output']
     rows = {}
+    unjudged = []
     for episode_id, row in corpus(config).items():
         path = root / 'qc' / (safe_id(episode_id) + '.json')
         failure = root / 'qc_errors' / path.name
         if not path.exists() and not failure.exists():
-            raise ValueError('Finish QC before freezing the teacher corpus')
+            if not config[PHASE].get('allow_unjudged_qc'):
+                raise ValueError('Finish QC before freezing the teacher corpus')
+            unjudged.append(episode_id)
+            continue
         if path.exists() and read_json(path)['passed']:
             rows[episode_id] = row
     orders = {}
@@ -50,6 +54,8 @@ def prepare_teacher(config):
         'reward': 'Exact v1 formulas after generation, frozen CPU NF4 scorer; no reward in the action observations.',
         'selected_roles': ['global'], 'teacher_roles': ['global', 'korean'],
         'teacher_workers': 1, 'gpu_used': False, 'training': False}
+    if config[PHASE].get('allow_unjudged_qc'):
+        design['unjudged_qc_excluded'] = unjudged
     path = root / 'teacher_design.json'
     if path.exists() and read_json(path) != design:
         raise ValueError('Frozen teacher corpus/contract changed')
@@ -98,6 +104,9 @@ def run(config, *, max_api_calls=20000, limit=None):
                 result['confirmed_episode_cost'] = sum(read_json(p[0]).get('cost', {}).get('confirmed_usd', 0)
                                                        for p in requests if p[0])
                 atomic_new(attempt_path(root, attempt, episode_id), result)
+                if config[PHASE].get('prefetch_saved'):
+                    from .prefetch import enqueue
+                    enqueue(config)
                 completed.append([attempt, episode_id])
                 if result['runtime_error']:
                     errors.append({'attempt': attempt, 'episode_id': episode_id, **result['runtime_error']})

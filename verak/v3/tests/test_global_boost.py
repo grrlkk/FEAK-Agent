@@ -109,3 +109,148 @@ def test_deferred_reward_preserves_exact_v1_turns_and_korean_permissions(setup_e
         assert left[2] == right[2]
     assert base.handoff == delayed.handoff and base.final_text() == delayed.final_text()
     assert delayed.reward() is None
+
+
+def test_global_only_measurement_never_scores_or_fabricates_korean_final(tmp_path, monkeypatch, setup_env):
+    from verak.v3.common import read_json
+    from verak.v3.corrupt.operators import apply, Proposal
+    from verak.v3.global_boost import measure, resources
+    from verak.v3.global_boost.teacher import attempt_path
+    from verak.v3.reward.total import rewards
+    base, episode, _ = setup_env
+    source = episode['document']
+    class Bank:
+        def tokens(self, text):
+            return []
+    corrupted, record = apply(source, Proposal('G_PARA_SWAP', [u.sid for u in source.units],
+                                              {'paragraph_indices': [0, 1]}), Bank())
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path
+    row = {'episode_id': 'case', 'source_id': 'source', 'question': '문항', 'genre': '논증',
+        'records': [record], 'corrupted_layout': corrupted.snapshot(), 'preexisting_spell_spans': []}
+    raw = {'completed': True, 'generation_completed': True, 'reward': None,
+        'stage1_layout': source.snapshot(), 'final_layout': {'not_restored': 'KOREAN final is unnecessary'},
+        'actions_by_role': {'global': [], 'korean': [{'some': 'KOREAN action'}]}}
+    path = attempt_path(tmp_path, 1, 'case')
+    write_json(path, raw)
+    monkeypatch.setattr(measure, 'prepare_teacher', lambda _: ({'orders': {'1': ['case'], '2': ['case']}}, {'case': row}))
+    class Resources:
+        analysis = SimpleNamespace(suspended=lambda: False)
+        def __init__(self, _):
+            pass
+        def source(self, _):
+            return source.clone()
+        def restore(self, layout):
+            return Document.restore(layout, Bank())
+    calls = []
+    def score(_, question, text):
+        calls.append(text)
+        return {'mean': 6.0 if text == corrupted.text else 6.5}
+    monkeypatch.setattr(resources, 'CPUResources', Resources)
+    monkeypatch.setattr(resources, 'score_cpu', score)
+    measured = measure.run(config, limit=1)
+    result = read_json(tmp_path / 'attempt_1/measured' / path.name)
+    expected = rewards(source, corrupted, source, [record], genre='논증', q_corrupted=6.,
+        q_stage1=6.5, q_final=9., config=config['reward'], mode='two_stage', stage1=source,
+        stage1_actions=[], stage2_actions=[{'valid': True, 'action': 'STOP', 'changed_sids': []}])
+    assert calls == [corrupted.text, source.text]
+    assert result['global_only_reward'] == expected['global']
+    assert result['reward'] is None and result['completed'] and result['generation_completed']
+    assert result['unmeasured_roles'] == ['korean', 'combined']
+    assert not measured['errors']
+
+
+def test_controller_restart_refuses_any_other_process(tmp_path, monkeypatch):
+    import os
+    from verak.v3.global_boost.service import restart
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path
+    write_json(tmp_path / 'controller_worker.json', {'pid': os.getpid()})
+    monkeypatch.setattr(os, 'kill', lambda *_: pytest.fail('Foreign process must never be signalled'))
+    with pytest.raises(RuntimeError, match='does not own'):
+        restart(config)
+
+
+def test_prefetch_only_saved_global_states_and_reuses_validated_gpu_cache(tmp_path, monkeypatch):
+    from verak.v3.common import read_json
+    from verak.v3.global_boost import prefetch
+    config = config_for()
+    root = tmp_path / 'global'
+    config['paths'][PHASE + '_output'] = root
+    source = Document([Paragraph('P1', [Unit('S1', '복원한 글.', [])])], [''])
+    row = {'question': '문항', 'corrupted_text': '손상한 글.'}
+    monkeypatch.setattr(prefetch, 'corpus', lambda _: {'case': row})
+    monkeypatch.setattr(prefetch, 'cached_gpu_score', lambda config, question, text:
+        {'mean': 6, 'execution_device': 'saved_gpu_cache'} if text == '복원한 글.' else None)
+    path = root / 'attempt_1/episodes/case.json'
+    write_json(path, {'corpus_episode_id': 'case', 'stage1_layout': source.snapshot(),
+        'final_layout': {'unneeded': 'final'}, 'generation_completed': False})
+    result = prefetch.enqueue(config)
+    assert result == {'episodes_seen': 1, 'added_this_scan': 1}
+    requests = list((tmp_path / 'cpu_scorer/requests').glob('*.json'))
+    assert len(requests) == 1 and read_json(requests[0])['text'] == '손상한 글.'
+    assert prefetch.enqueue(config)['added_this_scan'] == 0
+    write_json(path, {'changed': 'raw teacher files are immutable'})
+    with pytest.raises(ValueError, match='episode changed'):
+        prefetch.enqueue(config)
+
+
+def test_expansion_batches_share_atomic_cap_and_never_settle_other_live_namespace(tmp_path, monkeypatch):
+    from verak.v3.eval import api as module
+    from verak.v3.global_boost.expansion import batch_config
+    monkeypatch.setattr(module.socket, 'getaddrinfo', lambda *_: [])
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path / 'global'
+    cfg = batch_config(config, tmp_path / 'global/batches/batch_002')
+    original = BoostAPI(config, 20000, adapter_factory=FakeAdapter)
+    expansion = BoostAPI(cfg, 20000, kind='sol', adapter_factory=FakeAdapter)
+    assert original.path == expansion.path
+    original.reserve('global_boost_attempt_1', 'teacher:two_stage:global_boost:original', 'live', .01)
+    assert expansion.settle_interrupted() == []
+    assert expansion.accounting()['pending'] == 1
+    with original.db() as db:
+        db.execute("UPDATE calls SET status='completed',confirmed=10,reserved=0")
+    expansion.qc_hold_usd = 1.9
+    with pytest.raises(CallBudgetExceeded, match='preserve outstanding Luna'):
+        expansion.reserve('global_boost_qc', 'global_boost:batch_002:one', 'new', .2)
+    assert original.accounting()['confirmed_usd'] == 10
+    original.close()
+    expansion.close()
+
+
+def test_expansion_round_robin_reuses_sources_with_distinct_one_record_practices():
+    from collections import Counter
+    from verak.v3.global_boost.expansion import choose_variants
+    original, audit = {}, {'per_source': {}}
+    for number in (1, 2):
+        source_id = f'valid:{number}'
+        audit['per_source'][source_id] = {}
+        for operator in ('G_PARA_SWAP', 'G_SENT_MOVE'):
+            key = f'{source_id}:{operator}'
+            original[key] = {'source_id': source_id, 'operator': operator, 'corrupted_hash': key+':old'}
+            audit['per_source'][source_id][operator] = {'valid_proposals': [
+                {'corrupted_hash': key + suffix} for suffix in (':old', ':new1', ':new2', ':new3')]}
+    values = choose_variants(audit, original, original, {'G_PARA_SWAP': 4, 'G_SENT_MOVE': 3}, 97)
+    assert len(values) == 7
+    assert len({v['corrupted_hash'] for _, v, _ in values}) == 7
+    assert not {v['corrupted_hash'] for _, v, _ in values} & {r['corrupted_hash'] for r in original.values()}
+    assert Counter(r['source_id'] for r, _, _ in values if r['operator'] == 'G_PARA_SWAP') == {'valid:1': 2, 'valid:2': 2}
+    assert all(ordinal in (2, 3) for _, _, ordinal in values)
+
+
+def test_unapproved_fp32_measurements_are_not_reused_for_canonical_selection(tmp_path):
+    from verak.v3.global_boost.aggregate import approved
+    from verak.v3.global_boost.measure import measured_path
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path / 'global'
+    raw = tmp_path / 'global/attempt_1/episodes/example.json'
+    old = measured_path(config, 1, raw)
+    write_json(old, {'cpu_scores': {'stage1': {'scorer_fingerprint': 'old_fp32'}}, 'global_only_reward': {'R': .81}})
+    approval = tmp_path / 'cpu_scorer/selection_approval.json'
+    write_json(approval, {'canonical_for_selection': False, 'fingerprint': 'old_fp32'})
+    assert approved(config) is None
+    write_json(approval, {'canonical_for_selection': True, 'fingerprint': 'new_bf16_fingerprint'})
+    verified = approved(config)
+    config[PHASE]['score_fingerprint'] = verified['fingerprint']
+    assert measured_path(config, 1, raw) != old
+    assert not measured_path(config, 1, raw).exists() and old.exists()
