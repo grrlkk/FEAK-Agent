@@ -180,7 +180,8 @@ def report(config, *, final=False):
     teacher_status_path = root / 'teacher_status.json'
     metrics['teacher_stop_reason'] = (read_json(teacher_status_path).get('stop_reason', 'original_collection')
         if teacher_status_path.exists() else 'collection_pending')
-    appendix_paths = [root / 'prompt_fix/diagnosis82.md', root / 'prompt_fix/test_v1/report.md']
+    appendix_paths = [root / 'prompt_fix/diagnosis82.md', root / 'prompt_fix/test_v1/report.md',
+                      root / 'prompt_fix/test_v1/action_notes.md']
     metrics['prompt_fix_appendices'] = [{'path': str(p), 'sha256': file_sha(p)} for p in appendix_paths if p.exists()]
     test_path = root / 'prompt_fix/test_v1/result.json'
     if test_path.exists():
