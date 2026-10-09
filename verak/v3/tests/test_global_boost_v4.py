@@ -85,7 +85,8 @@ def test_sol_rescue_returns_only_json_under_policy_target_limit(monkeypatch):
     assert global_result['teacher_raw'].startswith('  ')
 
 
-def test_gpu_handoff_applies_v4_cap_and_stop_gate_before_immutable_publication(tmp_path,monkeypatch):
+@pytest.mark.parametrize('partial_cpu_snapshot',[False,True])
+def test_gpu_handoff_applies_v4_cap_and_stop_gate_before_immutable_publication(tmp_path,monkeypatch,partial_cpu_snapshot):
     from verak.v3.common import file_sha
     from verak.v3.global_boost import aggregate, measure, v4_data
     from verak.v3.global_boost.measure import measured_path
@@ -108,8 +109,24 @@ def test_gpu_handoff_applies_v4_cap_and_stop_gate_before_immutable_publication(t
             'candidate_path':str(candidate_path),'candidate_sha256':file_sha(candidate_path),
             'provisional_path':str(provisional),'provisional_sha256':file_sha(provisional),
             'provisional_global_eligible':True,'provisional_R':reward['R'],'quality_inputs':[]})
+        if partial_cpu_snapshot and i in (3,7):
+            items[-1].update(provisional_path=None,provisional_sha256=None,provisional_global_eligible=None,provisional_R=None)
+    if partial_cpu_snapshot:
+        # One observed attempt is insufficient for comparing a practice's best
+        # sample when another saved attempt has no CPU snapshot.
+        second=deepcopy(items[0]);second_raw=attempt_path(root,2,'case0')
+        write_json(second_raw,{'episode_id':'case0','attempt':2})
+        second.update(attempt=2,raw_path=str(second_raw),raw_sha256=file_sha(second_raw),
+            provisional_path=None,provisional_sha256=None,provisional_global_eligible=None,provisional_R=None)
+        measured=read_json(measured_path(config,1,attempt_path(root,1,'case0')))
+        measured['global_only_reward']['R']=.805
+        write_json(measured_path(config,2,second_raw),measured)
+        items.append(second)
     manifest_path=root/'gpu_rescore_manifest.json'
-    write_json(manifest_path,{'episodes':items,'requests':[],'reference_gpu_fingerprint':'reference','provisional_selected':{}})
+    manifest={'episodes':items,'requests':[],'reference_gpu_fingerprint':'reference','provisional_selected':{}}
+    if partial_cpu_snapshot:
+        manifest.update(schema_version=2,handoff_contract='teacher_complete_gpu_reference_v2')
+    write_json(manifest_path,manifest)
     write_json(root/'cpu_ready.json',{'manifest_path':str(manifest_path),'manifest_sha256':file_sha(manifest_path)})
     write_json(tmp_path/'gpu_rescore/global_complete.json',{'component':'global','manifest_sha256':file_sha(manifest_path),
         'request_count':0,'fingerprint':'reference','slot':'pre_rft_training','errors':[]})
@@ -120,6 +137,11 @@ def test_gpu_handoff_applies_v4_cap_and_stop_gate_before_immutable_publication(t
     assert set(result['selected'])=={'case3','case4','case5','case6'}
     assert result['gpu_eligible_before_source_cap']==7 and len(result['source_cap_exclusions'])==3
     assert result['selected_global']==4 and result['selected_korean']==0
+    assert result['selection_changes']['attempts_unknown']==(3 if partial_cpu_snapshot else 0)
+    assert result['selection_changes']['attempt_eligibility_flip_count']==(0 if partial_cpu_snapshot else 1)
+    assert result['selection_changes']['practices_compared']==(5 if partial_cpu_snapshot else 8)
+    if partial_cpu_snapshot:
+        assert 'case0' not in {c['episode_id'] for c in result['selection_changes']['best_attempt_or_membership_changes']}
     old_sha=file_sha(root/'gpu_selection.json')
     assert aggregate.gpu_finalize(config)==result and file_sha(root/'gpu_selection.json')==old_sha
 
@@ -178,3 +200,56 @@ def test_pre_gpu_report_exposes_raw_cap_inventory_without_role_rewards(tmp_path,
     write_json(tmp_path/'expansion_status.json',{'stage':'v4_collecting'})
     with pytest.raises(RuntimeError,match='Finish all authorized'):
         module.report(config)
+
+
+def test_teacher_complete_handoff_freezes_all_inputs_without_waiting_for_cpu(tmp_path,monkeypatch):
+    from verak.v3.common import file_sha
+    from verak.v3.global_boost import v4_handoff as module
+    from verak.v3.global_boost.measure import measured_path
+    from verak.v3.global_boost.teacher import attempt_path
+    config=config_for();root=tmp_path/'global';config['paths'][PHASE+'_output']=root
+    config[PHASE].update(measurement_source='cpu_provisional',score_fingerprint='cpu-frozen')
+    write_json(root/'expansion_status.json',{'stage':'generation_finished','stop_reason':'quota'})
+    write_json(root/'v4/plan.json',{'cap':4})
+    write_json(tmp_path/'cpu_scorer/status.json',{'fingerprint':'cpu-frozen'})
+    rows,files={},[]
+    layout={'paragraphs':[{'units':[{'text':'revised','leading':''}]}],'gaps':[''],'tail':''}
+    for eid in ('full','partial','none'):
+        candidate={'source_id':eid,'operator':'G_SENT_MOVE','question':'Q','corrupted_text':eid}
+        path=root/(eid+'.json');write_json(path,candidate);rows[eid]=candidate
+        files.append({'episode_id':eid,'path':str(path),'sha256':file_sha(path)})
+        for attempt in (1,2):
+            raw_path=attempt_path(root,attempt,eid)
+            write_json(raw_path,{'corpus_episode_id':eid,'stage1_layout':layout})
+            if eid=='full' or (eid=='partial' and attempt==1):
+                write_json(measured_path(config,attempt,raw_path),{'raw_generation_sha256':file_sha(raw_path),
+                    'score_source':'cpu_provisional','global_only_reward':{'R':.85},'termination':{'global':'STOP'},
+                    'actions_by_role':{'global':[{'action':'STOP','valid':True}]},
+                    'quality_scores':{'corrupted':{'execution_device':'cpu','scorer_fingerprint':'cpu-frozen'}}})
+    write_json(root/'source_plan.json',{'candidates':{'G_SENT_MOVE':files}})
+    monkeypatch.setattr(module,'batch_configs',lambda _:[config])
+    monkeypatch.setattr(module,'corpus',lambda _:rows)
+    monkeypatch.setattr(module,'original_teacher_running',lambda _:False)
+    monkeypatch.setattr(module,'reference_gpu_fingerprint',lambda _:'reference')
+    account={'pending':0,'confirmed_usd':12.5,'reserved_usd':0}
+    monkeypatch.setattr(module,'BoostAPI',lambda *_:SimpleNamespace(accounting=lambda:account,close=lambda:None))
+    ready=module.freeze_ready(config)
+    manifest=read_json(ready['manifest_path'])
+    assert ready['handoff_contract']=='teacher_complete_gpu_reference_v2' and not ready['cpu_measurements_finished']
+    assert manifest['schema_version']==2 and len(manifest['episodes'])==6 and len(manifest['requests'])==4
+    assert manifest['provisional_observation']['attempts_observed']==3
+    assert manifest['provisional_observation']['practices_fully_observed']==1
+    assert set(manifest['provisional_selected'])=={'full'}
+    absent=[e for e in manifest['episodes'] if e['provisional_path'] is None]
+    assert len(absent)==3 and all(e['provisional_global_eligible'] is None and e['provisional_R'] is None for e in absent)
+    # CPU files can arrive after the immutable handoff, including after a crash
+    # between manifest publication and the readiness marker. Never change it.
+    late=attempt_path(root,2,'partial')
+    write_json(measured_path(config,2,late),{'late':'not part of the frozen snapshot'})
+    (root/'cpu_ready.json').unlink()
+    resumed=module.freeze_ready(config)
+    assert resumed['manifest_sha256']==ready['manifest_sha256']
+    assert resumed['provisional_observation']==ready['provisional_observation']
+    account['pending']=1
+    with pytest.raises(RuntimeError,match='paid calls are live'):
+        module.freeze_ready(config)

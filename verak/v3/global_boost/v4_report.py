@@ -143,6 +143,11 @@ def report(config,approval):
         '',f"Cumulative cost including all legacy collection: ${account['confirmed_usd']:.6f}; reserved ${account['reserved_usd']:.6f}; cap$40; pending {account['pending']}.",
         '',f"Provisional-to-GPU attempt eligibility flips: {selection['selection_changes']['attempt_eligibility_flip_count']}; "
         f"best-attempt/membership changes before source-cap filtering: {selection['selection_changes']['best_attempt_or_membership_change_count']}.",
+        f"Comparison coverage: {selection['selection_changes'].get('attempts_compared', 'NA')} observed attempts, "
+        f"{selection['selection_changes'].get('attempts_unknown', 'NA')} unknown; "
+        f"{selection['selection_changes'].get('practices_compared', 'NA')} fully observed practices, "
+        f"{selection['selection_changes'].get('practices_unknown', 'NA')} unknown. "
+        'An absent CPU snapshot is unknown, never a failed eligibility decision. GPU-only selection covers every available raw attempt.',
         'The provisional comparator explicitly mixes CPU results, exact-input/exact-fingerprint saved GPU cache hits and identity-proven zero deltas. '
         'It supplies no final reward or selection. The >=200-source audit is recorded separately; all final values use GPU reference scores.',
         '',f"Stop reason: {status['stop_reason']}. No KOREAN data selected; no GPU calls or training started by this component.",'']

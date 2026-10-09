@@ -185,6 +185,9 @@ def cpu_ready(config):
         if file_sha(marker['manifest_path']) != marker['manifest_sha256']:
             raise ValueError('Frozen GPU rescore manifest changed')
         return marker
+    if v4:
+        from .v4_handoff import freeze_ready
+        return freeze_ready(config)
     expansion = read_json(root / 'expansion_status.json')
     if expansion.get('stage') != 'generation_finished' or original_teacher_running(config):
         raise RuntimeError('All GLOBAL teacher generation must finish before readiness')
@@ -310,12 +313,22 @@ def gpu_finalize(config):
                 scorer_approval_sha256=file_sha(complete_path))
             measure(cfg)
         selected, flips, failed_episodes = {}, [], []
+        raw_ready = manifest.get('schema_version') == 2 and manifest.get('handoff_contract') == 'teacher_complete_gpu_reference_v2'
+        if manifest.get('schema_version', 1) != 1 and not raw_ready:
+            raise ValueError('Unknown GLOBAL handoff contract')
+        if raw_ready and not v4:
+            raise ValueError('Teacher-complete handoff is authorized only for the GLOBAL v4 continuation')
+        compared_attempts, gpu_observed = 0, set()
         score_errors = complete.get('errors', [])
         failed_keys = (set(score_errors) if isinstance(score_errors, dict) else
                        {e.get('key', e.get('cache_key')) for e in score_errors})
         for item in manifest['episodes']:
             for path_key, hash_key in [('raw_path', 'raw_sha256'), ('candidate_path', 'candidate_sha256'),
                                         ('provisional_path', 'provisional_sha256')]:
+                if path_key == 'provisional_path' and item[path_key] is None and raw_ready:
+                    if any(item.get(key) is not None for key in ('provisional_sha256', 'provisional_global_eligible', 'provisional_R')):
+                        raise ValueError('Missing CPU observation must have explicit null provenance and decision')
+                    continue
                 if file_sha(item[path_key]) != item[hash_key]:
                     raise ValueError('Frozen generation, candidate, or CPU observation changed')
             candidate = read_json(item['candidate_path'])
@@ -328,6 +341,7 @@ def gpu_finalize(config):
                     continue
                 raise RuntimeError('GPU reward rebuild missing: '+str(path))
             value = read_json(path)
+            gpu_observed.add((item['episode_id'], item['attempt']))
             scores = value.get('quality_scores', {})
             if any(s.get('execution_device') != 'gpu_reference' or s.get('scorer_fingerprint') != complete['fingerprint'] for s in scores.values()):
                 raise ValueError('Final GLOBAL reward contains a non-reference score')
@@ -336,7 +350,9 @@ def gpu_finalize(config):
                 keep = eligible(value)
             else:
                 keep = absolute_selection(value, candidate)['global']
-            if keep != item['provisional_global_eligible']:
+            if item['provisional_global_eligible'] is not None:
+                compared_attempts += 1
+            if item['provisional_global_eligible'] is not None and keep != item['provisional_global_eligible']:
                 flips.append({'episode_id': item['episode_id'], 'attempt': item['attempt'],
                     'cpu_eligible': item['provisional_global_eligible'], 'gpu_eligible': keep,
                     'cpu_R': item['provisional_R'], 'gpu_R': value.get('global_only_reward', {}).get('R')})
@@ -351,10 +367,15 @@ def gpu_finalize(config):
                 if previous is None or (entry['R'], -entry['attempt']) > (previous['R'], -previous['attempt']):
                     selected[item['episode_id']] = entry
         prior = manifest['provisional_selected']
+        practice_ids = {i['episode_id'] for i in manifest['episodes']}
+        comparable_practices = practice_ids if not raw_ready else {eid for eid in practice_ids if all(
+            i['provisional_global_eligible'] is not None and (eid, i['attempt']) in gpu_observed
+            for i in manifest['episodes'] if i['episode_id'] == eid)}
         best_changes = [{'episode_id': i, 'cpu_attempt': prior.get(i, {}).get('attempt'),
                          'gpu_attempt': selected.get(i, {}).get('attempt')}
-                        for i in sorted(set(prior) | set(selected))
+                        for i in sorted((set(prior) | set(selected)) & comparable_practices)
                         if prior.get(i, {}).get('attempt') != selected.get(i, {}).get('attempt')]
+        gpu_comparable_selected = len(set(selected) & comparable_practices)
         cap_excluded=[]
         gpu_pre_cap_count=len(selected)
         if v4:
@@ -384,7 +405,13 @@ def gpu_finalize(config):
             'selected': selected, 'selected_global': len(selected), 'selected_korean': 0,
             'selection_changes': {'attempt_eligibility_flip_count': len(flips), 'attempt_flips': flips,
                 'best_attempt_or_membership_change_count': len(best_changes), 'best_attempt_or_membership_changes': best_changes,
-                'cpu_provisional_selected': len(prior), 'gpu_selected': len(selected)},
+                'cpu_provisional_selected': len(set(prior) & comparable_practices), 'gpu_selected': len(selected),
+                'attempts_compared': compared_attempts, 'attempts_unknown': len(manifest['episodes']) - compared_attempts,
+                'attempts_missing_CPU_snapshot': sum(i['provisional_global_eligible'] is None for i in manifest['episodes']),
+                'practices_compared': len(comparable_practices), 'practices_unknown': len(practice_ids) - len(comparable_practices),
+                'gpu_selected_before_cap_in_comparable_practices': gpu_comparable_selected,
+                'comparison_scope': 'Observed CPU/GPU attempts; best-attempt comparison only when every saved attempt of a practice is observed on both.',
+                'CPU_comparison_internal_until_200_source_audit': True},
             'failed_gpu_episodes': failed_episodes, 'gpu_score_errors': score_errors,
             'api_calls': 0, 'gpu_calls_by_component': 0, 'training': False}
         if v4:
