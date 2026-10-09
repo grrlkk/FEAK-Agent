@@ -144,6 +144,12 @@ def report(config, approval):
     for op, r in metrics.items():
         lines.append(f"|{op}|{r['generated']}|{r['distinct_sources']}|{r['qc']['passed']}/{r['qc']['judged']}|"
             f"{r['teacher_saved']}/{r['teacher_planned']}|{number(r['teacher_main_recovery'])}|{number(r['R_over'])}|{r['selected_global']}|")
+    changes = value['selection_changes']
+    lines += ['', '|CPU provisional / GPU reference comparison|Count|', '|---|---:|',
+        f"|CPU provisional GLOBAL selections|{changes['cpu_provisional_selected']}|",
+        f"|Final GPU-reference GLOBAL selections|{changes['gpu_selected']}|",
+        f"|Attempt eligibility flips at R >= 0.80|{changes['attempt_eligibility_flip_count']}|",
+        f"|Best-attempt or membership changes|{changes['best_attempt_or_membership_change_count']}|"]
     lines += ['', f"Stopped: `{status['stop_reason']}`. API cost ${account['confirmed_usd']:.6f}; "
         f"retained unknown reservations ${account['reserved_usd']:.6f}; live pending {account['pending']}; shared cap $12.", '',
         value['selection_rule'], '', value['source_grouping'], '',
