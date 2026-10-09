@@ -1,4 +1,4 @@
-"""One aggregate, crash-safe $12 ledger for Sol QC and both Luna attempts."""
+"""One cumulative, crash-safe GLOBAL ledger for QC, Luna and authorized rescue."""
 from copy import copy, deepcopy
 import json
 import time

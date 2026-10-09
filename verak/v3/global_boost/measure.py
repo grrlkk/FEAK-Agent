@@ -25,9 +25,10 @@ def run(config, limit=None):
     design, rows = prepare_teacher(config)
     resources = CPUResources(config)
     saved, errors = [], []
-    tasks = [(a, episode_id) for a in (1, 2) for episode_id in design['orders'][str(a)]
-             if attempt_path(root, a, episode_id).exists()
-             and not measured_path(config, a, attempt_path(root, a, episode_id)).exists()]
+    attempts = sorted(int(p.name.split('_')[-1]) for p in root.glob('attempt_*') if p.is_dir())
+    tasks = [(attempt, episode_id) for attempt in attempts for episode_id in rows
+             if attempt_path(root, attempt, episode_id).exists()
+             and not measured_path(config, attempt, attempt_path(root, attempt, episode_id)).exists()]
     if limit is not None:
         tasks = tasks[:limit]
     for attempt, episode_id in tasks:

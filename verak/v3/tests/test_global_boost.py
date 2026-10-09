@@ -80,7 +80,7 @@ def test_sol_and_luna_share_cap_but_attempts_are_fresh_and_resume_replays(tmp_pa
         db.execute("UPDATE calls SET status='pending',confirmed=0,reserved=.2 WHERE id=?", (qc['phase_call'],))
     assert luna.settle_interrupted()[0]['status'] == 'completed'
     with sol.db() as db:
-        db.execute('UPDATE calls SET reserved=0,confirmed=4')
+        db.execute('UPDATE calls SET reserved=0,confirmed=?', (config[PHASE]['max_cost_usd']/3,))
     with pytest.raises(CallBudgetExceeded):
         luna.reserve('global_boost_attempt_2', 'new', 'new', .01)
     assert config['env'] == original
@@ -238,11 +238,11 @@ def test_expansion_batches_share_atomic_cap_and_never_settle_other_live_namespac
     assert expansion.settle_interrupted() == []
     assert expansion.accounting()['pending'] == 1
     with original.db() as db:
-        db.execute("UPDATE calls SET status='completed',confirmed=10,reserved=0")
+        db.execute("UPDATE calls SET status='completed',confirmed=?,reserved=0", (config[PHASE]['max_cost_usd']-2,))
     expansion.qc_hold_usd = 1.9
     with pytest.raises(CallBudgetExceeded, match='preserve outstanding Luna'):
         expansion.reserve('global_boost_qc', 'global_boost:batch_002:one', 'new', .2)
-    assert original.accounting()['confirmed_usd'] == 10
+    assert original.accounting()['confirmed_usd'] == config[PHASE]['max_cost_usd']-2
     original.close()
     expansion.close()
 

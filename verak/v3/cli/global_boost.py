@@ -1,4 +1,4 @@
-"""CPU/API-only weak-GLOBAL teacher expansion, separate $12 cap, no training."""
+"""CPU/API-only GLOBAL teachers; approved cumulative $40 cap, no training."""
 import argparse
 import json
 
@@ -10,13 +10,26 @@ def main():
     parser.add_argument('stage', choices=['prepare', 'qc', 'teacher', 'measure', 'report',
         'continue', 'launch', 'restart', 'prefetch', 'prefetch-loop', 'launch-prefetch', 'restart-prefetch',
         'expand', 'launch-expansion', 'restart-expansion', 'expansion-plan', 'prepare-expansion',
-        'audit-variants', 'cpu-ready', 'gpu-finalize', 'finalize', 'launch-finalizer', 'restart-finalizer'])
+        'audit-variants', 'cpu-ready', 'gpu-finalize', 'finalize', 'launch-finalizer', 'restart-finalizer',
+        'v4-stop-legacy', 'v4-compare', 'v4-prepare', 'v4-run', 'v4-launch'])
     parser.add_argument('--max-api-calls', type=int, default=20000)
     parser.add_argument('--limit', type=int)
     args = parser.parse_args()
     constrain_cpu()
     config = config_for()
-    if args.stage == 'prepare':
+    if args.stage in {'v4-stop-legacy', 'v4-compare'}:
+        from ..global_boost.v4 import stop_legacy, compare_saved
+        result = {'v4-stop-legacy': stop_legacy, 'v4-compare': compare_saved}[args.stage](config)
+        if args.stage == 'v4-compare':
+            result = {k:v for k,v in result.items() if k != 'input_sha256'}
+    elif args.stage == 'v4-prepare':
+        from ..global_boost.v4_data import prepare
+        value = prepare(config)
+        result = {k:v for k,v in value.items() if k not in {'source_policy','source_inventory'}}
+    elif args.stage in {'v4-run','v4-launch'}:
+        from ..global_boost.v4_service import run, launch
+        result = (run if args.stage == 'v4-run' else launch)(config)
+    elif args.stage == 'prepare':
         from ..global_boost.prepare import prepare
         result = prepare(config)
         result = {k: result[k] for k in ('counts', 'shortfall', 'gpu_used')}

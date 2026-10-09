@@ -45,6 +45,9 @@ def weighted(rows, key, count='global_reward_measured'):
 
 
 def report(config, approval):
+    if (root_for(config)/'v4/plan.json').exists():
+        from .v4_report import report as report_v4
+        return report_v4(config,approval)
     from .report import report as batch_report
     root = root_for(config)
     batches, selected, inputs = [], {}, {}
@@ -175,6 +178,7 @@ def cpu_ready(config):
     from .measure import run as measure
     from .resources import reference_gpu_fingerprint
     root = root_for(config)
+    v4 = (root / 'v4/plan.json').exists()
     marker_path = root / 'cpu_ready.json'
     if marker_path.exists():
         marker = read_json(marker_path)
@@ -213,7 +217,11 @@ def cpu_ready(config):
                     key = pair_key(candidate['question'], text)
                     requests[key] = {'key': key, 'question': candidate['question'], 'text': text}
                     score_inputs.append({'state': name, 'key': key})
-            keep = absolute_selection(value, candidate)['global']
+            if v4:
+                from .v4_selection import eligible
+                keep = eligible(value)
+            else:
+                keep = absolute_selection(value, candidate)['global']
             reward = value.get('global_only_reward')
             entry = {'episode_id': episode_id, 'attempt': attempt, 'raw_path': str(path), 'raw_sha256': file_sha(path),
                 'batch': str(batch), 'operator': candidate['operator'], 'source_id': candidate['source_id'],
@@ -240,6 +248,9 @@ def cpu_ready(config):
         'provisional_selected': provisional_selected,
         'canonical_for_selection': False, 'generation_stop_reason': expansion['stop_reason'],
         'source_plan_parent_sha256': file_sha(root / 'source_plan.json'), 'api': account}
+    if v4:
+        manifest.update(task_version='v4_prep', diversity_plan_path=str(root/'v4/plan.json'),
+                        diversity_plan_sha256=file_sha(root/'v4/plan.json'))
     manifest_path = root / 'gpu_rescore_manifest.json'
     if manifest_path.exists():
         if read_json(manifest_path) != manifest:
@@ -272,6 +283,7 @@ def gpu_finalize(config):
     """Synchronous no-API consumer, independent of the insertion/audit schedule."""
     from .measure import run as measure
     root = root_for(config)
+    v4 = (root/'v4/plan.json').exists()
     with gpu_selection_lock(root):
         ready = read_json(root / 'cpu_ready.json')
         manifest = read_json(ready['manifest_path'])
@@ -319,7 +331,11 @@ def gpu_finalize(config):
             scores = value.get('quality_scores', {})
             if any(s.get('execution_device') != 'gpu_reference' or s.get('scorer_fingerprint') != complete['fingerprint'] for s in scores.values()):
                 raise ValueError('Final GLOBAL reward contains a non-reference score')
-            keep = absolute_selection(value, candidate)['global']
+            if v4:
+                from .v4_selection import eligible
+                keep = eligible(value)
+            else:
+                keep = absolute_selection(value, candidate)['global']
             if keep != item['provisional_global_eligible']:
                 flips.append({'episode_id': item['episode_id'], 'attempt': item['attempt'],
                     'cpu_eligible': item['provisional_global_eligible'], 'gpu_eligible': keep,
@@ -339,6 +355,14 @@ def gpu_finalize(config):
                          'gpu_attempt': selected.get(i, {}).get('attempt')}
                         for i in sorted(set(prior) | set(selected))
                         if prior.get(i, {}).get('attempt') != selected.get(i, {}).get('attempt')]
+        cap_excluded=[]
+        gpu_pre_cap_count=len(selected)
+        if v4:
+            from .v4_data import holdouts
+            from .v4_selection import source_cap
+            held,_=holdouts(config)
+            selected={i:e for i,e in selected.items() if e['source_id'] not in held}
+            selected,cap_excluded=source_cap(selected)
         value = {'version': 'v1', 'role': 'global', 'score_source': 'gpu_reference',
             'fingerprint': complete['fingerprint'], 'manifest_sha256': ready['manifest_sha256'],
             'gpu_complete_sha256': file_sha(complete_path), 'slot': complete['slot'],
@@ -348,6 +372,11 @@ def gpu_finalize(config):
                 'cpu_provisional_selected': len(prior), 'gpu_selected': len(selected)},
             'failed_gpu_episodes': failed_episodes, 'gpu_score_errors': score_errors,
             'api_calls': 0, 'gpu_calls_by_component': 0, 'training': False}
+        if v4:
+            value.update(task_version='v4_prep',diversity_plan_path=str(root/'v4/plan.json'),
+                diversity_plan_sha256=file_sha(root/'v4/plan.json'), source_cap=4,
+                gpu_eligible_before_source_cap=gpu_pre_cap_count, source_cap_exclusions=cap_excluded,
+                new_source_rule='Active agent_train sources allowed; new structural positions; frozen SFT source holdouts excluded.')
         atomic_new(old_path, value)
         return value
 
@@ -374,7 +403,9 @@ def finalize(config):
         if approved(config) != approval:
             raise RuntimeError('Scorer approval changed while measuring')
         result = report(config, approval)
-        if result['completion']['teacher_saved'] < result['completion']['teacher_requested'] and 'budget' not in result['completion']['stop_reason']:
+        if (result['completion']['teacher_saved'] < result['completion']['teacher_requested']
+                and 'budget' not in result['completion']['stop_reason']
+                and not result['completion'].get('legacy_unattempted_authorized_rescope')):
             raise RuntimeError('Unattempted authorized teacher slots remain without a budget stop')
         if result['api']['pending']:
             raise RuntimeError('Live paid calls remain; cannot close the GLOBAL boost')
