@@ -213,6 +213,17 @@ def test_prefetch_watcher_stops_when_final_stage_was_missed(tmp_path, monkeypatc
     assert calls == (['scan'] if stop == 'initial_cpu_provisional_finished' else [])
 
 
+def test_final_batch_report_rejects_cpu_provisional_rewards(tmp_path):
+    from verak.v3.global_boost.report import report
+    config = config_for()
+    config['paths'][PHASE + '_output'] = tmp_path
+    config[PHASE].update(measurement_source='cpu_provisional', score_fingerprint='cpu',
+                         scorer_approval_sha256='small-engineering-audit')
+    with pytest.raises(RuntimeError, match='CPU observations are provisional only'):
+        report(config)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_expansion_batches_share_atomic_cap_and_never_settle_other_live_namespace(tmp_path, monkeypatch):
     from verak.v3.eval import api as module
     from verak.v3.global_boost.expansion import batch_config
