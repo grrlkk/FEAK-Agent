@@ -195,6 +195,24 @@ def test_prefetch_only_saved_global_states_and_reuses_validated_gpu_cache(tmp_pa
         prefetch.enqueue(config)
 
 
+@pytest.mark.parametrize('stop', ['initial_cpu_provisional_finished', 'component', 'combined'])
+def test_prefetch_watcher_stops_when_final_stage_was_missed(tmp_path, monkeypatch, stop):
+    from verak.v3.global_boost import prefetch
+    config = config_for()
+    root = tmp_path / 'global'
+    config['paths'][PHASE + '_output'] = root
+    calls = []
+    monkeypatch.setattr(prefetch, 'enqueue', lambda _: calls.append('scan') or {'episodes_seen': 1, 'added_this_scan': 0})
+    monkeypatch.setattr(prefetch.time, 'sleep', lambda *_: pytest.fail('A finished watcher must not wait again'))
+    if stop == 'initial_cpu_provisional_finished':
+        write_json(root / 'status.json', {'stage': stop})
+    else:
+        write_json(root / 'complete.json' if stop == 'component' else tmp_path / 'report_complete.json', {'status': 'complete'})
+    result = prefetch.watch(config)
+    assert result['added_this_scan'] == 0
+    assert calls == (['scan'] if stop == 'initial_cpu_provisional_finished' else [])
+
+
 def test_expansion_batches_share_atomic_cap_and_never_settle_other_live_namespace(tmp_path, monkeypatch):
     from verak.v3.eval import api as module
     from verak.v3.global_boost.expansion import batch_config
