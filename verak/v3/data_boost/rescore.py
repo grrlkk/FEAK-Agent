@@ -35,13 +35,19 @@ def ready(config, name):
         return None
     marker = read_json(path)
     if marker.get('status') != 'ready' or not all(marker.get(k) is True for k in
-            ('no_live_paid_calls', 'teacher_collection_finished', 'cpu_measurements_finished')):
+            ('no_live_paid_calls', 'teacher_collection_finished')):
         return None
     manifest_path = Path(marker['manifest_path']).resolve()
     if not manifest_path.is_relative_to(directory.resolve()) or file_sha(manifest_path) != marker['manifest_sha256']:
         raise ValueError(name + ': changed or out-of-scope GPU manifest')
     manifest = read_json(manifest_path)
-    if manifest.get('component') != name or manifest.get('schema_version') != 1:
+    raw_ready = (name == 'global' and manifest.get('schema_version') == 2
+        and manifest.get('handoff_contract') == 'teacher_complete_gpu_reference_v2'
+        and marker.get('handoff_contract') == 'teacher_complete_gpu_reference_v2'
+        and manifest.get('version') == 'v1' and manifest.get('selected_role') == 'global')
+    if not raw_ready and marker.get('cpu_measurements_finished') is not True:
+        return None
+    if manifest.get('component') != name or (manifest.get('schema_version') != 1 and not raw_ready):
         raise ValueError('Unexpected GPU manifest identity')
     if not manifest.get('reference_gpu_fingerprint'):
         raise ValueError('GPU reference fingerprint is required')
@@ -51,6 +57,19 @@ def ready(config, name):
         if key in seen or key != pair_key(request['question'], request['text']):
             raise ValueError('Duplicate or mismatched scorer input')
         seen.add(key)
+    if raw_ready:
+        for episode in manifest['episodes']:
+            for field in ('raw','candidate'):
+                if file_sha(episode[field+'_path']) != episode[field+'_sha256']:
+                    raise ValueError('Teacher-complete raw/candidate artifact changed')
+            if episode.get('provisional_path') is not None:
+                if file_sha(episode['provisional_path']) != episode['provisional_sha256']:
+                    raise ValueError('Frozen available CPU observation changed')
+            elif any(episode.get(k) is not None for k in
+                     ('provisional_sha256','provisional_R','provisional_global_eligible')):
+                raise ValueError('Missing CPU observation cannot supply an eligibility or reward')
+            if any(item['key'] not in seen for item in episode['quality_inputs']):
+                raise ValueError('A raw teacher quality input is absent from the GPU request list')
     return {'path': str(manifest_path), 'sha256': marker['manifest_sha256'], 'manifest': manifest}
 
 

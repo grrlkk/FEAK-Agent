@@ -136,3 +136,41 @@ def test_aggregate_requires_both_consumers_and_is_immutable(tmp_path):
     write_json(gpu / 'global_consumer_complete.json', {'selection_sha256': 'changed'})
     with pytest.raises(ValueError, match='artifacts changed'):
         complete_reference_pass(config)
+
+
+def test_completed_global_teachers_do_not_wait_for_the_cpu_scoring_backlog(tmp_path):
+    config,root=configuration(tmp_path)
+    path=manifest(root)
+    raw,candidate=root/'global/raw.json',root/'global/candidate.json'
+    write_json(raw,{'trace':'frozen'})
+    write_json(candidate,{'source':'frozen'})
+    original=read_json(path)
+    contract='teacher_complete_gpu_reference_v2'
+    episode={'raw_path':str(raw),'raw_sha256':file_sha(raw),
+        'candidate_path':str(candidate),'candidate_sha256':file_sha(candidate),
+        'provisional_path':None,'provisional_sha256':None,'provisional_R':None,
+        'provisional_global_eligible':None,'quality_inputs':[{'state':'stage1','key':original['requests'][0]['key']}]}
+    write_json(path,{**original,'schema_version':2,'version':'v1','selected_role':'global',
+        'handoff_contract':contract,'episodes':[episode]})
+    marker=root/'global/cpu_ready.json'
+    write_json(marker,{**read_json(marker),'manifest_sha256':file_sha(path),
+        'cpu_measurements_finished':False,'handoff_contract':contract})
+    assert ready(config,'global')['manifest']['episodes'][0]['provisional_R'] is None
+    assert set(boundary_plan(config,'pre_rft_training')['components'])=={'global'}
+    # The same raw-ready marker cannot authorize a GPU while rollouts run.
+    write_json(config['paths']['phase8_rft1_output']/'rollout_status.json',
+        {'sampling_complete':False,'saved':5000,'errors':[]})
+    with pytest.raises(RuntimeError,match='rollouts still own'):
+        assert_slot(config,'global','pre_rft_training',file_sha(path))
+    write_json(raw,{'trace':'changed'})
+    with pytest.raises(ValueError,match='artifact changed'):
+        ready(config,'global')
+
+
+def test_raw_ready_does_not_broaden_insertion_or_accept_fake_cpu_results(tmp_path):
+    config,root=configuration(tmp_path)
+    path=manifest(root,'insertion')
+    marker=root/'insertion/cpu_ready.json'
+    write_json(marker,{**read_json(marker),'cpu_measurements_finished':False,
+        'handoff_contract':'teacher_complete_gpu_reference_v2'})
+    assert ready(config,'insertion') is None

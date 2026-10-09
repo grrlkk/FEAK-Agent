@@ -125,15 +125,29 @@ def extra_global(config, active_corpus, held):
     if (complete['slot'] != 'pre_rft_training' or complete['fingerprint'] != selection['fingerprint']
             or complete['manifest_sha256'] != selection['manifest_sha256']):
         raise ValueError('Extra selection lacks the pre-training GPU reference evidence')
+    from .extra_sources import validate_source,cap_source_practices
     entries, excluded = [], Counter()
     active_sources = {row['source_id'] for row in active_corpus.values()}
+    source_scores = None
+    new_positions = set()
     for eid, selected in selection['selected'].items():
         candidate = selected['candidate']
-        if (eid in active_corpus or candidate['source_id'] in active_sources
+        if (eid in active_corpus
                 or candidate.get('split') != 'agent_train'
                 or any(r['level'] != 'GLOBAL' or r['op'] not in {'G_PARA_SWAP', 'G_SENT_MOVE'}
                        for r in candidate['records']) or len(candidate['records']) != 1):
-            raise ValueError('Extra teacher data violates unused-source, role, split or operator constraints')
+            raise ValueError('Extra teacher data violates episode, role, split or operator constraints')
+        if source_scores is None and candidate.get('source_provenance'):
+            source_scores = read_json(config['paths']['phase3_output'] / 'sources_agent_train.json')['rows']
+        signature = validate_source(candidate, active_sources,
+            prior_path=root / 'global/v4/prior_positions.json',
+            holdout_path=config['paths'].get('phase7_sft_output',
+                config['paths']['repo'] / 'verak/v3/outputs/phase7_sft') / 'data/manifest.json',
+            source_scores=source_scores or {})
+        if signature != 'historical_unused_source':
+            if signature in new_positions:
+                raise ValueError('Extra teacher selection repeats a new structural position')
+            new_positions.add(signature)
         trajectory_path = Path(selected['path'])
         if file_sha(trajectory_path) != selected['sha256']:
             raise ValueError('GPU-rescored extra trajectory changed')
@@ -153,7 +167,14 @@ def extra_global(config, active_corpus, held):
             'STOP_only': stop_only(row, 'global'), 'operators': operator_evidence(row, 'global', candidate),
             'partition': 'train', 'score_source': 'gpu_reference',
             'global_only_reward': row.get('global_only_reward') if not row.get('reward') else None})
+    entries, capped = cap_source_practices(entries)
+    if capped:
+        excluded['per_source_operator_cap_4'] += len(capped)
     return entries, {'included': bool(entries), 'selected': len(selection['selected']), 'merged': len(entries),
+        'source_policy': 'Historical unused sources plus proved new positions from eligible agent_train, including active sources; maximum4 practices per source/operator.',
+        'distinct_sources_by_operator': {op: len({e['source_id'] for e in entries if op in e['operators']})
+            for op in ('G_PARA_SWAP', 'G_SENT_MOVE')},
+        'cap_removed_ids': capped,
         'excluded': dict(excluded), 'selection_sha256': file_sha(path), 'merge_sha256': file_sha(merge_path),
         'gpu_complete_sha256': file_sha(root / 'gpu_rescore/global_complete.json'),
         'selection_changes': selection.get('selection_changes'),
