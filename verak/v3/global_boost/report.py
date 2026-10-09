@@ -9,6 +9,7 @@ from .paid import BoostAPI
 from .prepare import corpus
 from .qc import summarize
 from .teacher import attempt_path, prepare_teacher
+from .measure import measured_path
 
 
 def report(config):
@@ -16,7 +17,7 @@ def report(config):
     plan = read_json(root / 'source_plan.json')
     qc = summarize(config)
     design, rows = prepare_teacher(config)
-    metrics, selected = {}, {}
+    metrics, selected, score_devices = {}, {}, Counter()
     for operator in OPERATORS:
         ids = [i for i, r in rows.items() if r['operator'] == operator]
         values, recovery = [], []
@@ -26,7 +27,7 @@ def report(config):
         for episode_id in ids:
             for attempt in (1, 2):
                 path = attempt_path(root, attempt, episode_id)
-                measured_path = root / f'attempt_{attempt}/measured' / path.name
+                measure_target = measured_path(config, attempt, path)
                 if not path.exists():
                     unknown.append({'episode_id': episode_id, 'attempt': attempt, 'reason': 'not_attempted'})
                     continue
@@ -35,10 +36,11 @@ def report(config):
                 complete += bool(raw['generation_completed'])
                 for role in end:
                     end[role][raw['termination'].get(role, 'not_completed')] += 1
-                if not measured_path.exists():
+                if not measure_target.exists():
                     unknown.append({'episode_id': episode_id, 'attempt': attempt, 'reason': 'not_measured'})
                     continue
-                result = read_json(measured_path)
+                result = read_json(measure_target)
+                score_devices.update(v.get('execution_device', 'unknown') for v in result.get('cpu_scores', {}).values())
                 if result['raw_generation_sha256'] != file_sha(path):
                     raise ValueError('Measured result no longer matches the immutable teacher trace')
                 reward = result['reward']['global'] if result.get('reward') else result.get('global_only_reward')
@@ -52,8 +54,10 @@ def report(config):
                 per_essay[episode_id].append(rec)
                 full += rec == 1
                 keep = absolute_selection(result, rows[episode_id])
-                if keep['global']:
-                    entry = {'attempt': attempt, 'path': str(measured_path), 'sha256': file_sha(measured_path),
+                canonical = (result.get('canonical_for_selection') and
+                             result.get('scorer_approval_sha256') == config[PHASE].get('scorer_approval_sha256'))
+                if keep['global'] and canonical:
+                    entry = {'attempt': attempt, 'path': str(measure_target), 'sha256': file_sha(measure_target),
                         'trajectory_path': str(path), 'trajectory_sha256': file_sha(path),
                         'R': reward['R'], 'R_rec': reward['R_rec'], 'R_over': reward['R_over'],
                         'source_id': rows[episode_id]['source_id'], 'operator': operator,
@@ -87,12 +91,18 @@ def report(config):
     result = {'phase': PHASE, 'operators': metrics, 'selected_global': len(selected),
         'selected_korean': 0, 'selected': selected, 'api': account,
         'distinct_new_sources': len({r['source_id'] for r in all_inputs.values()}),
+        'qc_pass_distinct_sources': len({r['source_id'] for r in rows.values()}),
+        'selected_distinct_sources': len({r['source_id'] for r in selected.values()}),
         'source_overlap_across_operators': len(plan['source_overlap_across_operators']),
         'source_inventory': plan['source_inventory']['counts'],
         'selection_rule': 'Existing SFT absolute_selection, best GLOBAL R per practice; no additional RFT-only STOP/rejection gate.',
         'new_teacher_roles': ['global', 'korean'], 'selected_roles': ['global'],
+        'unmeasured_reward_roles': ['korean', 'combined'],
         'method': 'Unchanged v1 two-stage prompts/actions/recovery; hidden reward deferred and CPU NF4 scored.',
         'gpu_used': False, 'training': False}
+    result['canonical_for_selection'] = bool(config[PHASE].get('score_fingerprint'))
+    result['scorer_approval_sha256'] = config[PHASE].get('scorer_approval_sha256')
+    result['score_device_observations'] = dict(score_devices)
     result['completion'] = {
         'teacher_requested': sum(v['teacher_planned'] for v in metrics.values()),
         'teacher_saved': sum(v['teacher_saved'] for v in metrics.values()),
@@ -101,7 +111,7 @@ def report(config):
         'stop_reason': read_json(root / 'teacher_status.json').get('stop_reason')
             if (root / 'teacher_status.json').exists() else 'teacher_not_started',
     }
-    cpu_audit = root.parent / 'cpu_scorer/calibration.json'
+    cpu_audit = config['paths'].get('global_boost_shared_root', root).parent / 'cpu_scorer/calibration.json'
     if cpu_audit.exists():
         audit = read_json(cpu_audit)
         result['cpu_score_audit'] = {k: v for k, v in audit.items() if k not in {'comparisons', 'decisions'}}
@@ -111,8 +121,8 @@ def report(config):
         f"Phase3b source pool {result['source_inventory']['phase3b_train_source_pool']}; "
         f"unused eligible {result['source_inventory']['unused_eligible_sources']}; "
         f"mechanically eligible distinct sources {result['distinct_new_sources']}.", '',
-        'The 400-per-operator targets exceed unused-source supply under the preserved Phase3b source and mechanical rules. '
-        'The two operators reuse the same new sources, each practice has exactly one GLOBAL record. No active corpus was changed.', '',
+        'Each practice has exactly one GLOBAL record. Distinct structural variants may reuse the same unused source. '
+        'This file describes one immutable collection batch; the final component report aggregates all batches. No active corpus was changed.', '',
         '|Operator|Generated|QC pass/judged|Teacher saved/planned|GLOBAL recovery|R_over|Selected GLOBAL|',
         '|---|---:|---:|---:|---:|---:|---:|']
     def number(value):
