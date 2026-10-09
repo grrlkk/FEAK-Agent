@@ -5,6 +5,16 @@ GLOBAL/KOREAN SFT epoch-2 adapters. It imports the unchanged v1 environment,
 prompts, action protocol, observations and rewards. It does not authorize a
 second round, DPO, v2 training or an Orchestrator.
 
+The latest data-boost instruction adds a reference-scoring slot between rollout
+completion and training. Ready v1 GLOBAL G_PARA_SWAP/G_SENT_MOVE teacher additions
+are GPU-rescored, filtered under the RFT STOP/rejection rules and merged before
+export. Insertion v2 data remains separate. Data not ready at that boundary waits
+until RFT evaluation ends and cannot change this round's frozen training set.
+All targets carry `sft_teacher`, `extra_teacher` or `rft_rollout` source tags.
+GLOBAL full-recovery duplication applies per operator only below200 merged unique
+train recoveries; L_CONJ duplication remains2x. The report separates operator and
+source counts and attributes gains jointly to rollouts and any extra teachers.
+
 Artifacts remain local under `verak/v3/outputs/phase8_rft1`; one-shot artifacts
 go under `verak/v3/outputs/oneshot_baseline`. The original repository's pinned
 paths are obtained from the existing SFT configuration. No dataset, model,
@@ -33,9 +43,10 @@ requires R>=.80 for GLOBAL-record examples and KOREAN; the user-confirmed existi
 no-GLOBAL STOP-within2/no-structural-attempt/R_over0 exception replaces GLOBAL's
 reward threshold when no GLOBAL record exists. Every selected teacher or rollout
 trajectory additionally needs a valid terminal STOP and at most one rejected
-action. GLOBAL STOP-only training trajectories are capped at35%; full recovery
-of G_PARA_SWAP/G_SENT_MOVE (GLOBAL) or L_CONJ (KOREAN) receives total weight2,
-without compounding. Data exports use the actual per-turn inference contexts and
+action. GLOBAL STOP-only training trajectories are capped at35%. Full recovery
+of G_PARA_SWAP/G_SENT_MOVE receives total weight2 only below200 merged unique
+training recoveries for that operator; full L_CONJ retains weight2 without
+compounding. Data exports use the actual per-turn inference contexts and
 mask everything except the current action and end-of-turn target.
 
 The two-GPU trainer is launched with:
