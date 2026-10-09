@@ -16,6 +16,35 @@ def average(values):
     return mean(values) if values else None
 
 
+def audit_tables(audit, gpu_selection):
+    if not audit or audit.get('status') != 'complete':
+        return ['The 200-source CPU/GPU comparison is pending.', '']
+    rubrics = ('과제충실성', '설명명료성', '설명구체성', '설명적절성',
+               '문장연결성', '글통일성', '어휘적절성', '어법적절성')
+    lines = [table(['Provisional CPU vs saved GPU audit', 'Value'], [
+        ['Distinct source essays', audit.get('unique_source_essays', audit['source_essays'])],
+        ['State comparisons', audit['state_comparisons']],
+        ['Deduplicated scorer inputs', audit['unique_score_inputs_completed']],
+        ['Mean absolute Q difference, across states', f"{audit['mean_abs_Q_delta']:.6f}"],
+        ['Max absolute Q difference, across states', f"{audit['max_abs_Q_delta']:.6f}"],
+        ['Mean absolute Q difference, unique inputs', f"{audit['unique_input_mean_abs_Q_delta']:.6f}"],
+        ['GLOBAL R >= .80 flips', audit['selection_changes_by_role']['global']],
+        ['KOREAN R >= .80 flips', audit['selection_changes_by_role']['korean']],
+        ['GLOBAL-record R >= .80 flips', audit['global_record_selection_changes']],
+        ['Unknown essays', audit['unknown_essays']]]), '',
+        table(['Rubric', 'Generated score-line digit agreement', 'Teacher-forced argmax agreement'], [
+            [rubric, f"{audit['generated_digit_agreement_by_rubric'][i]:.2%}",
+             f"{audit['argmax_digit_agreement_by_rubric'][i]:.2%}"] for i, rubric in enumerate(rubrics)]), '']
+    if gpu_selection:
+        lines += [table(['New-teacher provisional CPU -> final GPU comparison', 'GLOBAL attempts'], [
+            ['Measured with GPU reference', gpu_selection['measured_episodes']],
+            ['Unmeasured; excluded without CPU fallback', len(gpu_selection['unmeasured'])],
+            ['R >= .80 eligibility changed', gpu_selection['eligibility_flips']],
+            ['CPU eligible -> GPU ineligible', gpu_selection['cpu_only_eligible']],
+            ['CPU ineligible -> GPU eligible', gpu_selection['gpu_only_eligible']]]), '']
+    return lines
+
+
 def report(config, *, final=False):
     root = config['paths'][PHASE + '_output']
     qc = summary(config)
@@ -199,8 +228,10 @@ def report(config, *, final=False):
         '82 argument, including 62 near-.80 examples and 138 seeded samples. It is a threshold-stress sample, '
         'not a population accuracy estimate. Generated score-line digit agreement is reported separately '
         'from teacher-forced argmax digit agreement. Observed numerical errors are not universal bounds.', '',
-        f'CPU/GPU consistency audit: `{numeric}`. Selection approval: `{approval}`. '
-        f'CPU-to-GPU teacher eligibility changes: `{metrics["cpu_to_gpu_selection"]}`.', '',
+        *audit_tables(calibration, gpu_selection),
+        'The detailed audit, per-episode comparisons, and frozen score fingerprints are retained in '
+        '`component_metrics.json` and the shared `cpu_scorer/audit_200/` artifacts. Final selection approval '
+        'is `cpu_scorer/selection_approval.json`; it identifies the exact GPU completion and audit hashes.', '',
         f"New confirmed cost **${budget['confirmed_usd']:.6f} / $6**; reserved ${budget['reserved_usd']:.6f}; "
         f"pending {budget['pending']}. The prior retry's $3.461224 is historical and is not charged to this cap. "
         'All new Sol/Luna generation and hidden recovery judgments share the same atomic ledger.', '',
