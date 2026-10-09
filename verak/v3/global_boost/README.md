@@ -104,3 +104,32 @@ bytes, the provisional quality delta is exactly zero without scoring. Absolute
 before/after Q stay null, and identity hashes prove the shortcut. The GPU manifest
 still includes those inputs. All non-quality reward terms and SFT gates are
 unchanged.
+# Approved v4 preparation continuation
+
+The cumulative GLOBAL cap is now $40, including all historical spending. The old
+42-source expansion was drained under its ledger lock; raw trajectories and excess
+practices remain archived. `v4-compare` reuses the exact saved92 Sol/Luna cohort.
+Sol exceeds Luna by23.08pp on G_SENT_MOVE only, enabling one Sol-low GLOBAL rescue
+when both completed Luna attempts failed full recovery of that operator.
+
+`v4-prepare` freezes new Phase3b practices from all eligible agent_train sources,
+including active-corpus sources, while excluding frozen SFT/evaluation holdouts and
+every saved structural position. New source coverage is prioritized. The400/operator
+planning quota counts historical practices only up to4/source/operator; excess raw
+history is reported separately. Every new practice includes a versioned source/position
+proof and its immutable prior-position index hash.
+
+`v4-launch` runs the new balanced QC/two-Luna-attempt batches and then conditional
+rescue. It uses the existing atomic ledger, shared low-rate Bareun access, CPU affinity
+and hidden CUDA setting. Sol rescue uses4096 API output tokens for GLOBAL only;
+KOREAN remains Luna low/1024. The policy still observes the original v1 prompt/context
+and learns action JSON only under8192 context/1024 target tokens.
+
+The existing `cpu-ready`, `gpu-finalize`, and `launch-finalizer` interfaces remain.
+Final selections require GPU R>=.80, valid terminal STOP and<=1 rejected action;
+best attempts are chosen per practice, then a deterministic GPU-R ranking retains
+at most4 practices/source/operator. The published GPU selection and final report
+both use that same capped set. CPU scores never rank this cap or enter final rewards.
+Completion waits for root-owned GPU rescoring and the>=200-source compatibility audit.
+`v4/component_metrics.json` and `v4/component_report.md` contain the A report snippet;
+the existing root component paths and completion marker remain compatible.

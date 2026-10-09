@@ -10,8 +10,8 @@ def config_for():
     config = load_config()
     config[PHASE] = {
         'model': read_json(config['paths']['phase4_output'] / 'models.json')['luna_model'],
-        'sol_model': 'gpt-6.1-sol', 'max_cost_usd': 12., 'max_concurrent_requests': 2,
-        'phase_api_ceiling': 20000, 'seed': 97, 'ordering_seeds': [71, 72],
+        'sol_model': 'gpt-6.1-sol', 'max_cost_usd': 40., 'max_concurrent_requests': 2,
+        'phase_api_ceiling': 100000, 'seed': 97, 'ordering_seeds': [71, 72],
         'per_operator': 400, 'attempts': 2, 'teacher_workers': 2,
     }
     config['paths'][PHASE + '_output'] = config['paths']['repo'] / 'verak/v3/outputs/data_boost/global'
