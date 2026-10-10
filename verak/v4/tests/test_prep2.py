@@ -147,6 +147,53 @@ def test_score_audit_compares_targets_without_treating_feedback_as_gold():
         compare_row(row)
 
 
+def test_four_item_cap_does_not_limit_ids_in_one_located_item():
+    from verak.v4.prep2_content import validate_plan
+    row,_=map_fixture(7)
+    row['source_id']='train:fixture'
+    item={'rubric':'unity','feedback_index':6,'problem':'중복 내용','location':[f'S{i}b' for i in range(1,8)],
+        'evidence':'관련 설명이다. 관련 설명이다.', 'owner':'revision','action':'DELETE','instruction':'지정된 중복 문장을 삭제한다.'}
+    value={'items':[item],'dropped':[],'writer_notes':[]}
+    result=validate_plan(value,row)
+    assert len(result['items'])==1 and len(result['items'][0]['location'])==7
+    wrong=deepcopy(value); wrong['items'][0]['evidence']='관련 설명이다. 새 사실이다.'
+    assert not validate_plan(wrong,row)['items']
+
+
+def test_parser_recovery_reuses_saved_plan_and_refuses_seen_assignments(tmp_path,monkeypatch):
+    import sqlite3
+    from verak.v4 import prep2_content as module
+    from verak.v4.common import write_json,read_json
+    monkeypatch.setattr(module,'ROOT',tmp_path)
+    source='train:fixture'
+    row,_=map_fixture(7); row['source_id']=source
+    item={'rubric':'unity','feedback_index':6,'problem':'중복 내용','location':[f'S{i}b' for i in range(1,8)],
+        'evidence':'관련 설명이다. 관련 설명이다.','owner':'revision','action':'DELETE','instruction':'지정 문장을 삭제한다.'}
+    plan={'items':[item],'dropped':[],'writer_notes':[]}
+    write_json(tmp_path/'essays/train_fixture.json',row)
+    write_json(tmp_path/'D/design.json',{'source_ids':[source]})
+    write_json(tmp_path/'D/complete.json',{'status':'collection_stopped'})
+    error={'source_id':source,'status':'error','items':[],'error':'ValueError: Invalid located item contract'}
+    write_json(tmp_path/'D/items/train_fixture.json',error)
+    rawpath=tmp_path/'D/api/requests/000001.json'
+    write_json(rawpath,{'raw':json.dumps(plan),'phase_call':1})
+    with sqlite3.connect(tmp_path/'D/api/ledger.sqlite') as db:
+        db.execute('CREATE TABLE calls (id INTEGER PRIMARY KEY,stage TEXT,item_id TEXT,status TEXT,path TEXT)')
+        db.execute('INSERT INTO calls VALUES (1,?,?,?,?)',('prep2_content_plan',source,'completed',str(rawpath)))
+    result=module.recover_unstarted_plans()
+    assert len(result['recovered'])==1 and result['paid_calls']==0
+    assert read_json(tmp_path/'D/validation_recovery/train_fixture/original_items_error.json')==error
+    assert read_json(tmp_path/'D/items/train_fixture.json')['status']=='completed'
+    assert not (tmp_path/'D/complete.json').exists()
+    # Any earlier editor request blocks reassignment, even with no saved attempt.
+    write_json(tmp_path/'D/complete.json',{'status':'collection_stopped'})
+    write_json(tmp_path/'D/items/train_fixture.json',error)
+    with sqlite3.connect(tmp_path/'D/api/ledger.sqlite') as db:
+        db.execute('INSERT INTO calls VALUES (2,?,?,?,?)',('prep2_content_teacher',source+':a1:revision:d1:t1','completed','unused'))
+    with pytest.raises(ValueError,match='any editor request'):
+        module.recover_unstarted_plans()
+
+
 def test_saved_prep1_default_maps_replay_identically_when_artifacts_available():
     from verak.v4.common import ROOT,read_json,safe_id
     if not (ROOT/'C/final_complete.json').exists():

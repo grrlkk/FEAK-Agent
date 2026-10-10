@@ -72,14 +72,18 @@ def validate_plan(value,row):
         loc = item['location']
         structural = (item['rubric'] in RUBRICS and type(item['feedback_index']) is int and 1<=item['feedback_index']<=8
             and item['owner'] in {'revision','korean'} and item['action'] in {'MOVE','DELETE','INSERT','EDIT'}
-            and isinstance(loc,list) and 1<=len(loc)<=4 and len(loc)==len(set(loc)) and all(x in locations for x in loc)
+            and isinstance(loc,list) and len(loc)>=1 and len(loc)==len(set(loc)) and all(x in locations for x in loc)
             and all(isinstance(item[k],str) and item[k].strip() for k in ('problem','instruction','evidence')))
         if not structural:
             raise ValueError('Invalid located item contract')
         if item['owner']=='korean' and item['action']!='EDIT':
             raise ValueError('Korean agent only receives EDIT tasks')
         # Grounding failures are explicit drops, never silently repaired/retried.
-        if len(item['evidence'].strip())<2 or not any(item['evidence'] in locations[x] for x in loc):
+        # A located quotation may span several named sentences. Permit only
+        # whitespace differences across their concatenation, not fuzzy content.
+        evidence=''.join(item['evidence'].split())
+        scoped_text=''.join(''.join(locations[x].split()) for x in loc)
+        if len(evidence)<2 or evidence not in scoped_text:
             removed.append({'problem':item['problem'],'reason':'evidence_not_exactly_in_assigned_location','raw_item':item})
             continue
         accepted.append({**item,'item_id':f'{row["source_id"]}:D2I{number}','needs_search':'no'})
@@ -103,6 +107,71 @@ def make_plan(row,api):
         result={'source_id':row['source_id'],'status':'error','items':[], 'error':type(exc).__name__+': '+str(exc)}
     atomic_new(path,result)
     return result
+
+
+def recover_unstarted_plans():
+    """Repair a parser-only rejection from its saved response, with no new calls.
+
+    Never change an assignment once an editor has seen it. Old failed plan files
+    and the first collection's completion marker remain available for audit.
+    """
+    import sqlite3
+    with collection_lock(ROOT/'D'):
+        if not (ROOT/'D/complete.json').exists():
+            raise RuntimeError('Wait for the original collection to finish')
+        recovered=[]; unresolved=[]
+        design=read_json(ROOT/'D/design.json')
+        for source in design['source_ids']:
+            path=ROOT/'D/items'/(safe_id(source)+'.json')
+            if not path.exists():
+                continue
+            prior=read_json(path)
+            if prior['status']=='completed':
+                continue
+            if any((ROOT/'D/attempts'/f'{safe_id(source)}_a{a}.json').exists() for a in (1,2)):
+                raise ValueError('Cannot change tasks after an editor attempt')
+            ledger=ROOT/'D/api/ledger.sqlite'
+            with sqlite3.connect(f'file:{ledger}?mode=ro',uri=True) as db:
+                rawfiles=db.execute('SELECT path FROM calls WHERE stage=? AND item_id=? AND status=? ORDER BY id',
+                    ('prep2_content_plan',source,'completed')).fetchall()
+                existing_teacher=db.execute('SELECT COUNT(*) FROM calls WHERE stage=? AND item_id LIKE ?',
+                    ('prep2_content_teacher',source+':%')).fetchone()[0]
+            if existing_teacher:
+                raise ValueError('Cannot change tasks after any editor request')
+            if not rawfiles:
+                unresolved.append({'source_id':source,'reason':'no completed planner response'})
+                continue
+            raw=read_json(rawfiles[0][0])
+            row=read_json(ROOT/'essays'/(safe_id(source)+'.json'))
+            try:
+                parsed=validate_plan(json.loads(raw['raw']),row)
+            except (ValueError,KeyError,TypeError) as exc:
+                unresolved.append({'source_id':source,'reason':str(exc)})
+                continue
+            archive=ROOT/'D/validation_recovery'/safe_id(source)
+            archive.mkdir(parents=True,exist_ok=True)
+            original=archive/'original_items_error.json'
+            if not original.exists():
+                atomic_new(original,prior)
+            record={'source_id':source,'original_error':prior.get('error'),'raw_response_path':rawfiles[0][0],
+                'raw_response_sha256':file_sha(rawfiles[0][0]),'phase_call':raw['phase_call'],
+                'reason':'The four-item cap does not cap location IDs; permit grounded multi-sentence quotations',
+                'new_planner_calls':0,'previous_teacher_calls':0,'assigned_items':len(parsed['items'])}
+            result={'source_id':source,'status':'completed','phase_call':raw['phase_call'],
+                'validation_recovery':record,**parsed}
+            write_json(path,result)
+            write_json(archive/'recovery.json',record)
+            recovered.append(record)
+        result={'recovered':recovered,'unresolved':unresolved,'paid_calls':0,
+                'completed_editor_attempts_changed':0,'quality_gate_changed':False}
+        write_json(ROOT/'D/validation_recovery/summary.json',result)
+        if recovered:
+            complete=ROOT/'D/complete.json'
+            archived=ROOT/'D/validation_recovery/initial_complete.json'
+            if archived.exists():
+                raise ValueError('Initial completion has already been archived')
+            complete.rename(archived)
+        return result
 
 
 def public_tasks(items):
@@ -402,7 +471,8 @@ def report(tokenizer=None):
         'delegation_STOP_status':dict(Counter(d['stop_status'] for d in delegations if d['ending']=='STOP')),
         'delegation_STOP_rate':sum(d['ending']=='STOP' for d in delegations)/len(delegations) if delegations else None,
         'revision_no_items_attempts':sum(a['termination'].get('revision')=='no_items' for a in attempts),
-        'korean_endings':dict(Counter(a['termination'].get('korean','not_started') for a in attempts)),
+        'korean_endings':dict(Counter(a.get('korean_stage',{}).get('ending',
+            a['termination'].get('korean','not_started')) for a in attempts)),
         'max_inserts_observed':max((a['insert_count'] for a in attempts),default=0),
         'item_owners':dict(Counter(i['owner'] for i in items)),'item_actions':dict(Counter(i['action'] for i in items)),
         'generic_or_other_drops':sum(len(p.get('dropped',[])) for p in plans),
@@ -417,7 +487,8 @@ def report(tokenizer=None):
     review=review[:30]
     public=[{k:v for k,v in c.items() if k!='attempt'}|{'attempt':c['attempt']['attempt'],
         'revision_stage':c['attempt']['phase_text'].get('revision'),'revised':c['attempt']['final_text'],
-        'delegations':c['attempt']['delegations'],'termination':c['attempt']['termination']} for c in review]
+        'delegations':c['attempt']['delegations'],'termination':c['attempt']['termination'],
+        'execution_status':c['attempt']['status'],'korean_stage':c['attempt'].get('korean_stage')} for c in review]
     write_json(ROOT/'D/manual_review_30.json',public)
     lines=['# V4 content pilot v2: kept cases for review','',
         f'Uniform random kept attempts, seed 233: {len(public)}/30 cases. Feedback/items/verdicts are LLM-authored, not human standards.', '']
@@ -426,8 +497,10 @@ def report(tokenizer=None):
             f'Question: {c["question"]}','','### Original','',c['original'],'','### Located tasks','']
         lines += [f'- {i["owner"]} {i["location"]} {i["action"]}: {i["instruction"]} (LLM-flagged: {i["problem"]})' for i in c['items']]
         lines += ['','### Revised','',c['revised'],'','### Verdicts','','```json',
-            json.dumps({'verdict':c['verdict'],'selection':c['selection'],'delegations':c['delegations'],
-                'termination':c['termination']},ensure_ascii=False,indent=2),'```','']
+            json.dumps({'verdict':c['verdict'],'preferred_attempt':c['preferred'],
+                'selection':c['selection'],'delegations':c['delegations'],
+                'termination':c['termination'],'execution_status':c['execution_status'],
+                'korean_stage':c['korean_stage']},ensure_ascii=False,indent=2),'```','']
     text='\n'.join(lines)
     (ROOT/'D/manual_review_30.md').write_text(text)
     (REPO/'imple/reports/V4_CONTENT_V2_REVIEW_30.md').write_text(text)
