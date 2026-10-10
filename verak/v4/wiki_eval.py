@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 import random
+import sqlite3
 import time
 
 from .wiki_build import ROOT, constrain, digest, frozen, read, write
@@ -204,7 +205,9 @@ def report(root=ROOT):
         rows = [x for x in completed if x['genre'] == genre]
         counts = Counter(x['verdict']['support'] for x in rows)
         rates[genre] = {'planned': QUOTAS[genre], 'judged': len(rows), 'counts': dict(counts),
-                        'rates_among_judged': {k: counts[k] / len(rows) if rows else None for k in ('yes', 'partly', 'no')}}
+                        'unjudged': QUOTAS[genre] - len(rows),
+                        'rates_among_judged': {k: counts[k] / len(rows) if rows else None for k in ('yes', 'partly', 'no')},
+                        'rates_among_planned': {k: counts[k] / QUOTAS[genre] for k in ('yes', 'partly', 'no')}}
     examples = []
     for genre in QUOTAS:
         found = next((x for x in completed if x['genre'] == genre), None)
@@ -216,8 +219,15 @@ def report(root=ROOT):
         if value not in examples:
             examples.append(value)
     accounting = read(root / 'eval/api/accounting.json')
+    planned_ids = {x['item_id'] for x in sample['items']}
+    with sqlite3.connect(f'file:{root / "eval/api/ledger.sqlite"}?mode=ro', uri=True) as db:
+        dispatched_ids = {row[0] for row in db.execute("SELECT DISTINCT item_id FROM calls WHERE status!='blocked_before_send'")}
+    dispatched_ids &= planned_ids
     value = {'planned': 50, 'judged': len(completed), 'errors': len(results) - len(completed),
-             'not_dispatched': 50 - len(results), 'by_genre': rates,
+             'not_dispatched': 50 - len(dispatched_ids), 'no_terminal_result': 50 - len(results),
+             'partially_dispatched': len(dispatched_ids - {x['item_id'] for x in results}),
+             'unjudged': 50 - len(completed), 'by_genre': rates,
+             'stopped_at_budget_cap': (root / 'eval/budget_stop.json').exists(),
              'overall_counts': dict(Counter(x['verdict']['support'] for x in completed)),
              'api': accounting, 'examples': examples, 'sample_sha256': digest(root / 'eval/sample.json'),
              'dump': read(root / 'dump/verified.json'), 'extraction': read(root / 'extraction.json'),
@@ -235,12 +245,13 @@ def report(root=ROOT):
              'No embeddings, GPU use or teacher integration. Any later passage-based INSERT must paraphrase and cite both title and passage_id; no such INSERT was generated here.', '',
              'Normal search sends no essay or query outside this server. The separately authorized offline Sol check sends only each of 50 frozen train items, '
              'a short located excerpt and its retrieved paragraphs. Feedback and Sol verdicts are LLM supervision, not a human standard.', '',
-             f"Judged {len(completed)}/50; errors {value['errors']}; undispatched {value['not_dispatched']}. Cost ${accounting['confirmed_usd']:.6f}, reserved ${accounting['reserved_usd']:.6f}, cap $2.", '',
-             '|Genre|Judged|Yes|Partly|No|', '|---|---:|---:|---:|---:|']
+             f"Judged {len(completed)}/50; unjudged {value['unjudged']} (errors {value['errors']}, no terminal result {value['no_terminal_result']}; never dispatched {value['not_dispatched']}). Cost ${accounting['confirmed_usd']:.6f}, reserved ${accounting['reserved_usd']:.6f}, cap $2.",
+             'Rates below use each genre\'s planned sample as denominator. Unjudged outcomes remain unknown and are not counted as no.', '',
+             '|Genre|Planned|Judged|Yes|Partly|No|Unjudged|', '|---|---:|---:|---:|---:|---:|---:|']
     for genre, stats in rates.items():
-        counts = stats['counts']; n = stats['judged']
+        counts = stats['counts']; n = stats['planned']
         cells = [f"{counts.get(k,0)}/{n} ({100*counts.get(k,0)/n:.1f}%)" if n else '0/0' for k in ('yes', 'partly', 'no')]
-        lines.append(f"|{genre}|{n}|" + '|'.join(cells) + '|')
+        lines.append(f"|{genre}|{n}|{stats['judged']}|" + '|'.join(cells) + f"|{stats['unjudged']}|")
     lines += ['', '|Excluded pages|Count|', '|---|---:|']
     lines += [f'|{reason}|{count:,}|' for reason, count in sorted(value['extraction']['drops'].items())]
     lines += ['', 'Five examples (one per genre first, then distinct items in fixed order):', '']
@@ -249,17 +260,25 @@ def report(root=ROOT):
         source = sources[result['item_id']]
         verdict = result['verdict']
         chosen = next((x for x in result['passages'] if x['passage_id'] == verdict['passage_id']), None)
+        supporting = chosen is not None and verdict['support'] in {'yes', 'partly'}
+        if chosen is None and result['passages']:
+            chosen = result['passages'][0]
         lines += [f"{number}. {result['source_id']} ({result['genre']}): {source['payload']['item']['problem']}",
                   f"   Query: {result['query']}. Verdict: **{verdict['support']}** — {verdict['reason']}"]
         if chosen:
             lines += [f"   [{chosen['title']}]({chosen['url']}), {chosen['section']}, `{chosen['passage_id']}`", f"   Passage excerpt: {chosen['text'][:250]}"]
+            if not supporting:
+                lines.append('   This retrieved passage was not judged to support the item.')
     lines += ['', '[Official Wikimedia dump](https://dumps.wikimedia.org/kowiki/) · '
               '[Wikimedia content licensing](https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use#7._Licensing_of_Content) · '
               '[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)', '']
     (root / 'report.md').write_text('\n'.join(lines))
-    if len(results) == 50 and accounting['pending'] == 0 and accounting['reserved_usd'] == 0:
-        write(root / 'complete.json', {'status': 'complete', 'judged': len(completed), 'errors': value['errors'],
-                                     'cost_usd': accounting['confirmed_usd'], 'gpu_used': False})
+    if accounting['pending'] == 0 and (len(results) == 50 or value['stopped_at_budget_cap']):
+        terminal = ('stopped_budget' if value['stopped_at_budget_cap'] else
+                    'complete_with_errors' if value['errors'] else 'complete')
+        write(root / 'complete.json', {'status': terminal, 'judged': len(completed), 'errors': value['errors'],
+                                     'unjudged': value['unjudged'], 'cost_usd': accounting['confirmed_usd'],
+                                     'reserved_usd': accounting['reserved_usd'], 'gpu_used': False})
     return value
 
 

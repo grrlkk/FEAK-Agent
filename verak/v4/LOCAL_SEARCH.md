@@ -69,3 +69,6 @@ sentences; at most 1,500 characters), and the exact top-three passages. Complete
 student essays are not request fields. The judge returns `yes`, `partly` or `no`
 for whether any retrieved passage supports a suitable fact/example; it does not
 write a revision. Reports disclose this boundary and give rates by genre.
+Budget stops preserve partly dispatched items and report all unjudged outcomes
+as unknown, with rates against the planned sample and separate judgment-only
+rates in the metrics file.
