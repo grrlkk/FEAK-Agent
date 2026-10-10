@@ -73,12 +73,26 @@ def schema(row):
         'off_topic': array(enum(sids))})
 
 
-def extraction_request(row):
-    return [{'role': 'system', 'content': PROMPT},
-            {'role': 'user', 'content': json.dumps(public_input(row), ensure_ascii=False)}], schema(row)
+def extraction_request(row, *, long_only=False):
+    prompt = PROMPT
+    payload = public_input(row)
+    if long_only:
+        prompt = prompt.replace(
+            '문단을 가로지르는 문장 관계는 양끝 모두 main 문장이거나 그 문단의 핵심 문장일 때만 표시한다. 문단 내부 관계에는 이 제한이 없다.',
+            '문단이 7개 이상인 글에서만 문단 간 문장 관계의 양끝을 main 또는 각 문단의 핵심 문장으로 제한한다. 6개 이하의 글에는 이 제한을 적용하지 않는다.')
+        prompt += '''\nID 검증: 입력에 실제로 있는 ID만 그대로 복사한다. S/P 번호를 새로 매기거나 추정하지 않는다.
+paragraph_roles에는 각 P ID가 정확히 한 번 나오며 key_sentence는 반드시 그 P 안의 S ID 하나 또는 null이다.
+main만 target=Q를 쓴다. 다른 문장 관계는 S→S, 문단 관계는 P→P만 허용한다. 자기 자신/중복 관계는 쓰지 않는다.
+support/example은 한 문장에서 합쳐 하나만 선택한다. 응답 전 ID 목록과 소속 문단을 대조한다.
+off_topic은 참고 정보일 뿐, 그것만으로 삭제할 수 있다는 뜻이 아니다.'''
+        sids, pids, members = indexes(row)
+        payload['valid_ids'] = {'sentences': sids, 'paragraphs': pids, 'sentence_paragraph': members}
+        payload['cross_paragraph_main_key_required'] = len(pids) > 6
+    return [{'role': 'system', 'content': prompt},
+            {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}], schema(row)
 
 
-def validate(value, row):
+def validate(value, row, *, long_only=False):
     sids, pids, members = indexes(row)
     if not isinstance(value, dict) or set(value) != {'genre','paragraph_roles','sentence_relations','paragraph_relations','off_topic'}:
         raise ValueError('Invalid map object fields')
@@ -120,7 +134,7 @@ def validate(value, row):
     if any(n > 1 for n in outgoing.values()):
         raise ValueError('At most one outgoing support OR example per sentence')
     for edge in value['sentence_relations']:
-        if edge['target'] != 'Q' and members[edge['source']] != members[edge['target']]:
+        if (not long_only or len(pids) > 6) and edge['target'] != 'Q' and members[edge['source']] != members[edge['target']]:
             if edge['source'] not in anchors or edge['target'] not in anchors:
                 raise ValueError('Cross-paragraph relations require main/key endpoints')
     flags = value['off_topic']
@@ -138,9 +152,9 @@ def edge_dicts(values):
     return [{'source': s, 'target': t, 'type': k} for s, t, k in sorted(values)]
 
 
-def consensus(left, right, row, *, strict=True):
+def consensus(left, right, row, *, strict=True, long_only=False):
     if strict:
-        left, right = validate(left, row), validate(right, row)
+        left, right = validate(left, row, long_only=long_only), validate(right, row, long_only=long_only)
     result = {'genre': row['genre'], 'paragraph_roles': [], 'sentence_relations': [],
               'paragraph_relations': [], 'off_topic': []}
     diagnostics = {'relations': {}, 'paragraph_roles': [], 'dropped': {}}
