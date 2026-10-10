@@ -254,11 +254,19 @@ def write_report(config, condition='rft1'):
                  for op, v in coverage['operators'].items()]), '']
         if 'reward_recovery_validation' in metrics:
             recovery = metrics['reward_recovery_validation']
+            validation = recovery['result']
             lines += ['## Saved-score reward recovery', '',
                 'The interrupted extra-teacher reward finalization was recovered from saved episodes, '
                 'GPU reference scores and stored Bareun analysis. No new training rollouts or teacher '
                 'requests were used for this recovery. The full comparison audit is retained at '
-                f'`{recovery["path"]}` (SHA-256 `{recovery["sha256"]}`).', '']
+                f'`{recovery["path"]}` (SHA-256 `{recovery["sha256"]}`).', '',
+                f'Validated {validation["verified_reward_files"]}/{validation["episodes"]} reward files and '
+                f'{validation["saved_GPU_scores_validated"]} saved GPU scores. Rebuilt '
+                f'{validation["repaired_rewards"]} missing rewards; all '
+                f'{validation["existing_rewards_exactly_equal"]} previously saved rewards matched exactly. '
+                f'Missing files by attempt: `{validation["missing_by_attempt"]}`. '
+                'The cache-only restoration needed no new scorer or Bareun calls. Missing provisional '
+                'CPU comparisons remain unknown and are not used for training selection.', '']
     else:
         data = metrics['data']
         lines = ['# VERAK v3 — one-shot trained baseline', '',
