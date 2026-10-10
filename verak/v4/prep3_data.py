@@ -64,7 +64,7 @@ def freeze_content():
     return result
 
 
-def materialize(group):
+def materialize(group,on_row=None):
     freeze_contract()
     if group=='maps':
         sample=read_json(PREP2/'sample.json'); sources=sample['maps2000']
@@ -85,6 +85,10 @@ def materialize(group):
                     raise ValueError('Existing source profile hash mismatch')
                 atomic_new(ROOT/'essays'/(safe_id(source)+'.json'),row)
                 missing.remove(source); break
+    if on_row is not None:
+        for source in sources:
+            if source not in missing:
+                on_row(read_json(ROOT/'essays'/(safe_id(source)+'.json')))
     if missing:
         config=load_config(); load_environment(config)
         analyzer=BoostParagraphs(config,cache_dir=ROOT/('bareun_'+group))
@@ -103,6 +107,7 @@ def materialize(group):
             atomic_new(ROOT/'essays'/(safe_id(source)+'.json'),row)
             missing.remove(source)
             write_json(ROOT/group/'materialization.json',{'remaining':len(missing),'planned':len(sources),'at':time.time()})
+            if on_row is not None: on_row(row)
     if missing: raise ValueError('Missing frozen source IDs')
     manifest={s:{'path':str(ROOT/'essays'/(safe_id(s)+'.json')),
         'sha256':file_sha(ROOT/'essays'/(safe_id(s)+'.json'))} for s in sources}
@@ -112,5 +117,5 @@ def materialize(group):
     return [read_json(manifest[s]['path']) for s in sources]
 
 
-def materialize_maps():
-    return materialize('maps')
+def materialize_maps(on_row=None):
+    return materialize('maps',on_row=on_row)

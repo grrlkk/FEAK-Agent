@@ -86,6 +86,9 @@ def test_edge_filter_keeps_map_and_independent_support_example_slots():
     assert result['raw_edges']==5 and result['kept_edges']==2
     assert result['dropped_by_reason']=={'invalid_target_or_direction':1,'outgoing_support_limit':1,'duplicate_relation':1}
     assert {e['type'] for e in result['map']['sentence_relations']}=={'support','example'}
+    from verak.v4.prep3_maps import extraction_request
+    text=extraction_request(row)[0][0]['content']
+    assert '합쳐' not in text and '각각 한 문장에서 최대 하나씩' in text
 
 
 def test_long_edge_filter_does_not_consume_slot_for_invalid_cross_edge():

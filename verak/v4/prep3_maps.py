@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 import socket
 import time
+from threading import Lock
 
 from . import maps
 from .prep3_common import (ROOT, PREP1, PREP2, GENRES, read_json, write_json, file_sha, sha_text,
@@ -93,6 +94,11 @@ def extraction_request(row):
     messages[0]['content']=messages[0]['content'].replace(
         '문장 하나에서 나가는 support와 example은 둘을 합쳐 최대 하나다.',
         '문장 하나에서 나가는 support는 최대 하나, example도 별도로 최대 하나다. 두 종류를 각각 하나씩 둘 수 있다.')
+    messages[0]['content']=messages[0]['content'].replace(
+        'support/example은 한 문장에서 합쳐 하나만 선택한다.',
+        'support와 example은 각각 한 문장에서 최대 하나씩 선택한다.')
+    if '합쳐' in messages[0]['content']:
+        raise ValueError('Legacy combined outgoing-edge limit remains in the extraction prompt')
     return messages,schema
 
 
@@ -238,24 +244,42 @@ def run():
     from .prep3_data import materialize_maps
     with collection_lock(ROOT/'maps'):
         socket.getaddrinfo('api.openai.com',443)
-        rows=materialize_maps()
         output=ROOT/'maps/scale2000'
-        design={'source_ids':[r['source_id'] for r in rows],'source_manifest_sha256':file_sha(PREP2/'sample.json'),
-            'attempts':2,'policy_sha256':file_sha(ROOT/'maps/edge_policy.json'),
-            'request_sha256':{r['source_id']:sha_text(json.dumps(extraction_request(r),ensure_ascii=False,sort_keys=True)) for r in rows}}
-        path=output/'design.json'
-        if path.exists() and read_json(path)!=design:
-            raise ValueError('Scale design changed')
-        if not path.exists(): atomic_new(path,design)
+        # Freeze the complete source/prompt contract before dispatch. Individual
+        # request hashes are also stored with each result and in the final design.
+        import inspect
+        dispatch={'source_ids':read_json(PREP2/'sample.json')['maps2000'],
+            'source_manifest_sha256':file_sha(PREP2/'sample.json'),'attempts':2,
+            'policy_sha256':file_sha(ROOT/'maps/edge_policy.json'),
+            'prompt_builder_sha256':sha_text(maps.PROMPT+inspect.getsource(maps.extraction_request)+inspect.getsource(extraction_request)),
+            'stream_profiles_to_API':True,'workers':4}
+        path=output/'dispatch_contract.json'
+        if path.exists() and read_json(path)!=dispatch: raise ValueError('Scale dispatch contract changed')
+        if not path.exists(): atomic_new(path,dispatch)
         api=api_for('maps')
         try:
             api.settle_interrupted()
+            progress={'saved':0}; progress_lock=Lock(); submitted=set()
             with ThreadPoolExecutor(max_workers=4) as pool:
-                futures=[pool.submit(extract,api,row,n,output) for row in rows for n in (1,2)]
-                for number,future in enumerate(as_completed(futures),1):
-                    value=future.result()
-                    write_json(ROOT/'maps/status.json',{'stage':'extracting','saved':number,'planned':4000,
-                        'last_status':value['status'],'at':time.time(),'api':api.accounting()})
+                futures=[]
+                def completed(future):
+                    with progress_lock:
+                        progress['saved']+=1
+                        write_json(ROOT/'maps/status.json',{'stage':'extracting','saved':progress['saved'],'planned':4000,
+                            'at':time.time(),'api':api.accounting()})
+                def ready(row):
+                    if row['source_id'] in submitted: raise ValueError('Duplicate streamed source')
+                    submitted.add(row['source_id'])
+                    for n in (1,2):
+                        future=pool.submit(extract,api,row,n,output)
+                        future.add_done_callback(completed); futures.append(future)
+                rows=materialize_maps(on_row=ready)
+                assert submitted==set(dispatch['source_ids']) and len(futures)==4000
+                design={**dispatch,'request_sha256':{r['source_id']:sha_text(json.dumps(extraction_request(r),ensure_ascii=False,sort_keys=True)) for r in rows}}
+                path=output/'design.json'
+                if path.exists() and read_json(path)!=design: raise ValueError('Scale design changed')
+                if not path.exists(): atomic_new(path,design)
+                for future in as_completed(futures): future.result()
             metrics=summarize(rows,output)
             write_json(output/'metrics.json',metrics)
             write_json(ROOT/'maps/complete.json',{'scale_started':True,'metrics':metrics,'accounting':api.accounting(),'at':time.time()})
