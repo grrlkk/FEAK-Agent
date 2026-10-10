@@ -23,8 +23,10 @@ def report():
     now=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(timespec='seconds')
     lines=['# V4 PREP2','',f'Updated {now}. C collection stopped={c_done}; D collection stopped={d_done}.','',
         '## Provenance and execution contract','',
-        '`assistant`의 `### Feedback`과 1–9 점수의 작성 출처는 사용자 확인에 따라 strong LLM으로 기록한다. '
-        '사람 채점은 `grader_1_scores`/`grader_2_scores`의 각 1–5 값이다. '
+        '`assistant`의 `### Feedback` 문장은 strong LLM이 작성했다. '
+        '점수 타깃은 후속 사용자 확인에 따라 사람 채점의 합산값이며, 저장된 1–9 헤더가 '
+        '`grader_1_scores + grader_2_scores − 1`과 전 행에서 같음을 확인했다. '
+        '각 사람 채점 원척도는 1–5다. '
         '피드백·작업 항목·Sol 판정은 LLM supervision 또는 LLM-flagged problems이며 human gold가 아니다.', '',
         'PREP2는 별도 worktree/config/output/ledger로 API와 낮은 우선순위 CPU만 사용한다. '
         'GPU/채점기 추론/학습 호출은 0이다. RFT1 및 extra GLOBAL A의 실행 코드·프로세스·스케줄을 바꾸지 않았다. '
@@ -32,7 +34,10 @@ def report():
         f'- Method SHA-256: `{frozen["method_sha256"]}` (at-start/current comparison enforced).',
         f'- Previous source design SHA-256: `{frozen["prior_design_sha256"]}`.',
         '- PREP2 artifacts: `verak/v4/outputs/prep2/`; old PREP1 C/D artifacts retained.',
-        '- Calls are independently unseeded; source order and review sampling use saved deterministic seeds.', '',
+        '- Calls are independently unseeded; source order and review sampling use saved deterministic seeds.',
+        '- The frozen initial contract preserves the original request’s attribution of the assistant field. '
+        'The later clarification distinguishes LLM-written feedback from human-derived numeric targets; '
+        'no independent LLM-score standard is claimed. Numeric score vectors are absent from editor observations.', '',
         '## C. Map repair and scale gate','',
         'Cross-paragraph main/key endpoints are now required only when the source has more than six paragraphs. '
         'The prompt provides a valid-ID list and each sentence’s paragraph; main must point to Q, other sentence edges to sentence IDs, '
@@ -123,6 +128,19 @@ def report():
             'no final STOP/kept rate is claimed.', '']
     lines += [f'D confirmed ${da["confirmed_usd"]:.6f}; reserved ${da["reserved_usd"]:.6f}; pending {da["pending"]}; cap $10.', '',
         '## Scorer labels: file-only audit','']
+    recovery_path=ROOT/'D/validation_recovery/summary.json'
+    if recovery_path.exists():
+        recovery=read_json(recovery_path)
+        insert_at=lines.index('## Scorer labels: file-only audit')
+        lines[insert_at:insert_at]=['### Parser recovery without resampling','',
+            f'{len(recovery["recovered"])} previously unstarted source assignments were recovered from their exact cached Sol responses. '
+            'The initial validator incorrectly capped location IDs at four as well as task items. Only the four-item cap is required. '
+            'Grounded quotations spanning multiple named sentences are now checked across those sentences with whitespace differences allowed. '
+            'Original failures and raw response hashes are preserved under `D/validation_recovery/`.', '',
+            f'New planner calls: {recovery["paid_calls"]}; already-seen editor assignments/attempts changed: '
+            f'{recovery["completed_editor_attempts_changed"]}; unresolved parser failures: {len(recovery["unresolved"])}. '
+            'Only the originally requested two editor attempts for those unstarted sources were added, using the same cumulative $10 ledger. '
+            'Completed and failed editor attempts, the frozen cohort, teacher prompts and all quality gates were preserved.', '']
     if labels:
         lines += [f'Frozen adapter: `{labels["frozen_adapter"]}`. The saved adapter config specifies CAUSAL_LM, r=16, alpha=32 '
             'and Kanana base, but contains no training dataset path, formatting function or label-field selection. '

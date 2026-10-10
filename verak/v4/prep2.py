@@ -6,7 +6,7 @@ from .common import constrain_cpu
 def main():
     constrain_cpu()
     p = argparse.ArgumentParser()
-    p.add_argument('command',choices=('sources','maps','content','scorer-labels','report'))
+    p.add_argument('command',choices=('sources','maps','content','recover-items','content-report','scorer-labels','report'))
     p.add_argument('--watch',action='store_true',help='File-only report refresh until C and D stop')
     args = p.parse_args()
     if args.watch and args.command != 'report':
@@ -24,6 +24,16 @@ def main():
     elif args.command == 'scorer-labels':
         from .prep2_scorer_audit import run
         run()
+    elif args.command == 'content-report':
+        from transformers import AutoTokenizer
+        from .prep2_common import load_config
+        from .prep2_content import report
+        tokenizer=AutoTokenizer.from_pretrained(str(load_config()['paths']['policy_base']),local_files_only=True)
+        report(tokenizer)
+    elif args.command == 'recover-items':
+        import json
+        from .prep2_content import recover_unstarted_plans
+        print(json.dumps(recover_unstarted_plans(),ensure_ascii=False))
     else:
         import time
         from .prep2_report import report
