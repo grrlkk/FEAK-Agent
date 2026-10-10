@@ -40,6 +40,15 @@ def summarize(attempts):
         'attempt_status':dict(Counter(a['status'] for a in attempts))}
 
 
+def gate_fields(metrics,all_started):
+    passed=metrics['primary_gate_pass'] and all_started
+    return {'minimum_valid_action_rate':.9,'primary_gate_pass':metrics['primary_gate_pass'],
+        'all_20_teacher_attempts_started':all_started,'passed':passed,'stop_all_B':not passed,
+        'stop_all_B_compatibility_scope':'B2/B3 only; B4 is independent under the latest user instruction',
+        'stop_B2_B3':not passed,'B4_independent':True,
+        'valid_actions':metrics['valid_actions'],'returned_actions':metrics['returned_action_calls']}
+
+
 def report(tokenizer):
     if (ROOT/'complete.json').exists(): return read_json(ROOT/'complete.json')
     freeze_contract();sources=read_json(ROOT/'sample.json')['source_ids']
@@ -55,10 +64,7 @@ def report(tokenizer):
     if account['pending'] or account['confirmed_usd']+account['reserved_usd']>2.+1e-9:
         raise ValueError('Unsettled API request or cap violation')
     metrics=action_metrics(attempts,account);all_started=all(a.get('calls') for a in attempts)
-    passed=metrics['primary_gate_pass'] and all_started
-    gate={'minimum_valid_action_rate':.9,'primary_gate_pass':metrics['primary_gate_pass'],
-        'all_20_teacher_attempts_started':all_started,'passed':passed,'stop_all_B':not passed,
-        'valid_actions':metrics['valid_actions'],'returned_actions':metrics['returned_action_calls']}
+    gate=gate_fields(metrics,all_started);passed=gate['passed']
     entries=[d for a in attempts for d in a.get('delegations',[])]
     invalid=[{'source_id':a['source_id'],'role':c['role'],'delegation':c['delegation'],'turn':c['turn'],
         'category':rejection_category(c),'raw':c['raw'],'action':c['action'],'phase_call':c['phase_call']}
@@ -97,11 +103,12 @@ def report(tokenizer):
     atomic_new(ROOT/'invalid_actions.json',invalid);atomic_new(ROOT/'paired.json',paired)
     p=lambda v:'NA' if v is None else f'{v:.2%}'
     lines=['# B1 — v4.2 paired 20-essay smoke','',
-        f"**{'PASS' if passed else 'FAIL — stop B2/B3/B4'}**: {metrics['valid_actions']}/{metrics['returned_action_calls']} returned actions valid "
+        f"**{'PASS' if passed else 'FAIL — stop B2/B3; B4 independent'}**: {metrics['valid_actions']}/{metrics['returned_action_calls']} returned actions valid "
         f"({p(metrics['primary_valid_action_rate'])}); required ≥90%. All20 fixed outcomes are saved; {metrics['actual_teacher_attempts']}/20 have returned editor actions.",'',
         'The same20 source essays, original order and saved Sol Dv3 assignments are reused. There are no new planner calls. '
         'The environment normalizes sentence boundaries before editing; source content is unchanged apart from whitespace. '
-        'This is an action-validity check, not an essay-quality assessment or training selection.','',
+        'This is an action-validity check, not an essay-quality assessment or training selection. '
+        'Under the latest user instruction, B4 is independent of this gate; the retained stop_all_B compatibility key refers only to B2/B3.','',
         '|Version|Valid / returned actions|Rate|Invalid|Protocol-complete essays|Attempt statuses|',
         '|---|---:|---:|---:|---:|---|']
     for name,value in metrics['paired_summary'].items():
