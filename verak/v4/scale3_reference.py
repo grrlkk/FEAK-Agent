@@ -46,6 +46,12 @@ def validate_manifest(root, repo):
                 raise ValueError('Frozen B3 episode changed')
         if not set(episode['quality_keys'].values()) <= keys:
             raise ValueError('B3 endpoint has no scorer request')
+        from .scale2_projection import restore_document
+        raw, prepared = read_json(episode['raw_path']), read_json(episode['prepared_path'])
+        for name, key in episode['quality_keys'].items():
+            text = restore_document(raw['states'][name]['document']).text
+            if pair_key(prepared['corpus']['question'], text) != key:
+                raise ValueError('B3 quality key differs from its saved question and endpoint')
     complete_path = repo / 'verak/v3/outputs/oneshot_baseline/complete.json'
     completed = read_json(complete_path)
     report = completed['report']
@@ -68,8 +74,11 @@ def validate_response(value, key, fingerprint):
         raise ValueError('Reference scorer response input mismatch')
     if (len(result['integers']) != 8 or len(result['expected']) != 8 or
         any(type(x) is not int or not 1 <= x <= 9 for x in result['integers']) or
-        any(not math.isfinite(x) for x in result['expected'])):
+        any(isinstance(x, bool) or not isinstance(x, (int, float)) or
+            not math.isfinite(x) or not 1 <= x <= 9 for x in result['expected'])):
         raise ValueError('Reference scorer requires all eight rubric scores')
+    if not math.isclose(result['mean'], sum(result['expected']) / 8, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError('Reference scorer mean differs from its eight rubric expectations')
     return True
 
 
