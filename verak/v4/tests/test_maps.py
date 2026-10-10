@@ -174,6 +174,7 @@ def test_report_keeps_unknown_wrong_and_unmeasured_separate_and_full_example_ids
     assert metrics['sol']['all']['by_check_type']['paragraph_role:body']['unknown']==1
     rendered=example(row,joined,judged)
     assert 'train:1' in rendered and '```mermaid' in rendered and 'S1 -->|main| Q' in rendered
+    assert '`S1 -> Q : main`' in rendered
     assert all(f'S{i}' in rendered for i in range(1,6))
 
 

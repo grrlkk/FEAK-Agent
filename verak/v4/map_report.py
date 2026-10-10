@@ -144,8 +144,8 @@ def render_component(metrics):
 def _relations(edges, texts):
     if not edges:
         return '없음.'
-    return table(['관계','출발','도착'], [[e['type']+' ('+RELATION_KO[e['type']]+')',
-        e['source']+': '+texts.get(e['source'],e['source']), e['target']+': '+texts.get(e['target'],e['target'])] for e in edges])
+    # Exact source text is already shown once in the ID table above the map.
+    return '\n'.join('- `'+e['source']+' -> '+e['target']+' : '+e['type']+'` ('+RELATION_KO[e['type']]+')' for e in edges)
 
 
 def _mermaid(row, value):
@@ -371,3 +371,42 @@ def publish_final(rows,output,frozen,diagnostic_design,accounting):
     atomic_new(output/'final_complete.json',result)
     write_json(output/'diagnostic_status.json',result)
     return result
+
+
+def refresh_examples():
+    """Offline presentation-only refresh; preserve the prior marker and all raw data."""
+    from .common import ROOT,collection_lock,rows_for
+    output=ROOT/'C'
+    with collection_lock(output):
+        final=read_json(output/'final_complete.json')
+        for label in ('metrics','report','examples'):
+            if file_sha(final[label+'_path'])!=final[label+'_sha256']:
+                raise ValueError('Refuse to refresh a changed final report')
+        frozen=read_json(output/'design.json');sources={r['source_id']:r for r in rows_for('maps150')}
+        lines=['# V4 장르 중립 지도: 고정 6개 예시','',
+            '장르별 len(text), source_id 오름차순의 최단 두 편을 추출 전에 고정했다. 실패한 예시도 바꾸지 않았다. '
+            '문장/문단 원문은 ID 표에 한 번씩 제시하고 관계는 `S4 -> S2 : support` 형식으로 읽는다. '
+            '모든 길이에 main/key 문단 간 끝점 제한을 적용한 구현 차이와 형식-invalid/의미상 wrong의 구분을 함께 제시한다. '
+            '원시 후보는 정답이나 학습 대상으로 승격하지 않는다.','']
+        for sid in frozen['examples6']:
+            name=safe_id(sid)+'.json';row=sources[sid]
+            joined=read_json(output/'consensus'/name)
+            judge=read_json(output/'sol'/name) if (output/'sol'/name).exists() else None
+            diagnostic=read_json(output/'diagnostics'/name) if (output/'diagnostics'/name).exists() else None
+            attempts=[read_json(output/f'attempt_{i}'/name) for i in (1,2)]
+            lines += [example(row,joined,judge),diagnostic_examples(row,joined,attempts,diagnostic)]
+        updated='\n'.join(lines)
+        archive=output/'final_complete_before_compact_relations.json'
+        if not archive.exists():
+            atomic_new(archive,final)
+        prior_examples=output/'examples_before_compact_relations.md'
+        if not prior_examples.exists():
+            prior_examples.write_bytes(Path(final['examples_path']).read_bytes())
+        temporary=Path(final['examples_path']).with_suffix('.md.tmp')
+        temporary.write_text(updated,encoding='utf-8');temporary.replace(final['examples_path'])
+        final.update(examples_sha256=file_sha(final['examples_path']),
+            presentation_revision='compact ID-arrow-type relation lists',presentation_paid_calls=0,
+            previous_final_marker_sha256=file_sha(archive))
+        write_json(output/'final_complete.json',final)
+        write_json(output/'diagnostic_status.json',final)
+        return final

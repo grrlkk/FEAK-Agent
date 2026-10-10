@@ -7,7 +7,7 @@ def main():
     from .common import constrain_cpu
     constrain_cpu()
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['run', 'report', 'launch', 'diagnose', 'launch-diagnostics'])
+    parser.add_argument('command', choices=['run', 'report', 'launch', 'diagnose', 'launch-diagnostics', 'refresh-examples'])
     args = parser.parse_args()
     if args.command in {'launch','launch-diagnostics'}:
         import os
@@ -44,6 +44,9 @@ def main():
     elif args.command == 'diagnose':
         from .maps import diagnose
         result=diagnose()
+    elif args.command == 'refresh-examples':
+        from .map_report import refresh_examples
+        result=refresh_examples()
     else:
         from .common import ROOT, read_json, rows_for
         from .map_report import publish
