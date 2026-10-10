@@ -84,9 +84,11 @@ def snapshot(root, corpus_path, destination):
         provenance.append({'path': str(path), 'sha256': file_sha(path),
                            'episode_id': row['corpus_episode_id'], 'sample': row['rft1']['sample']})
     result = coverage(corpus, rows)
+    complete = result['essays_with_four_saved_samples'] == len(corpus)
     result.update(at=datetime.now(timezone.utc).isoformat(), corpus_sha256=file_sha(corpus_path),
                   files=provenance, new_calls=0, gpu_used=False,
-                  caveat='Early stratified rollout prefix, not the completed 1,430-essay result or held-out evaluation.')
+                  caveat=('Complete active training-corpus rollout collection; not held-out evaluation.' if complete else
+                          'Early stratified rollout prefix, not the completed 1,430-essay result or held-out evaluation.'))
     if destination.exists():
         raise FileExistsError('Keep prior snapshot immutable: ' + str(destination))
     write_json(destination, result)

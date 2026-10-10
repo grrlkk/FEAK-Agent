@@ -186,6 +186,19 @@ def write_report(config, condition='rft1'):
         selection = read_json(root / 'selection.json')
         metrics['selection'] = {key: value for key, value in selection.items() if key not in ('selections', 'rollout_slots')}
         metrics['context_audit'] = audit(config)
+        coverage_path = root / 'rollout_coverage_complete.json'
+        if not coverage_path.exists():
+            from .coverage import snapshot
+            snapshot(root, config['paths']['active_corrupt'] / 'agent_train.jsonl', coverage_path)
+        coverage = read_json(coverage_path)
+        if coverage['saved_samples'] != 5720 or coverage['essays_with_four_saved_samples'] != 1430:
+            raise ValueError('Final RFT coverage must contain all four samples of all 1,430 essays')
+        metrics['rollout_coverage'] = {key: value for key, value in coverage.items() if key != 'files'}
+        metrics['rollout_coverage_sha256'] = file_sha(coverage_path)
+        recovery_path = config['paths']['repo'] / 'verak/v3/outputs/data_boost/global/gpu_reward_recovery_validation.json'
+        if recovery_path.exists():
+            metrics['reward_recovery_validation'] = {'path': str(recovery_path), 'sha256': file_sha(recovery_path),
+                                                       'result': read_json(recovery_path)}
         rollout = read_json(root / 'rollout_status.json')
         lines = ['# VERAK v3 Phase8 — RFT round1', '',
             'One authorized rejection-sampling round from the accepted SFT epoch2 pair. No round2, DPO, '
@@ -204,7 +217,8 @@ def write_report(config, condition='rft1'):
             'The revised round1 design combines student rollouts with extra v1 GLOBAL teacher data '
             'when those additions were ready at the rollout boundary. Its gains cannot then be '
             'attributed to student rollouts alone. Only GPU-reference rewards enter training. '
-            'G_DEL_LINK v2 additions remain separate for round2; KOREAN receives no extra teacher data.', '',
+            'G_DEL_LINK is retained separately for evaluation; no G_DEL_LINK training is authorized. '
+            'KOREAN receives no extra teacher data.', '',
             f"Extra-teacher merge: `{selection.get('extra_teacher', {})}`.", '',
             table(['role', 'eligible rollout best', 'merged', 'train unique', 'train weighted', 'validation', 'STOP-only train share'],
                 [[role, (s := selection['summaries'][role])['rollout_best']['unique_trajectories'],
@@ -228,6 +242,23 @@ def write_report(config, condition='rft1'):
                  for source, count in counts['by_source'].items()]), '',
             'Source tags are sft_teacher, extra_teacher and rft_rollout; every exported action target '
             'retains its trajectory source tag, source essay and GPU score provenance.', '']
+        lines += ['## Complete training-rollout best-of-four recovery', '',
+            coverage['definition'] + ' ' + coverage['main_definition'] + ' ' + coverage['unknown_policy'], '',
+            'All 1,430 essays have four saved attempts. These are training-corpus coverage figures, '
+            'not development or held-out performance.', '',
+            table(['operator', 'essays', 'role main: at least one full sample', 'share',
+                   'full record including coupled repairs', 'unknown essays', 'main upper bound'],
+                [[op, v['essays_with_four_saved_samples'], v['role_main']['successful_essays'],
+                  fmt(v['role_main']['share']), v['combined_full_record']['successful_essays'],
+                  v['role_main']['unresolved_essays'], fmt(v['role_main']['upper_share_if_unknown_success'])]
+                 for op, v in coverage['operators'].items()]), '']
+        if 'reward_recovery_validation' in metrics:
+            recovery = metrics['reward_recovery_validation']
+            lines += ['## Saved-score reward recovery', '',
+                'The interrupted extra-teacher reward finalization was recovered from saved episodes, '
+                'GPU reference scores and stored Bareun analysis. No new training rollouts or teacher '
+                'requests were used for this recovery. The full comparison audit is retained at '
+                f'`{recovery["path"]}` (SHA-256 `{recovery["sha256"]}`).', '']
     else:
         data = metrics['data']
         lines = ['# VERAK v3 — one-shot trained baseline', '',
