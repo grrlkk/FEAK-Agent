@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from verak.v3.common import file_sha, pair_key, write_json
+from verak.v3.common import file_sha, pair_key, read_json, write_json
+from verak.v3.corrupt.document import Document, Paragraph, Unit
+from verak.v4.scale2_projection import save_document
 from verak.v4.scale3_reference import run, validate_manifest, validate_response
 
 
@@ -12,6 +14,9 @@ def ready_files(tmp_path):
     sample, contract, raw, prepared = [root / (name + '.json') for name in ('sample', 'contract', 'raw', 'prepared')]
     for path in (sample, contract, raw, prepared):
         write_json(path, {'artifact': path.name})
+    write_json(raw, {'states': {'initial': {'document': save_document(
+        Document([Paragraph('P1', [Unit('S1', '글', [])])], ['']))}}})
+    write_json(prepared, {'corpus': {'question': '문항'}})
     manifest = {'component': 'B3', 'version': 'v4.3', 'teacher_collection_finished': True,
         'no_live_paid_calls': True, 'reference_gpu_fingerprint': 'reference', 'api': {'pending': 0},
         'sample_path': str(sample), 'sample_sha256': file_sha(sample),
@@ -61,6 +66,31 @@ def test_cpu_wrong_input_and_missing_rubric_scores_are_never_accepted():
     value['result']['expected'] = [2.] * 7
     with pytest.raises(ValueError):
         validate_response(value, 'key', 'reference')
+    for expectations, mean in (([2.] * 8, 8.), ([10.] * 8, 10.)):
+        value = response('key')
+        value['result'].update(expected=expectations, mean=mean)
+        with pytest.raises(ValueError):
+            validate_response(value, 'key', 'reference')
+
+
+def test_swapped_quality_endpoint_is_rejected_even_with_valid_manifest_hashes(tmp_path):
+    root, repo, key = ready_files(tmp_path)
+    finish_oneshot(repo)
+    raw = read_json(root / 'raw.json')
+    raw['states']['stage1'] = {'document': save_document(
+        Document([Paragraph('P1', [Unit('S1', '수정된 글', [])])], ['']))}
+    write_json(root / 'raw.json', raw)
+    path = root / 'B3/gpu_manifest.json'
+    manifest = read_json(path)
+    second = pair_key('문항', '수정된 글')
+    manifest['requests'].append({'key': second, 'question': '문항', 'text': '수정된 글'})
+    manifest['episodes'][0].update(raw_sha256=file_sha(root / 'raw.json'),
+        quality_keys={'initial': second, 'stage1': key})
+    write_json(path, manifest)
+    ready = read_json(root / 'B3/gpu_ready.json')
+    write_json(root / 'B3/gpu_ready.json', {**ready, 'manifest_sha256': file_sha(path)})
+    with pytest.raises(ValueError, match='saved question and endpoint'):
+        validate_manifest(root, repo)
 
 
 def test_reference_reuse_and_resume_need_no_model_load(tmp_path, monkeypatch):
