@@ -96,7 +96,7 @@ def passage_id(dump_date, page_id, revision_id, section, ordinal, text):
     return f"kowiki:{dump_date}:{page_id}:{revision_id}:{digest}"
 
 
-def passages(page, dump_date, *, min_chars=30):
+def passages(page, dump_date, *, min_chars=1):
     """Preserve paragraph boundaries and their hierarchical section labels."""
     if page_filter(page):
         return
@@ -118,7 +118,7 @@ def passages(page, dump_date, *, min_chars=30):
         section = " > ".join(label for _, label in stack) or "서론"
         for paragraph in re.split(r"\n\s*\n", plain_text(block)):
             text = re.sub(r"\s+", " ", paragraph).strip()
-            if len(text) < min_chars or not re.search(r"[가-힣]", text):
+            if len(text) < min_chars or not re.search(r"\w", text):
                 continue
             ordinal += 1
             yield {"passage_id": passage_id(dump_date, page["page_id"], page["revision_id"], section, ordinal, text),
