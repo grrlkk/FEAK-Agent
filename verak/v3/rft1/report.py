@@ -199,6 +199,17 @@ def write_report(config, condition='rft1'):
         if recovery_path.exists():
             metrics['reward_recovery_validation'] = {'path': str(recovery_path), 'sha256': file_sha(recovery_path),
                                                        'result': read_json(recovery_path)}
+        saved_audit_path = root / 'validation/saved_reward_score_validation_summary.json'
+        if saved_audit_path.exists():
+            saved_audit = read_json(saved_audit_path)
+            if saved_audit['status'] != 'complete' or any(saved_audit[key] for key in
+                    ('mismatch_files', 'selection_entry_mismatches', 'reference_cache_disagreement_files',
+                     'threshold_0_80_changed')):
+                raise ValueError('Saved-score reward validation has unresolved differences')
+            full_audit_path = root / 'validation/saved_reward_score_validation.json'
+            metrics['saved_score_reward_audit'] = {'summary_path': str(saved_audit_path),
+                'summary_sha256': file_sha(saved_audit_path), 'full_path': str(full_audit_path),
+                'full_sha256': file_sha(full_audit_path), 'result': saved_audit}
         rollout = read_json(root / 'rollout_status.json')
         lines = ['# VERAK v3 Phase8 — RFT round1', '',
             'One authorized rejection-sampling round from the accepted SFT epoch2 pair. No round2, DPO, '
@@ -267,6 +278,26 @@ def write_report(config, condition='rft1'):
                 f'Missing files by attempt: `{validation["missing_by_attempt"]}`. '
                 'The cache-only restoration needed no new scorer or Bareun calls. Missing provisional '
                 'CPU comparisons remain unknown and are not used for training selection.', '']
+        if 'saved_score_reward_audit' in metrics:
+            saved = metrics['saved_score_reward_audit']
+            validation = saved['result']
+            lines += ['### Rollout and original SFT-teacher reward validation', '',
+                table(['source', 'files', 'full rewards', 'GLOBAL-only rewards', 'no reward'],
+                    [[name, row['files'], row['full_reward_files'], row['global_only_files'],
+                      row['without_reward_files']] for name, row in validation['coverage'].items()]), '',
+                f"All available saved scores matched {validation['unique_reference_cache_scores_checked']} "
+                'distinct question/text keys in the frozen GPU-reference caches. '
+                f"Maximum absolute R_q difference: {validation['max_abs_R_q_error']}; "
+                f"maximum total-R difference: {validation['max_abs_R_error']} "
+                f"(tolerance {validation['numeric_absolute_tolerance']}). "
+                f"Threshold-0.80 changes: {validation['threshold_0_80_changed']}. "
+                f"All {validation['current_non_extra_RFT_selection_entries_checked']} non-extra selected "
+                'entries matched their file hashes and recomputed rewards. The five previously unscored '
+                'rollouts failed with ScoreParseError and are absent from the training selections.', '',
+                'This is a saved-score consistency audit, not a CPU-versus-GPU comparison. Recovery '
+                'and over-edit components were aggregated from stored detailed evidence; text-level '
+                'linguistic analyses were not repeated. No scorer, GPU, API or Bareun call was made. '
+                f"Full evidence: `{saved['full_path']}` (SHA-256 `{saved['full_sha256']}`).", '']
     else:
         data = metrics['data']
         lines = ['# VERAK v3 — one-shot trained baseline', '',
@@ -340,7 +371,8 @@ def write_report(config, condition='rft1'):
         f"Bounds including unknown units: {markers['lower_bound']}–{markers['upper_bound']}.", '',
         f"Shared A/C Sol ledger at this report: `${metrics['sol_shared_A_C']['confirmed_usd']:.6f}` confirmed, "
         f"`${metrics['sol_shared_A_C'].get('reserved_usd', 0):.6f}` reserved/unknown; cap$3. "
-        'B has its independent$10 ledger. Local GPU generation creates no teacher API charge.', '']
+        'Parallel v4.1 preparation has separate ledgers documented in `V4_SCALE.md`. '
+        'Local GPU generation creates no teacher API charge.', '']
     if condition == 'rft1':
         contexts = metrics['context_audit']['essays']
         lines += ['## Context overflow audit', '',
