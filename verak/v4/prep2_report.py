@@ -118,7 +118,9 @@ def report():
             'Only the current assistant action and end-of-turn receive loss; all observations are masked. '
             'No adapter was trained. Export checks/hashes are saved under `D/export/contract.json`.', '']
     else:
-        lines += ['D collection is still in progress. No final STOP/kept rate is claimed.', '']
+        status=read_json(ROOT/'D/status.json') if (ROOT/'D/status.json').exists() else {}
+        lines += [f'D collection is still in progress: {status.get("processed",0)}/100 source jobs finished; '
+            'no final STOP/kept rate is claimed.', '']
     lines += [f'D confirmed ${da["confirmed_usd"]:.6f}; reserved ${da["reserved_usd"]:.6f}; pending {da["pending"]}; cap $10.', '',
         '## Scorer labels: file-only audit','']
     if labels:
