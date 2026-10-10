@@ -213,7 +213,9 @@ def report(root=ROOT):
     lines = ['### B4. Local Korean Wikipedia search', '',
              f"Dump **{value['dump']['dump_date']}**, official size/SHA1 verified; {value['extraction']['retained_articles']:,} retained articles and {value['index']['passages']:,} paragraph passages.",
              'CC BY-SA 4.0 article title, article URL, revision URL and license metadata are retained with every passage. '
-             'Stable passage IDs include dump date, page/revision IDs and section/paragraph content hash.', '',
+             'Stable passage IDs include dump date, page/revision IDs and section/paragraph content hash. '
+             'Templates and formula markup are not expanded; some mathematical passages therefore lose formula context. '
+             'The page-type exclusions use explicit metadata/title/template/category heuristics, not a semantic classifier.', '',
              'Kiwi tokenization and memory-mapped BM25 (Lucene, k1=1.5, b=.75) run locally and SEARCH returns at most three passages. '
              'No embeddings, GPU use or teacher integration. Any later passage-based INSERT must paraphrase and cite both title and passage_id; no such INSERT was generated here.', '',
              'Normal search sends no essay or query outside this server. The separately authorized offline Sol check sends only each of 50 frozen train items, '
@@ -224,6 +226,8 @@ def report(root=ROOT):
         counts = stats['counts']; n = stats['judged']
         cells = [f"{counts.get(k,0)}/{n} ({100*counts.get(k,0)/n:.1f}%)" if n else '0/0' for k in ('yes', 'partly', 'no')]
         lines.append(f"|{genre}|{n}|" + '|'.join(cells) + '|')
+    lines += ['', '|Excluded pages|Count|', '|---|---:|']
+    lines += [f'|{reason}|{count:,}|' for reason, count in sorted(value['extraction']['drops'].items())]
     lines += ['', 'Five examples (one per genre first, then distinct items in fixed order):', '']
     sources = {x['item_id']: x for x in sample['items']}
     for number, result in enumerate(examples, 1):
