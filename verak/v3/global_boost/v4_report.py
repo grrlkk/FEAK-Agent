@@ -11,12 +11,63 @@ from .paid import BoostAPI
 from .prepare import corpus, safe_id
 
 
+def scorer_comparison_lines(audit, changes):
+    """Numerical diagnostics only; never provide the final teacher rewards."""
+    sources = audit.get('unique_source_essays', 0)
+    if audit.get('status') != 'complete' or sources < 200 or audit.get('unknown_essays') != 0:
+        raise ValueError('Final A report requires the completed audit of at least 200 distinct source essays')
+    generated = audit['generated_digit_agreement_by_rubric']
+    argmax = audit['argmax_digit_agreement_by_rubric']
+    if len(generated) != 8 or len(argmax) != 8:
+        raise ValueError('Final A report requires all eight rubric agreement measurements')
+    rubrics = ('과제충실성', '설명명료성', '설명구체성', '설명적절성',
+               '문장연결성', '글통일성', '어휘적절성', '어법적절성')
+    lines = ['CPU–GPU arithmetic audit on the frozen source sample; these diagnostics do not supply final teacher rewards or selections.', '',
+        '| Audit quantity | Value |', '|---|---:|',
+        f"| Distinct source essays | {sources} |",
+        f"| Paired state comparisons | {audit['state_comparisons']} |",
+        f"| Unique scorer inputs compared | {audit['unique_score_inputs_completed']} |",
+        f"| Mean absolute Q_cpu − Q_gpu, across states | {audit['mean_abs_Q_delta']:.6f} |",
+        f"| Maximum absolute Q_cpu − Q_gpu, across states | {audit['max_abs_Q_delta']:.6f} |",
+        f"| Mean absolute Q_cpu − Q_gpu, unique inputs | {audit['unique_input_mean_abs_Q_delta']:.6f} |",
+        f"| Unknown source essays | {audit['unknown_essays']} |",
+        f"| Generated score-line changes | {audit['score_line_changes']} / {audit['state_comparisons']} |", '',
+        '| Rubric | Generated score-line digit agreement | Teacher-forced argmax digit agreement |',
+        '|---|---:|---:|']
+    lines += [f'| {rubric} | {generated[i]:.2%} | {argmax[i]:.2%} |' for i, rubric in enumerate(rubrics)]
+    lines += ['', '| Audit role | R ≥ 0.80 threshold flips / paired decisions |', '|---|---:|',
+        f"| GLOBAL | {audit['selection_changes_by_role']['global']} / {sources} |",
+        f"| KOREAN | {audit['selection_changes_by_role']['korean']} / {sources} |", '',
+        f"GLOBAL threshold flips restricted to essays with GLOBAL records: {audit['global_record_selection_changes']}. "
+        'These are role-reward threshold tests; the separate STOP/rejection gates and best-attempt/source-cap selection are not part of this audit statistic. '
+        'The sample uses genre quotas and threshold stress cases; its observed errors are not population estimates or universal error bounds.', '',
+        'New GLOBAL teacher comparison at the immutable handoff snapshot:', '',
+        '| Comparison quantity | Count |', '|---|---:|',
+        f"| Attempts with observed provisional and GPU outcomes | {changes['attempts_compared']} |",
+        f"| Attempts with unknown comparison | {changes['attempts_unknown']} |",
+        f"| Attempts missing a CPU snapshot | {changes['attempts_missing_CPU_snapshot']} |",
+        f"| GLOBAL eligibility flips (R/STOP/rejection gates) | {changes['attempt_eligibility_flip_count']} / {changes['attempts_compared']} |",
+        f"| Fully observed practices for best-attempt comparison | {changes['practices_compared']} |",
+        f"| Practices with unknown best-attempt comparison | {changes['practices_unknown']} |",
+        f"| Best-attempt or membership changes, before source cap | {changes['best_attempt_or_membership_change_count']} / {changes['practices_compared']} |",
+        f"| Provisional selected practices, comparable subset | {changes['cpu_provisional_selected']} |",
+        f"| GPU selected practices before source cap, same comparable subset | {changes['gpu_selected_before_cap_in_comparable_practices']} |", '',
+        'Absent CPU snapshots are unknown, never failed eligibility decisions. Best-attempt comparison includes a practice only when every saved attempt has both observations. '
+        'The provisional comparator explicitly mixes CPU scores, exact-input/exact-fingerprint saved GPU cache hits, and identity-proven zero deltas. '
+        'All final reward and selection tables use GPU-reference values for every available raw attempt.', '']
+    return lines
+
+
 def report(config,approval):
     root=root_for(config)
     plan=read_json(root/'v4/plan.json')
     selection=read_json(root/'gpu_selection.json')
     if selection['score_source']!='gpu_reference' or selection['fingerprint']!=approval['fingerprint']:
         raise ValueError('Final diverse-data report requires the completed GPU reference selection')
+    if file_sha(approval['calibration_path']) != approval['calibration_sha256']:
+        raise ValueError('Approved 200-source CPU/GPU audit changed')
+    audit = read_json(approval['calibration_path'])
+    comparison_lines = scorer_comparison_lines(audit, selection['selection_changes'])
     selected=selection['selected']
     all_sources,new_sources=set(),set()
     values={op:{'requested':400,'generated':0,'qc':{'generated':0,'judged':0,'passed':0,'unknown':0},
@@ -95,6 +146,7 @@ def report(config,approval):
         value['termination']={r:dict(c) for r,c in value['termination'].items()}
     api=BoostAPI(config,0);account=api.accounting();api.close()
     if account['confirmed_usd']+account['reserved_usd']>40+1e-8:raise ValueError('Cumulative GLOBAL $40 cap exceeded')
+    if account['pending']:raise ValueError('Final A report cannot close live paid calls')
     manifest=read_json(root/'gpu_rescore_manifest.json')
     status=read_json(root/'expansion_status.json')
     result={'phase':PHASE,'task_version':'v4_prep','aggregate':True,'operators':values,
@@ -110,7 +162,8 @@ def report(config,approval):
         'rescue_status':read_json(root/'v4/rescue_status.json') if (root/'v4/rescue_status.json').exists() else None,
         'api':account,'budget_usd_cumulative':40,'historical_spending_included':True,
         'score_source':'gpu_reference','gpu_reference_rescoring_used':True,'canonical_for_selection':True,
-        'scorer_approval':approval,'cpu_score_audit':read_json(approval['calibration_path']),
+        'scorer_approval':approval,'cpu_score_audit':audit,
+        'terminal_measurement_errors':selection.get('failed_gpu_episodes',[]),'measurements_finished':True,
         'provisional_score_sources':manifest['provisional_score_sources'],
         'score_device_observations':{'gpu_reference':sum(v['global_reward_measured']*2 for v in values.values())},
         'selection_rule':'GLOBAL R>=.80, valid terminal STOP, rejected actions<=1; best attempt/practice then max4/source/operator by GPU R; frozen source holdouts excluded.',
@@ -141,15 +194,7 @@ def report(config,approval):
         'Only practices with two completed, non-fully-recovering Luna attempts qualified. Sol used low reasoning and4096 output tokens for GLOBAL; KOREAN remained Luna low/1024. '
         'Policy targets contain action JSON only, limited to1024 policy tokens; inference context remained8192.',
         '',f"Cumulative cost including all legacy collection: ${account['confirmed_usd']:.6f}; reserved ${account['reserved_usd']:.6f}; cap$40; pending {account['pending']}.",
-        '',f"Provisional-to-GPU attempt eligibility flips: {selection['selection_changes']['attempt_eligibility_flip_count']}; "
-        f"best-attempt/membership changes before source-cap filtering: {selection['selection_changes']['best_attempt_or_membership_change_count']}.",
-        f"Comparison coverage: {selection['selection_changes'].get('attempts_compared', 'NA')} observed attempts, "
-        f"{selection['selection_changes'].get('attempts_unknown', 'NA')} unknown; "
-        f"{selection['selection_changes'].get('practices_compared', 'NA')} fully observed practices, "
-        f"{selection['selection_changes'].get('practices_unknown', 'NA')} unknown. "
-        'An absent CPU snapshot is unknown, never a failed eligibility decision. GPU-only selection covers every available raw attempt.',
-        'The provisional comparator explicitly mixes CPU results, exact-input/exact-fingerprint saved GPU cache hits and identity-proven zero deltas. '
-        'It supplies no final reward or selection. The >=200-source audit is recorded separately; all final values use GPU reference scores.',
+        '',*comparison_lines,
         '',f"Stop reason: {status['stop_reason']}. No KOREAN data selected; no GPU calls or training started by this component.",'']
     text='\n'.join(lines)
     (root/'component_report.md').write_text(text,encoding='utf-8')

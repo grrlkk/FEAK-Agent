@@ -253,3 +253,63 @@ def test_teacher_complete_handoff_freezes_all_inputs_without_waiting_for_cpu(tmp
     account['pending']=1
     with pytest.raises(RuntimeError,match='paid calls are live'):
         module.freeze_ready(config)
+
+
+def _completed_audit_fixture():
+    audit={'status':'complete','source_essays':200,'unique_source_essays':200,'unknown_essays':0,
+        'state_comparisons':600,'unique_score_inputs_completed':534,'mean_abs_Q_delta':.123456,
+        'max_abs_Q_delta':.654321,'unique_input_mean_abs_Q_delta':.111111,
+        'generated_digit_agreement_by_rubric':[.91,.92,.93,.94,.95,.96,.97,.98],
+        'argmax_digit_agreement_by_rubric':[.98]*8,'score_line_changes':23,
+        'selection_changes_by_role':{'global':3,'korean':5},'global_record_selection_changes':2}
+    changes={'attempts_compared':12,'attempts_unknown':4,'attempts_missing_CPU_snapshot':3,
+        'attempt_eligibility_flip_count':2,'practices_compared':5,'practices_unknown':3,
+        'best_attempt_or_membership_change_count':1,'cpu_provisional_selected':3,
+        'gpu_selected_before_cap_in_comparable_practices':4}
+    return audit,changes
+
+
+def test_final_report_prints_numeric_audit_and_observed_selection_denominators():
+    from verak.v3.global_boost.v4_report import scorer_comparison_lines
+    audit,changes=_completed_audit_fixture()
+    text='\n'.join(scorer_comparison_lines(audit,changes))
+    for number in ('0.123456','0.654321','0.111111','534','23 / 600','3 / 200','5 / 200','2 / 12','1 / 5'):
+        assert number in text
+    for i in range(91,99):
+        assert f'{i}.00%' in text
+    assert '| Attempts with unknown comparison | 4 |' in text
+    assert '| Practices with unknown best-attempt comparison | 3 |' in text
+    assert 'saved GPU cache hits' in text and 'not population estimates' in text
+    for value in ({**audit,'status':'incomplete'},{**audit,'unique_source_essays':199},{**audit,'unknown_essays':1}):
+        with pytest.raises(ValueError,match='at least 200 distinct'):
+            scorer_comparison_lines(value,changes)
+
+
+def test_final_v4_metrics_copies_keep_identical_completion_metadata(tmp_path,monkeypatch):
+    from verak.v3.common import file_sha
+    from verak.v3.global_boost import v4_report as module
+    config=config_for();root=tmp_path/'global';config['paths'][PHASE+'_output']=root
+    audit,changes=_completed_audit_fixture()
+    audit_path=tmp_path/'audit_200/calibration.json';write_json(audit_path,audit)
+    approval={'fingerprint':'gpu-reference','calibration_path':str(audit_path),'calibration_sha256':file_sha(audit_path)}
+    plan={'old_raw_counts':{'G_PARA_SWAP':0,'G_SENT_MOVE':0},
+        'old_source_capped_counts':{'G_PARA_SWAP':0,'G_SENT_MOVE':0},'source_inventory':{'counts':{}}}
+    write_json(root/'v4/plan.json',plan)
+    terminal=[{'episode_id':'failed','attempt':1,'failed_input_keys':['failed-key']}]
+    write_json(root/'gpu_selection.json',{'score_source':'gpu_reference','fingerprint':'gpu-reference','selected':{},
+        'selection_changes':changes,'source_cap_exclusions':[],'gpu_eligible_before_source_cap':0,'failed_gpu_episodes':terminal})
+    write_json(root/'gpu_rescore_manifest.json',{'provisional_score_sources':[]})
+    write_json(root/'expansion_status.json',{'stage':'generation_finished','stop_reason':'budget_cap'})
+    write_json(root/'v4/sol_luna_same92.json',{})
+    monkeypatch.setattr(module,'batch_configs',lambda _:[])
+    account={'pending':0,'confirmed_usd':40.,'reserved_usd':0}
+    monkeypatch.setattr(module,'BoostAPI',lambda *_:SimpleNamespace(accounting=lambda:account,close=lambda:None))
+    result=module.report(config,approval)
+    assert result['measurements_finished'] is True and result['terminal_measurement_errors']==terminal
+    assert file_sha(root/'component_metrics.json')==file_sha(root/'v4/component_metrics.json')
+    assert file_sha(root/'component_report.md')==file_sha(root/'v4/component_report.md')
+    assert '0.123456' in (root/'component_report.md').read_text()
+    # The existing finalizer adds these same fields again before its marker.
+    result.update(terminal_measurement_errors=terminal,measurements_finished=True)
+    write_json(root/'component_metrics.json',result)
+    assert file_sha(root/'component_metrics.json')==file_sha(root/'v4/component_metrics.json')
