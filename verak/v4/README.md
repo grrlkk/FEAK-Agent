@@ -1,5 +1,28 @@
 # v4 preparation
 
+## Frozen editor contract (PREP3)
+
+New v4 teachers, future authorized student training and inference share
+`policy_prompts.py`, `prompts/v4_editors.json`, and `policy_env.V4Environment`.
+Do not copy or extend their system prompts. The manifest stores the exact text,
+SHA-256 and pinned-policy token counts (Revision 315, Korean 233).
+The environment enforces scope, a persistent two-successful-INSERT cap,
+delegation limits, notices, terminal STOP and Korean's EDIT/UNDO/STOP actions.
+An Orchestrator supplies public located tasks; raw LLM rubric feedback and
+scores are excluded from editor observations and action-only exports.
+
+`python -m verak.v4.prep3 revalidate` replays saved maps without API calls.
+`maps`, `rejudge`, and `content` are separately resumable CPU/API collections
+with $15/$3/$10 hard caps; `report` reads their local artifacts. No command
+trains, starts a scorer, or changes RFT1. D3 has at most one planned INSERT
+task per essay; the shared editor environment still caps successful INSERTs
+at two. D3 judges introduced awkwardness, not pre-existing student errors.
+
+The earlier PREP1/PREP2 entry points below describe historical experiments.
+Their completed request caches and original prompts remain reproducible;
+new editor dispatches with legacy prompts are rejected. Never relabel their
+observations with frozen prompts to manufacture matching training examples.
+
 `imple/FEAK_AGENT_METHOD.md` and the user's approved preparation scope define
 this pilot. This package starts no model training or GPU scorer. It uses the
 existing durable API accounting and low-priority local Bareun queue.

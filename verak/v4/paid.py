@@ -24,6 +24,11 @@ class PrepAPI(BulkAPI):
         with self.db() as db:
             prior = db.execute("SELECT id,status FROM calls WHERE fingerprint=? AND status!='blocked_before_send' ORDER BY id",
                                (fingerprint,)).fetchall()
+        # Completed legacy requests remain readable. Newly dispatched v4 editor
+        # calls use the canonical frozen policy; v3/RFT uses separate clients.
+        if 'teacher' in stage and not any(status == 'completed' for _, status in prior):
+            from .policy_prompts import assert_editor_request
+            assert_editor_request(messages)
         if prior and not any(status == 'completed' for _, status in prior):
             raise RuntimeError(f'Preserved prior API outcome {prior}; no silent regeneration')
         return Phase6API.request(self, messages, stage=stage, item_id=item_id,
