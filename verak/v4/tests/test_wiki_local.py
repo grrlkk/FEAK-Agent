@@ -113,6 +113,7 @@ def test_real_local_pipeline_without_network(tmp_path, monkeypatch):
     import socket
     from xml.sax.saxutils import escape
     from verak.v4.wiki_build import constrain, digest, extract, index, tokenize, write
+    from verak.v4.wiki_eval import verify_index_artifacts
     constrain()
     monkeypatch.setattr(socket, 'getaddrinfo', lambda *a, **k: (_ for _ in ()).throw(AssertionError('network forbidden')))
     articles = [
@@ -130,6 +131,7 @@ def test_real_local_pipeline_without_network(tmp_path, monkeypatch):
     assert extracted['drops']['list_page'] == 1 and extracted['drops']['disambiguation'] == 1
     tokenize(tmp_path); built = index(tmp_path)
     assert built['passages'] == 4
+    assert verify_index_artifacts(tmp_path) == digest(tmp_path / 'index_complete.json')
     engine = LocalWikiSearch(tmp_path)
     try:
         hits = engine.search('지구 대기 생명체')
@@ -139,3 +141,7 @@ def test_real_local_pipeline_without_network(tmp_path, monkeypatch):
         assert engine.search('') == []
     finally:
         engine.close()
+    artifact = tmp_path / 'bm25' / next(iter(built['artifacts']))
+    artifact.write_bytes(artifact.read_bytes() + b'changed')
+    with pytest.raises(ValueError, match='index artifact changed'):
+        verify_index_artifacts(tmp_path)

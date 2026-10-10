@@ -93,6 +93,19 @@ def schema(properties):
     return {'type': 'object', 'properties': properties, 'required': list(properties), 'additionalProperties': False}
 
 
+def verify_index_artifacts(root):
+    manifest = read(root / 'index_complete.json')
+    if manifest.get('complete') is not True:
+        raise ValueError('Complete the frozen local index before paid evaluation')
+    for name, metadata in manifest['artifacts'].items():
+        if Path(name).name != name:
+            raise ValueError('Index artifact must be a local file name')
+        path = root / 'bm25' / name
+        if path.stat().st_size != metadata['bytes'] or digest(path) != metadata['sha256']:
+            raise ValueError(f'Frozen local index artifact changed: {name}')
+    return digest(root / 'index_complete.json')
+
+
 def api_for(root=ROOT):
     # Parent approval follows v4.2 environment freezing, independently of B1.
     authorization = read(root / 'eval/paid_authorization.json')
@@ -100,8 +113,7 @@ def api_for(root=ROOT):
         raise ValueError('Wait for the v4.2 environment decision before any new paid call')
     if digest(authorization['environment_contract_path']) != authorization['environment_contract_sha256']:
         raise ValueError('Frozen v4.2 environment contract changed')
-    if read(root / 'index_complete.json').get('complete') is not True:
-        raise ValueError('Complete the frozen local index before paid evaluation')
+    index_snapshot_sha256 = verify_index_artifacts(root)
     from .common import load_config
     from .paid import PrepAPI
     from verak.v3.v2_ops.local import load_environment
@@ -115,6 +127,7 @@ def api_for(root=ROOT):
                 'max_concurrent_requests': 1, 'rates_usd_per_million_tokens': RATES['gpt-6.1-sol'],
                 'query_prompt_sha256': sha(QUERY_PROMPT), 'judge_prompt_sha256': sha(JUDGE_PROMPT),
                 'sample_sha256': digest(root / 'eval/sample.json'), 'index_contract_sha256': digest(root / 'index_contract.json'),
+                'index_snapshot_sha256': index_snapshot_sha256,
                 'local_search_has_no_API': True, 'external_evaluation_exception': '50 fixed items, short located excerpts and top-three passages only; no complete essays',
                 'budget_guard': 'SQLite transaction reserves conservative UTF-8-byte upper bound plus output limit before dispatch; confirmed+reserved <= $2'}
     frozen(root / 'eval/contract.json', contract)
