@@ -181,3 +181,12 @@ def test_report_categories_keep_multi_json_invalid_and_no_adjusted_gate(env):
         {'by_stage':{'teacher':{'logical_requests':1}}})
     assert metrics['returned_action_calls']==1 and metrics['invalid_actions']==1
     assert metrics['primary_gate_pass'] is False
+
+
+def test_gate_keeps_numerical_rule_while_B4_is_independent():
+    from verak.v4.smoke42_report import gate_fields
+    for numerical,started in ((False,True),(True,False),(True,True)):
+        gate=gate_fields({'primary_gate_pass':numerical,'valid_actions':90,'returned_action_calls':100},started)
+        assert gate['passed']==(numerical and started)
+        assert gate['stop_B2_B3']==gate['stop_all_B']==(not gate['passed'])
+        assert gate['B4_independent'] is True
