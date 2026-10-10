@@ -488,7 +488,7 @@ def report(root=ROOT, *, tokenizer=None):
         f"{stats['test_question_inventory']['frozen_test_cohort_missing']} cohort. "
         f"Earlier-cohort exclusions cover {stats['prior_distinct_sources']} distinct source IDs and their normalized-text duplicates.", '',
         f"Confirmed B2 cost ${account['confirmed_usd']:.8f}; reserved ${account['reserved_usd']:.8f}; "
-        f"three-smoke-plus-B2 total ${account['cumulative_confirmed_and_reserved_usd']:.8f}/$50.",
+        f"three-smoke-plus-B2 total ${account['cumulative_confirmed_and_reserved_usd']:.8f}/${account['cumulative_content_cap_usd']:g}.",
         f"Search tasks {stats['search_items']}; local searches {stats['search_calls']}; sourced insertions {stats['sourced_insertions']}. "
         f"Support judged {stats['source_support']['judged_cited_sentences']}/{stats['source_support']['cited_sentences']} cited sentences; "
         f"supported {stats['source_support']['supported_cited_sentences']}; paraphrased {stats['source_support']['paraphrased_cited_sentences']}.",

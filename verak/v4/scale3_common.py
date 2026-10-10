@@ -1,7 +1,8 @@
 """Gated v4.3 scale contracts; importing this module never starts work.
 
 The smoke and scale ledgers are separate. B2 may open its ledger only after
-all three smoke ledgers are settled and frozen, so their sum cannot exceed $50.
+all three smoke ledgers are settled and frozen. The default cumulative cap is
+$50; the explicit budget-only amendment below can authorize exactly $100.
 B3 has its own $30 ledger. Neither component owns a GPU or training process.
 """
 from collections import Counter
@@ -159,19 +160,59 @@ def reward_contract():
                           for m in (total, recovery, overedit)}}
 
 
+def effective_budget(component, root=ROOT):
+    """Read the original cap or the sole authorized, immutable B2 amendment.
+
+    Activation is owned by the root controller after draining live B2 workers.
+    Existing API objects keep their settings until clean resume; this helper
+    never edits a contract, dispatches work, or changes saved-outcome handling.
+    """
+    if component not in {'B2', 'B3'}:
+        raise ValueError('Only B2/B3 have scale budgets')
+    root = Path(root)
+    contract_path = root/component/'contract.json'
+    contract = read_json(contract_path)
+    result = {'component_cap_usd': contract['cap_usd'],
+        'cumulative_content_cap_usd': CONTENT_CAP if component == 'B2' else None,
+        'budget_amendment_path': None, 'budget_amendment_sha256': None}
+    path = root/component/'budget_amendment.json'
+    if not path.exists():
+        return result
+    if component != 'B2':
+        raise ValueError('No B3 budget amendment is authorized')
+    prior = contract['smoke']['prior_confirmed_usd']
+    if (contract.get('component') != 'B2' or contract.get('cumulative_content_cap_usd') != CONTENT_CAP
+            or not 0 <= prior < CONTENT_CAP or contract['cap_usd'] != CONTENT_CAP-prior):
+        raise ValueError('Budget amendment requires the unchanged original $50 B2 contract')
+    expected = {'schema_version': 1, 'component': 'B2',
+        'original_contract_sha256': file_sha(contract_path),
+        'original_cumulative_content_cap_usd': CONTENT_CAP,
+        'new_cumulative_content_cap_usd': 100., 'prior_smoke_confirmed_usd': prior,
+        'authorization': 'explicit_user_B2_budget_only_20261011',
+        'collection_contract_unchanged': True, 'context_failures_retry': False}
+    amendment = read_json(path)
+    if (amendment != expected or type(amendment.get('schema_version')) is not int
+            or amendment.get('collection_contract_unchanged') is not True
+            or amendment.get('context_failures_retry') is not False):
+        raise ValueError('Invalid or unauthorized B2 budget amendment')
+    return {**result, 'component_cap_usd': 100.-prior, 'cumulative_content_cap_usd': 100.,
+        'budget_amendment_path': str(path), 'budget_amendment_sha256': file_sha(path)}
+
+
 def api_for(component, kind='luna', *, root=ROOT):
     """Opening an API ledger is itself gated. No API object exists during prep."""
     from verak.v3.v2_ops.local import load_environment
     from .runtime_v43 import VersionedAPI
     if kind not in {'luna', 'sol'} or (component == 'B3' and kind != 'luna'):
         raise ValueError('Unexpected paid model for this scale component')
-    contract = component_contract(component, root)
+    component_contract(component, root)
+    budget = effective_budget(component, root)
     config = load_config()
     load_environment(config)
     luna = read_json(config['paths']['phase4_output']/'models.json')['luna_model']
     phase = 'v43_scale_' + component.lower()
     config[phase] = {'model': luna if kind == 'luna' else 'gpt-6.1-sol',
-        'max_cost_usd': contract['cap_usd'], 'max_concurrent_requests': MAX_WORKERS[component],
+        'max_cost_usd': budget['component_cap_usd'], 'max_concurrent_requests': MAX_WORKERS[component],
         'phase_api_ceiling': 100000}
     config['paths'][phase+'_output'] = Path(root)/component
     api = VersionedAPI(config, 100000, phase=phase)
@@ -183,14 +224,15 @@ def component_accounting(component, root=ROOT):
     root = Path(root)
     account = accounting(root/component/'api/ledger.sqlite')
     contract = read_json(root/component/'contract.json')
+    budget = effective_budget(component, root)
     total = account['confirmed_usd'] + account['reserved_usd']
-    if total > contract['cap_usd']+1e-9:
-        raise ValueError('Component ledger exceeded its frozen cap')
+    if total > budget['component_cap_usd']+1e-9:
+        raise ValueError('Component ledger exceeded its effective cap')
     if component == 'B2':
         total += contract['smoke']['prior_confirmed_usd']
-        if total > CONTENT_CAP+1e-9:
+        if total > budget['cumulative_content_cap_usd']+1e-9:
             raise ValueError('Cumulative content ledger cap exceeded')
-    return {**account, 'component_cap_usd': contract['cap_usd'],
+    return {**account, **budget,
         'cumulative_confirmed_and_reserved_usd': total}
 
 
