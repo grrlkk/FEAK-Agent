@@ -100,6 +100,8 @@ def api_for(root=ROOT):
         raise ValueError('Wait for the v4.2 environment decision before any new paid call')
     if digest(authorization['environment_contract_path']) != authorization['environment_contract_sha256']:
         raise ValueError('Frozen v4.2 environment contract changed')
+    if read(root / 'index_complete.json').get('complete') is not True:
+        raise ValueError('Complete the frozen local index before paid evaluation')
     from .common import load_config
     from .paid import PrepAPI
     from verak.v3.v2_ops.local import load_environment
