@@ -114,6 +114,18 @@ def render():
         '## D. Revision content/expression','']
     dp=ROOT/'D/report.md'
     lines.append(dp.read_text() if dp.exists() else 'The bounded 100-essay, two-attempt pilot starts after B.')
+    validation=optional(ROOT/'D/export_validation.json')
+    if validation:
+        for role,checks in validation['roles'].items():
+            if checks['sha256']!=file_sha(ROOT/f'D/export/{role}.jsonl'):
+                raise ValueError('D export changed after its offline validation')
+        r,k=(validation['roles'][role] for role in ('revision','korean'))
+        lines+=['',f'The actual exported data was checked offline with the pinned tokenizer: '
+            f'{r["action_targets"]+k["action_targets"]:,} action targets '
+            f'({r["action_targets"]} Revision / {k["action_targets"]} Korean); every observation prefix is masked, '
+            'with no full feedback-problem text, private item ID, or private prompt in observations. '
+            f'Maximum lengths are {r["max_tokens"]:,} and {k["max_tokens"]:,} tokens respectively, below 8,192. '
+            'These are data-contract checks, not a human quality judgment.']
     manual=ROOT/'D/manual_review_50.md'
     if manual.exists():
         target=REPO/'imple/reports/V4_CONTENT_REVIEW_50.md'

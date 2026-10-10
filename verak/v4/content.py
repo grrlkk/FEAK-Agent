@@ -324,14 +324,26 @@ def report(*,tokenizer=None):
     for role in ('revision','korean'):
         actions=[a for row in attempts for a in row['actions'][role]]
         stats[role]={'action_counts':dict(Counter(a['action'] for a in actions)),
+            'valid_action_counts':dict(Counter(a['action'] for a in actions if a['valid'])),
+            'rejected_action_counts':dict(Counter(a['action'] for a in actions if not a['valid'])),
             'valid_actions':sum(a['valid'] for a in actions),'all_actions':len(actions),
             'endings':dict(Counter(row['termination'].get(role,'not_started') for row in attempts))}
+    kept=[c for c in cases if c['selection']['quality_keep']]
+    item_status={}
+    for case in cases:
+        owners={x['item_id']:x['owner'] for x in case['items']}
+        for verdict in case['verdict']['items']:
+            owner=owners[verdict['item_id']]
+            item_status.setdefault(owner,Counter())[verdict['status']]+=1
     values={'component':'D','requested_essays':100,'attempts_collected':len(attempts),'judged_essays':judged,
         'quality_kept_attempts':sum(c['selection']['quality_keep'] for c in cases),
         'export_kept_attempts':sum(c['selection']['export_keep'] for c in cases),
         'distinct_export_sources':len({c['source_id'] for c in cases if c['selection']['export_keep']}),
         'judged_attempts':len(cases),'preferences':dict(preferences),'roles':stats,'export':exported,
         'manual_review_cases':len(review),'selection_denominator':design['selection_denominator'],
+        'quality_kept_both_roles_stop':sum(c['attempt']['complete'] for c in kept),
+        'quality_kept_by_genre':dict(Counter(c['genre'] for c in kept)),
+        'judged_item_status_by_owner':{owner:dict(counts) for owner,counts in item_status.items()},
         'quality_failure_counts':{k:sum(not c['selection']['criteria'][k] for c in cases) for k in
             ('invented_no','meaning_yes','better_yes','at_least_half_addressed')},
         'errors':errors,'teacher_errors':[{'source_id':a['source_id'],'attempt':a['attempt'],
@@ -347,10 +359,31 @@ def report(*,tokenizer=None):
         'Only the requested four quality conditions gate D; no extra terminal-STOP selection gate is imposed.',
         'Only valid action targets are exported. Teacher items/scores are absent from public observations; '
         'observations, marker notices, and tool results have label -100. No training was started.','',
-        '|Role|Attempts|STOP|Step limit|Valid actions|All actions|','|---|---:|---:|---:|---:|---:|']
+        '|Role|Attempts|STOP|Step limit|Consecutive rejections|Context limit|Not started|Valid actions|All actions|',
+        '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for role,s in stats.items():
-        lines.append(f'|{role}|{len(attempts)}|{s["endings"].get("STOP",0)}|{s["endings"].get("step_limit",0)}|{s["valid_actions"]}|{s["all_actions"]}|')
+        ending=s['endings']
+        lines.append(f'|{role}|{len(attempts)}|{ending.get("STOP",0)}|{ending.get("step_limit",0)}|'
+            f'{ending.get("consecutive_rejections",0)}|{ending.get("context_limit",0)+ending.get("target_context_limit",0)}|'
+            f'{ending.get("not_started",0)}|{s["valid_actions"]}|{s["all_actions"]}|')
+    lines+=['',f'Both roles reached STOP in {values["quality_kept_both_roles_stop"]}/{len(kept)} quality-kept attempts. '
+        'The other kept attempts remain bounded partial demonstrations; their ending is not relabeled STOP.',
+        '', '|Role|Action|Valid|Rejected|','|---|---|---:|---:|']
+    for role,s in stats.items():
+        for action in sorted(s['action_counts']):
+            lines.append(f'|{role}|{action}|{s["valid_action_counts"].get(action,0)}|{s["rejected_action_counts"].get(action,0)}|')
+    lines+=['','|Item owner|Addressed|Partly|Not addressed|','|---|---:|---:|---:|']
+    for owner,counts in sorted(item_status.items()):
+        lines.append(f'|{owner}|{counts.get("addressed",0)}|{counts.get("partly",0)}|{counts.get("not",0)}|')
+    lines+=['','Item counts include both independently judged attempts. Writer-only items are outside the selection denominator.',
+        '',f'Teacher execution errors: {len(values["teacher_errors"])}; judge errors: {len(errors)}. '
+        'Saved final states were still judged, with execution status disclosed to the judge; no failed attempt was silently regenerated.','']
+    for error in values['teacher_errors']:
+        lines.append(f'- {error["source_id"]}, attempt {error["attempt"]}: {error["error"]}')
     lines+=['','Quality failure counts (overlapping): '+dumps(values['quality_failure_counts']),
+        '', 'The Revision Agent reached its step limit in most attempts. Each teacher call saw the current essay and '
+        'the fixed private item list, with a compact action/validity log; repeated edits and limited task completion '
+        'remain pilot findings, not evidence that the exported data is ready for scaling.',
         '',f'Manual review: {root/"manual_review_50.md"} ({len(review)} cases).',
         '',f'Confirmed cost ${values["api"]["confirmed_usd"]:.6f}; reservation ${values["api"]["reserved_usd"]:.6f}; cap $15.','']
     (root/'report.md').write_text('\n'.join(lines))
