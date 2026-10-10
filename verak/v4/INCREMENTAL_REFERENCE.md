@@ -26,7 +26,9 @@ requirements are not used by this new, user-authorized physical-GPU0 entry point
   agreement are saved. Any failed calibration prevents all B3 scoring, including
   on resume. Saved inference errors are preserved rather than retried.
 - Shared old `data_boost/gpu_rescore/worker.lock`, plus B3's scorer/dispatch locks.
-  Nothing kills or pauses another process. One worker uses eight CPU threads.
+  Only this same watch process's retained CUDA context may already occupy GPU0;
+  foreign or malformed PID entries fail closed. Nothing kills or pauses another
+  process. One worker uses eight CPU threads.
 
 ## Root-owned dispatch
 

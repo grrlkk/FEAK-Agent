@@ -212,7 +212,12 @@ def ensure_gpu0_only():
     # This deliberately excludes GPU1: another authorized job may occupy it.
     query = subprocess.run(['nvidia-smi', '-i', '0', '--query-compute-apps=pid',
                             '--format=csv,noheader,nounits'], check=True, capture_output=True, text=True)
-    if query.stdout.strip():
+    entries = [line.strip() for line in query.stdout.splitlines() if line.strip()]
+    if any(not entry.isascii() or not entry.isdecimal() or int(entry) <= 0 for entry in entries):
+        raise RuntimeError('Cannot verify physical GPU0 ownership from malformed PID output')
+    # Releasing weights does not destroy this watch process's CUDA context.
+    # Only that exact current PID is allowed; no foreign job is ever displaced.
+    if {int(entry) for entry in entries} - {os.getpid()}:
         raise RuntimeError('Physical GPU0 is occupied; no process will be stopped')
 
 

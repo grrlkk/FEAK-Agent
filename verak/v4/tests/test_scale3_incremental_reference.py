@@ -198,6 +198,17 @@ def test_gpu0_check_does_not_require_gpu1_idle(tmp_path, monkeypatch):
     monkeypatch.setattr(inc.subprocess, 'run', run)
     inc.ensure_gpu0_only()
     assert commands == [['nvidia-smi', '-i', '0', '--query-compute-apps=pid', '--format=csv,noheader,nounits']]
+    def output(value):
+        monkeypatch.setattr(inc.subprocess, 'run', lambda *a, **k: type('Result', (), {'stdout': value})())
+    output(str(inc.os.getpid()) + '\n')
+    inc.ensure_gpu0_only()  # The previous batch's own CUDA context is allowed.
+    output(str(inc.os.getpid()) + '\n' + str(inc.os.getpid()+1) + '\n')
+    with pytest.raises(RuntimeError, match='occupied'):
+        inc.ensure_gpu0_only()
+    for malformed in ('N/A\n', '12, 10MiB\n', '-1\n', '0\n', '\u0661\u0662\n'):
+        output(malformed)
+        with pytest.raises(RuntimeError, match='malformed'):
+            inc.ensure_gpu0_only()
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0,1')
     with pytest.raises(RuntimeError, match='Only physical GPU0'):
         inc.ensure_gpu0_only()
