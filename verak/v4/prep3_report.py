@@ -103,7 +103,7 @@ def report():
         lines+=['',f'Revision delegation STOP: {pct(m["delegation_STOP_rate"])} over {m["revision_delegations"]} delegations. '
             f'Endings `{json.dumps(m["delegation_endings"])}`; STOP statuses `{json.dumps(m["delegation_STOP_status"])}`. '
             f'Korean endings `{json.dumps(m["korean_endings"])}`. Valid action rate {pct(m["valid_action_rate"])}. '
-            f'Two-steps-left notices {m["notices_with_two_steps"]}. Maximum successful INSERTs in one attempt {m["max_successful_INSERTs"]}.','',
+            f'Two-steps-left notices in returned action records {m["notices_with_two_steps"]}. Maximum successful INSERTs in one attempt {m["max_successful_INSERTs"]}.','',
             '|Role|Valid action counts|','|---|---|']
         lines += [f'|{r}|`{json.dumps(v)}`|' for r,v in m['actions_by_role'].items()]
         lines+=['',f'Execution status `{json.dumps(m["execution_status"])}`; kept execution status `{json.dumps(m["kept_execution_status"])}`. '
@@ -113,6 +113,25 @@ def report():
             f'{m["manual_review"]["distinct_sources"]} distinct sources, seed 263; shortfall {m["manual_review"]["shortfall"]}. '
             '[Original | items | revised | verdicts](V4_CONTENT_V3_INSERT_REVIEW_15.md). '
             'UNDO-only insertion attempts are excluded from this review sample.','']
+        audit=load(ROOT/'content/action_audit.json')
+        if audit:
+            lines += [f'Protocol completion (no API error and every required stage ends in STOP, including blocked STOP): '
+                f'**{audit["protocol_complete_attempts"]}/200**. Among the {m["kept_attempts"]} quality-kept attempts, '
+                f'{audit["protocol_complete_kept_attempts"]} meet that completion definition. '
+                'Quality retention does not add a STOP gate; an execution status of completed only means the collection loop returned, '
+                'and can include a stage ending at its step limit.','',
+                f'Successful INSERT counts across all attempts: `{json.dumps(audit["INSERT_counts_all_attempts"])}`; '
+                f'among kept attempts: `{json.dumps(audit["INSERT_counts_kept_attempts"])}`. '
+                'The planner permits one INSERT task; the shared environment permits two successful INSERTs. '
+                f'Of {audit["INSERT_counts_all_attempts"].get("2",0)} attempts with two successful INSERTs, '
+                f'{audit["INSERT_counts_kept_attempts"].get("2",0)} were kept; '
+                f'{audit["INSERT_counts_kept_attempts"].get("1",0)} kept attempts used one successful INSERT.','',
+                f'Valid actions: {audit["valid_action_responses"]}/{audit["returned_action_responses"]} returned action responses. '
+                'Mechanical rejection categories are separate from the Sol quality judgments:','',
+                '|Role|Rejected action categories|','|---|---|']
+            lines += [f'|{r}|`{json.dumps(v)}`|' for r,v in audit['invalid_categories_by_role'].items()]
+            lines += ['','The sentence-boundary check also applies to Revision EDIT; a rejection reports the mechanical check, '
+                'not the model’s intent. D v2 rejudging and D v3 use different source cohorts, so their kept rates are not a paired editor comparison.','']
         if 'export' in m:
             lines+=['|Export role|Valid action targets|Source essays|Maximum tokens|','|---|---:|---:|---:|']
             for role,v in m['export'].items(): lines.append(f'|{role}|{v["action_targets"]}|{v["source_essays"]}|{v["max_tokens"]}|')
