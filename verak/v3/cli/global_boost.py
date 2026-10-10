@@ -11,13 +11,20 @@ def main():
         'continue', 'launch', 'restart', 'prefetch', 'prefetch-loop', 'launch-prefetch', 'restart-prefetch',
         'expand', 'launch-expansion', 'restart-expansion', 'expansion-plan', 'prepare-expansion',
         'audit-variants', 'cpu-ready', 'gpu-finalize', 'finalize', 'launch-finalizer', 'restart-finalizer',
-        'v4-stop-legacy', 'v4-compare', 'v4-prepare', 'v4-run', 'v4-launch', 'v4-pre-gpu'])
+        'v4-stop-legacy', 'v4-compare', 'v4-prepare', 'v4-run', 'v4-launch', 'v4-pre-gpu', 'verify-gpu-rewards'])
     parser.add_argument('--max-api-calls', type=int, default=20000)
     parser.add_argument('--limit', type=int)
     args = parser.parse_args()
     constrain_cpu()
     config = config_for()
-    if args.stage in {'v4-stop-legacy', 'v4-compare'}:
+    if args.stage == 'verify-gpu-rewards':
+        from ..global_boost.gpu_recovery import verify_all
+        from ..global_boost.aggregate import gpu_selection_lock
+        from ..global_boost.expansion import root_for
+        with gpu_selection_lock(root_for(config)):
+            value = verify_all(config)
+        result = {k:v for k,v in value.items() if k not in {'artifacts','episodes_verified','paragraph_profiles','source_profiles'}}
+    elif args.stage in {'v4-stop-legacy', 'v4-compare'}:
         from ..global_boost.v4 import stop_legacy, compare_saved
         result = {'v4-stop-legacy': stop_legacy, 'v4-compare': compare_saved}[args.stage](config)
         if args.stage == 'v4-compare':

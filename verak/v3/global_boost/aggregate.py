@@ -311,7 +311,12 @@ def gpu_finalize(config):
         for cfg in configs.values():
             cfg[PHASE].update(measurement_source='gpu_reference', score_fingerprint=complete['fingerprint'],
                 scorer_approval_sha256=file_sha(complete_path))
-            measure(cfg)
+        if v4:
+            from .gpu_recovery import verify_all
+            verify_all(config)
+        else:
+            for cfg in configs.values():
+                measure(cfg)
         selected, flips, failed_episodes = {}, [], []
         raw_ready = manifest.get('schema_version') == 2 and manifest.get('handoff_contract') == 'teacher_complete_gpu_reference_v2'
         if manifest.get('schema_version', 1) != 1 and not raw_ready:
