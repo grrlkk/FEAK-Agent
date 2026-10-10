@@ -153,6 +153,29 @@ def test_oneshot_global_quality_gate_only_when_global_records_exist():
     assert choose_target([(1, row)], corpus)[1] == 'higher_combined_attempt_fails_GLOBAL'
 
 
+def test_oneshot_leading_newline_preserves_inference_tokens_and_teacher_text():
+    from verak.v3.common import load_config
+    from verak.v3.rft1.oneshot import encode_final_essay, messages_for
+    from transformers import AutoTokenizer
+
+    path = load_config()['paths']['policy_base']
+    if not (path / 'tokenizer.json').exists():
+        pytest.skip('Pinned local tokenizer is unavailable')
+    tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True)
+    prompt = messages_for('문학의 역할은 무엇인가?', '문학은 독자에게 경험을 전달한다.')
+    for target in ('\n문학 작품은 독자에게 경험을 전달한다.', '문학은 감정을 전한다.'):
+        full = prompt + [{'role': 'assistant', 'content': target}]
+        encoded = encode_final_essay(tokenizer, full)
+        prefix = tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True)
+        assert encoded['input_ids'][:len(prefix)] == prefix
+        assert encoded['labels'][:len(prefix)] == [-100] * len(prefix)
+        assert encoded['labels'][len(prefix):] == encoded['input_ids'][len(prefix):]
+        assert tokenizer.decode(encoded['input_ids'], skip_special_tokens=False,
+            clean_up_tokenization_spaces=False) == tokenizer.apply_chat_template(
+                full, tokenize=False, add_generation_prompt=False)
+        assert encoded['boundary_tokenization_changed'] == target.startswith('\n')
+
+
 def test_controller_honors_user_hold_before_any_oneshot_work(tmp_path, monkeypatch):
     import json
     from verak.v3.rft1 import config as configuration, service

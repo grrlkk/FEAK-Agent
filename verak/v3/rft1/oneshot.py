@@ -15,7 +15,7 @@ from ..eval.resources import Resources
 from ..phase2 import read_jsonl
 from ..reward.overedit import overedit
 from ..reward.total import rewards
-from ..train.formatting import encode_labels, lengths
+from ..train.formatting import lengths
 from ..train.pilot import safe_id
 from ..train.teacher_bulk import atomic_new, collection_lock
 from ..train.teacher_comparison import absolute_selection
@@ -28,6 +28,31 @@ ONE_SHOT = 'oneshot_baseline'
 def messages_for(question, essay):
     return [{'role': 'system', 'content': REWRITE_PROMPT},
             {'role': 'user', 'content': '[문항]\n' + question + '\n[학생 글]\n' + essay}]
+
+
+def encode_final_essay(tokenizer, messages):
+    """Keep the inference prefix fixed when an essay begins with whitespace.
+
+    Joint BPE encoding can merge the assistant header's final newlines with a
+    leading newline in the teacher text. Generation cannot replace an existing
+    prompt token, so encode its continuation separately, without changing text.
+    This baseline-specific path leaves the v1 action exporter unchanged.
+    """
+    if not messages or messages[-1]['role'] != 'assistant':
+        raise ValueError('One-shot export requires a final assistant essay')
+    prefix = tokenizer.apply_chat_template(messages[:-1], tokenize=False, add_generation_prompt=True)
+    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    if not rendered.startswith(prefix):
+        raise ValueError('Chat template changed the one-shot generation prefix')
+    prompt_ids = tokenizer.apply_chat_template(messages[:-1], tokenize=True, add_generation_prompt=True)
+    continuation = tokenizer.encode(rendered[len(prefix):], add_special_tokens=False)
+    ids = prompt_ids + continuation
+    if tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False) != rendered:
+        raise ValueError('One-shot continuation does not preserve the complete rendered text')
+    joint_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=False)
+    return {'input_ids': ids, 'labels': [-100] * len(prompt_ids) + continuation,
+            'assistant_spans': [[len(prompt_ids), len(ids)]],
+            'boundary_tokenization_changed': ids != joint_ids}
 
 
 def choose_target(attempts, corpus):
@@ -108,7 +133,7 @@ def export(config):
             continue
         messages = messages_for(corpus[eid]['question'], corpus[eid]['corrupted_text'])
         full = messages + [{'role': 'assistant', 'content': row['final_text']}]
-        encoded = encode_labels(tokenizer, full, last_assistant_only=True)
+        encoded = encode_final_essay(tokenizer, full)
         prompt_length = len(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True))
         if len(encoded['input_ids']) > 8192:
             record['reason'] = 'full_prompt_and_target_exceed_8192_no_truncation'
@@ -123,6 +148,11 @@ def export(config):
     result = {'base_revision': REVISION, 'sft_manifest_sha256': file_sha(sft_path),
         'teacher_design_sha256': file_sha(teacher_root / 'design.json'), 'prompt_sha256': sha_text(REWRITE_PROMPT),
         'selection': 'higher combined-R complete teacher attempt, then existing SFT GLOBAL gate if GLOBAL records and KOREAN R>=.80; no fallback',
+        'formatting': 'exact inference prompt token IDs followed by separately encoded teacher continuation and EOT; rendered text unchanged',
+        'formatting_source_sha256': file_sha(Path(__file__)),
+        'chat_template_sha256': sha_text(tokenizer.chat_template),
+        'boundary_tokenization_changed': {part: sum(r['boundary_tokenization_changed'] for r in rows)
+                                          for part, rows in selected.items()},
         'tie': 'lower attempt ID', 'context': 8192, 'holdout_sources': sorted(held), 'roles': {'oneshot': {}},
         'new_teacher_calls': 0, 'SFT_train_union': composition(train_ids, corpus),
         'agent_SFT_by_role': {role: composition(split[role]['train_ids'], corpus) for role in ROLES},
