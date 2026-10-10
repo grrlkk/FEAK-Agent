@@ -16,7 +16,7 @@ RULES = [
     ('Notice with two steps left', 'Environment', 'Environment-owned remaining count; notice at remaining 2 and 1'),
     ('Korean cannot MOVE/INSERT/DELETE or alter relations', 'Environment', 'Only EDIT/UNDO/STOP; EDIT cannot delete or split a sentence'),
     ('Stop closes the delegation; UNDO cannot cross delegations', 'Environment', 'Terminal state and delegation-local undo history'),
-    ('Action JSON, known IDs, exact unique old span, one-sentence INSERT, nonempty essay, anonymous markers', 'Environment', 'Deterministic syntax and edit checks; invalid actions roll back atomically'),
+    ('Action JSON, known IDs, exact unique old span, one-sentence INSERT, nonempty essay, anonymous markers', 'Environment', 'Deterministic syntax and edit checks; EDIT must retain one sentence in both roles; invalid actions roll back atomically'),
     ('INSERT relation and supplied source shape', 'Environment', 'Typed relation with valid target; source=null while SEARCH is unavailable'),
     ('STOP promptly when assigned items are done; touch nothing else', 'Prompt', 'One line in both frozen editor prompts; unfinished tasks use blocked/issues'),
     ('Never restate existing essay content', 'Prompt', 'One line in both editor prompts'),
