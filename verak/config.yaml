@@ -1,0 +1,47 @@
+version: verak-scope-loop-20261002
+mode: loop
+loop:
+  max_steps: 5
+  allow_document_rewrite: false
+models:
+  scorer:
+    package_path: /home/chanwoo/essay_scoring_llm
+    inference:
+      lora_adapter_path: /home/chanwoo/essay_scoring_llm/assets/adapter
+      device_id: 0
+      load_in_4bit: true
+      feedback_max_new_tokens: 1024
+      max_seq_length: 3072
+      seed: 42
+  reviser: {provider: openai, model: gpt-5-mini, reasoning_effort: low}
+  judge: {provider: openai, model: gpt-5-mini, reasoning_effort: low}
+  same_family_exception: user_requested_current_gpt_api
+analyzer:
+  name: bareun
+  host: 127.0.0.1
+  port: 5656
+  api_key_env: BAREUN_API_KEY
+  timeout_s: 30
+spellcheck:
+  endpoint: https://api.bareun.ai/bareun.RevisionService/CorrectError
+  api_key_env: BAREUN_API_KEY
+  timeout_s: 10
+  min_interval_s: 1
+  cache: outputs/cache/spell.jsonl
+paths:
+  val: /home/chanwoo/FEAK-Agent/data/data_jsonl/valid.jsonl
+  test: null
+env_files:
+  - ../.env
+  - /home/chanwoo/essay_scoring_llm/.env
+context_window: 2
+judge_info: [criteria_only, surface_diff, korean]
+seed: 42
+keywords: false
+anonymization_pattern: '#@[^#\r\n]+#'
+request:
+  max_output_tokens: 4096
+  max_input_chars: 200000
+  max_calls_per_sample: 24
+  max_calls_total: 120
+  timeout_s: 90.0

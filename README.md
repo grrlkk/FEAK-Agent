@@ -1,110 +1,88 @@
 # FEAK-Agent
-A revision agent that judges each edit as a transition (s→s′) using a value model trained from diagnostically corrupted essays, without human-labeled edit pairs.
 
-FEAK-TC experiment repository for Korean essay revision-control research.
+2026-09-29 추가: [VERAK P1](verak/README.md)은 목표·후보를 한 번 생성하고 같은 수정 쌍을
+`criteria_only / surface_diff / korean` 세 판단 입력 조건으로 비교하는 별도 CLI입니다.
+바른 분석기·기존 Kanana FT·GPT API를 사용하며, 실행은 `python -m verak.src.run_single`입니다.
 
-The active MVP path runs one local revision step:
+한국어 글의 상태를 **기존 Kanana 채점기**로 측정하고, **수정 전후 직접 비교(RV)**로
+수정본의 채택을 결정하는 학습 없는 연구 파일럿입니다.
 
-```text
-essay
-  -> diagnose
-  -> propose action-stratified candidates
-  -> apply reversible patches
-  -> re-diagnose
-  -> compute transition features
-  -> heuristic accept/reject/stop
-```
-
-This repository intentionally excludes the previous web frontend, FastAPI routers,
-server runtime files, private keys, API keys, raw spreadsheets, and model weights.
-
-## Layout
+현재 구현 기준은 사용자가 지정한 **FEAK_RV_PILOT_IMPLEMENTATION.md**입니다.
+[파일럿 안내](docs/RV_PILOT.md)에 실행·점수 척도·로그 계약이 있습니다.
 
 ```text
-feak_tc/mvp/             One-step FEAK-TC MVP loop
-feak_tc/diagnose/        Stub, Kanana, and legacy FEAK diagnoser adapters
-feak_tc/data/            AI-Hub JSON normalization utilities
-feak_tc/db/              MongoDB skeleton for later ingestion/log storage
-src/apps/                 Core analysis modules kept compatible with existing imports
-scripts/                  Experiment entry points
-experiments/configs/      Experiment configuration files
-experiments/results/      Generated outputs, ignored by Git
-data/                     Local datasets, ignored by Git
+Current draft → Kanana → Planner: 문제 하나 → Reviser: 후보 하나
+       ↑                                      ↓
+       └──────── ACCEPT ← Controller ← RV: 네 기준
 ```
 
-## MVP Smoke Run
+RV는 목표 달성, 수정 필요성, 의미 보존, 문서 전체의 이득을 PASS/FAIL/UNCERTAIN으로
+판정합니다. 모두 PASS인 후보만 채택합니다. 점수 상승은 채택 조건이 아닙니다.
+거절 후보의 재수정 1회, 불확실 판정의 독립 재검증 1회, 반복 최대 3회입니다.
 
-Offline deterministic run:
+Planner는 점수 없이 원문의 실제 문제를 먼저 확인하고, 그중 Kanana 점수가 가장 낮은
+항목에서 수정 목표 하나를 선택합니다. 원문 근거·문맥 확인·수정 범위를 기록하며, Reviser는 지정
+범위의 교체 내용만 반환합니다. 정보 부족이나 수정 불가로 판단하면 이유를 남기고 원문을
+유지합니다. 이는 모델의 판단이며 수정 품질이나 내용 창작 방지를 보장하지 않습니다.
+상세 계약과 검증 범위는 [파일럿 안내](docs/RV_PILOT.md)를 참고하세요.
+
+## 실행
+
+기존 feak_agent 환경과 형제 저장소 essay_scoring_llm의 채점기·보정 모델을 사용합니다.
+GPT 기본 모델은 gpt-5-mini, reasoning low입니다. .env의 OPENAI_API_KEY 또는
+FEAK_ENV_FILE을 사용합니다. 모델 가중치·키·결과는 커밋하지 않습니다.
 
 ```bash
-python scripts/run_mvp.py \
-  --text "인권은 인간이 가지는 기본적인 권리이다. 우리는 서로의 권리를 존중해야 한다." \
-  --proposer-mode deterministic \
-  --patcher-mode deterministic
+conda activate feak_agent
+python scripts/check_env.py
+
+# 모델/API 없는 전체 제어 흐름 확인
+python scripts/run_pilot.py --input examples/pilot_samples.jsonl --offline-smoke --output-dir experiments/results/rv_pilot_offline
+
+# 실제 Kanana + GPT: 합성 예제 5편, 최대 3 iterations
+python scripts/run_pilot.py --input examples/pilot_samples.jsonl --output-dir experiments/results/rv_pilot_real
+
+python -m pytest -q
 ```
 
-Batch JSONL logging:
+출력은 매번 새 경로를 지정합니다. 예제 5편은 직접 작성한 실행 확인용 글이며 논문 성능 평가
+데이터가 아닙니다. API 실행은 문항과 글을 OpenAI로 전송합니다.
+
+## 사람 블라인드 평가
+
+저장된 파일럿 후보를 사람이 평가하려면 [블라인드 평가 화면](docs/HUMAN_REVIEW.md)을 사용합니다.
+네 기준의 판정·근거를 평가자별로 저장하며 모델/API 호출 없이 실행됩니다.
 
 ```bash
-python scripts/run_mvp_batch.py \
-  --input data/data_jsonl/train.jsonl \
-  --output experiments/results/mvp_batch.jsonl \
-  --diagnoser stub \
-  --min-chars 150 \
-  --proposer-mode deterministic \
-  --patcher-mode deterministic
+python scripts/run_pilot_review.py prepare --run-dir experiments/results/rv_pilot_real --study-dir experiments/results/human_review_study --raters 2
+python scripts/run_pilot_review.py serve --study-dir experiments/results/human_review_study
+python scripts/run_pilot_review.py links --study-dir experiments/results/human_review_study
 ```
 
-The batch input can be a `.txt`, `.jsonl`, `.json`, or a directory of `.txt`
-files. Each JSONL output row contains the original record, candidates,
-transition features, heuristic scores, and final decision.
-
-True Kanana execution uses the sibling `essay_scoring_llm` package:
-
-```bash
-python scripts/run_mvp.py \
-  --diagnoser kanana \
-  --device-id 3 \
-  --question "인권의 뜻과 특징에 대해 서술하세요" \
-  --text-file sample_essay.txt
-```
-
-## Local Data
-
-Place experiment inputs under `data/`. The default scripts expect:
+## 구조
 
 ```text
-data/UKTA_1128_total_result.xlsx
+feak_tc/agent/          현재 4기준 RV: 계획·수정·검증·제어·점수 어댑터
+feak_tc/review/         현재 파일럿의 사람 블라인드 평가 화면·저장
+feak_tc/runtime/        공용 Kanana 프로세스·GPT 구조화 출력 통신
+feak_tc/diagnose/       기존 채점기 연결
+configs/pilot_gpt.yaml  현재 설정과 호출 예산
+scripts/run_pilot.py    현재 CLI 진입점
+examples/              실행 확인용 예제
+feak_tc/legacy/agent/   과거 2축 RV·점수 선택·경로 가드 구현
 ```
 
-You can override paths without editing code:
+mvp/, rv/, corruption/, 데이터 도구와 기존 에이전트 웹은 이전 실험 재현용입니다.
+scripts/run_agent.py와 scripts/run_agent_web.py는 과거 루프를 실행합니다.
+이전 설명은 [보관된 README](docs/LEGACY_AGENT_README.md), 이번 변경은
+[정리 기록](docs/CLEANUP_2026-09-28.md)을 참고하세요.
 
-```bash
-FEAK_INPUT_FILE=/path/to/input.xlsx FEAK_OUTPUT_FILE=/path/to/output.xlsx python scripts/run_final_scoring.py
-```
+## 연구 배경
 
-## Secrets
+[FEAK](https://github.com/grrlkk/FEAK)의 채점·자질 계산을 재사용합니다.
 
-Do not commit API keys. For Bareun, either set `BAREUN_API_KEY_PATH` or place a local
-untracked key file at:
+> From Evaluation to Feedback: A Feature-Based and LLM-Constrained Tool for Korean Writing Assessment.
+> Chanwoo Jang et al., ACM SAC 2026. [DOI](https://doi.org/10.1145/3748522.3780021)
 
-```text
-secrets/bareun_api.txt
-```
-
-For OpenAI experiments, create a local `.env` with:
-
-```text
-OPENAI_API_KEY=...
-```
-
-## Model Weights
-
-Essay scoring expects the GRU checkpoint locally at:
-
-```text
-src/apps/cohesion/essay_scoring/model/not_topic_model.pth
-```
-
-Model weights are ignored by Git. Store them locally or document an external download
-location for reproducibility.
+실행 성공은 품질 향상이나 수정 판정 정확도를 입증하지 않습니다.
+라이선스: MIT. 서드파티 고지: [NOTICE](NOTICE).

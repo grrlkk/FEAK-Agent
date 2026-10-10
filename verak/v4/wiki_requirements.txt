@@ -1,0 +1,5 @@
+# Install in a separate venv; do not modify the RFT environment.
+kiwipiepy==0.24.0
+kiwipiepy_model==0.24.0
+bm25s==0.3.13
+mwparserfromhell==0.7.2

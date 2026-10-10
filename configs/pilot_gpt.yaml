@@ -1,0 +1,26 @@
+# Current methodology: four-criterion RV is the only semantic adoption rule.
+openai:
+  model: gpt-5-mini
+  reasoning_effort: low
+  max_output_tokens: 4096
+  max_input_chars: 30000
+  max_calls_per_sample: 24
+  max_calls_total: 120
+  timeout_s: 90.0
+kanana:
+  device_id: 0
+  m: 3                     # Pilot execution check; record/raise for scorer measurement.
+  chunk_m: 1
+  seed: 42
+  load_in_4bit: true
+  generate_feedback: false
+diagnosis_timeout_s: 600.0
+# Existing RF-corrected continuous scores, same native 1-9 grade system.
+# Preserve original values; no conversion to 0-10 and no clipping/rounding.
+score_source: rf_corrected_score
+controller:
+  max_iterations: 3
+  max_retry_per_issue: 1
+  max_reverify: 1
+  schema_retries: 1
+  log_score_baseline: true

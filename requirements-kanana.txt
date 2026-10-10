@@ -10,6 +10,6 @@
 # FEAK-Agent MVP dependencies.
 PyYAML>=6.0
 pydantic>=2.0
-openai>=1.0
+openai>=2.0
 python-dotenv
 pytest>=8.0

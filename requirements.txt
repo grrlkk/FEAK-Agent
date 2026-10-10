@@ -4,8 +4,7 @@
 # For the legacy UKTA/KoBERT scorer runtime, install requirements-legacy.txt.
 
 pydantic>=2.0
-pymongo>=4.6
-openai>=1.0
+openai>=2.0
 PyYAML>=6.0
 pytest>=8.0
 python-dotenv

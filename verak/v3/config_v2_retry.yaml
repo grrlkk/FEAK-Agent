@@ -1,0 +1,21 @@
+# Independent retry: neither v1 nor the accepted initial v2 run is mutated.
+method_version: v2
+v2_retry:
+  enabled: true
+  source_seed: 79
+  source_counts: {agent_train: 300, agent_dev: 80}
+  operator: G_DEL_LINK
+  dependency_screen: bareun_immediate_successor_v1
+  preserve_original_eligible_sites: true
+  role_filter: [topic, bridge, summary]
+  qc_denominator: 380
+  qc_min_yield: 0.30
+  max_cost_usd: 10.0
+  cpu_cores: 8
+  nice: 10
+  api_concurrency: 2
+  bareun_concurrency: 1
+  gpu_access: false
+  training: false
+  dropped_operator: L_FUSE
+  prior_l_fuse_acceptable: {acceptable: 338, judged: 377}

@@ -1,0 +1,35 @@
+# Explicit opt-in. The original config.yaml and v1 runtime stay unchanged.
+method_version: v2
+v2_ops:
+  seed: 79
+  operators: [G_DEL_LINK, L_FUSE]
+  owner: global
+  display_name: 글 수정 에이전트
+  source_counts: {agent_train: 300, agent_dev: 80}
+  records_per_essay: 1
+  attempts: 2
+  ordering_seeds: [79, 80]
+  provider_sampling_seed: null
+  qc_min_yield: 0.30
+  max_cost_usd: 10.0
+  max_concurrent_requests: 2
+  label_batch_size: 4
+  qc_batch_size: 6
+  phase_api_ceiling: 20000
+  sol_model: gpt-6.1-sol
+  sol_effort: high
+  label_effort: low
+  teacher_effort: low
+  recovery_effort: low
+  context_limit: 8192
+  output_limit: 1024
+  l_fuse_relation_policy: minimal_mix
+  l_fuse_boundary_relations:
+    RESULT: {generation_class: CAUSE, endings: [아서, 어서]}
+    ADVERSATIVE: {generation_class: ADVERSATIVE, endings: [지만]}
+    ADDITION: {generation_class: ADDITION, endings: [고, 며, 으며]}
+    NONE: {generation_class: ADDITION, endings: [고, 며, 으며]}
+  l_fuse_excluded_relations: [EXAMPLE, RESTATEMENT]
+  l_fuse_restored_conjunction: source_class_or_none_addition_when_source_has_none
+  gpu_policy: cpu_api_only_until_v1_evaluation_finishes_then_physical_gpu1_only
+  training: false
