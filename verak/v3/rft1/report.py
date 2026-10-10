@@ -310,6 +310,11 @@ def write_report(config, condition='rft1'):
             'All SFT validation source essays are excluded from gradient training and retained only as '
             'validation when they pass the same filter. Input is only question plus corrupted essay; '
             'loss covers the final revised essay and EOT, with all input tokens masked.', '',
+            'The export retains the exact inference prompt token IDs and encodes the teacher continuation '
+            'separately. This preserves leading newlines without merging them into the assistant header; '
+            'the complete decoded text is checked against the unchanged chat template. '
+            f"Boundary tokenization differs from joint encoding for {data.get('boundary_tokenization_changed', {})} "
+            'examples. The v1 action exporter is unchanged.', '',
             table(['set', 'train episodes', 'train sources'],
                 [[f'agent SFT {role}', v['episodes'], v['sources']] for role, v in data['agent_SFT_by_role'].items()] +
                 [['agent SFT union', data['SFT_train_union']['episodes'], data['SFT_train_union']['sources']],
