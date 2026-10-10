@@ -88,7 +88,7 @@ def test_sol_rescue_returns_only_json_under_policy_target_limit(monkeypatch):
 @pytest.mark.parametrize('partial_cpu_snapshot',[False,True])
 def test_gpu_handoff_applies_v4_cap_and_stop_gate_before_immutable_publication(tmp_path,monkeypatch,partial_cpu_snapshot):
     from verak.v3.common import file_sha
-    from verak.v3.global_boost import aggregate, measure, v4_data
+    from verak.v3.global_boost import aggregate, measure, v4_data, gpu_recovery
     from verak.v3.global_boost.measure import measured_path
     from verak.v3.global_boost.teacher import attempt_path
     config=config_for();root=tmp_path/'global';config['paths'][PHASE+'_output']=root
@@ -132,6 +132,7 @@ def test_gpu_handoff_applies_v4_cap_and_stop_gate_before_immutable_publication(t
         'request_count':0,'fingerprint':'reference','slot':'pre_rft_training','errors':[]})
     monkeypatch.setattr(aggregate,'batch_configs',lambda _:[config])
     monkeypatch.setattr(measure,'run',lambda _:None)
+    monkeypatch.setattr(gpu_recovery,'verify_all',lambda _:{'status':'complete'})
     monkeypatch.setattr(v4_data,'holdouts',lambda _:(set(),tmp_path/'manifest.json'))
     result=aggregate.gpu_finalize(config)
     assert set(result['selected'])=={'case3','case4','case5','case6'}
