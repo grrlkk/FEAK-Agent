@@ -243,4 +243,5 @@ def test_final_audit_archives_initial_reports_and_keeps_invalid_example_raw_evid
     assert final['initial_archives']['examples']['sha256']==initial['examples_sha256']
     text=(tmp_path/'repo/imple/reports/V4_MAP_EXAMPLES.md').read_text()
     assert '원시 두 추출' in text and '진단 전용 Mermaid' in text and '형식-invalid' in text
+    assert '[추출 1 저장 JSON](' in text and '"sentence_relations":' not in text
     assert reports.publish_final([row],output,frozen,design,costs)==final

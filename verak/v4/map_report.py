@@ -262,13 +262,18 @@ def _diagnostic_summary(values):
 def diagnostic_examples(row,joined,attempts,diagnostic):
     """Append raw evidence for every fixed example, including unusable ones."""
     from .maps import diagnostic_candidate
+    from .common import ROOT
     candidate=diagnostic['candidate'] if diagnostic else diagnostic_candidate(attempts,row)
     lines=['### 원시 두 추출과 형식 진단','',
         '문단 간 main/key 끝점 제한은 이 파일럿 구현에서 **모든 길이의 글**에 적용됐다. 방법론 §4.5가 이를 긴 글에 명시한 것보다 엄격하다. '
         '이 기계적 실패는 관계의 의미상 wrong 판정이 아니다. 다음 원시 출력과 후보 관계는 채택 지도나 학습 정답으로 승격하지 않았다.','']
     for i,item in enumerate(attempts,1):
-        lines += [f"추출 {i}: {item['status']}; 사유: {item.get('error','없음')}.",'','```json',
-                  json.dumps(item.get('parsed'),ensure_ascii=False,indent=2),'```','']
+        saved_path=ROOT/'C'/f'attempt_{i}'/(safe_id(row['source_id'])+'.json')
+        links=f'[추출 {i} 저장 JSON]({saved_path})'
+        raw_paths=[r['path'] for r in item.get('requests',[]) if r.get('path')]
+        if raw_paths:
+            links+=f' · [원시 API 응답]({raw_paths[-1]})'
+        lines += [f"추출 {i}: {item['status']}; 사유: {item.get('error','없음')}.",'',links,'']
     if joined['status']!='valid':
         texts={s['id']:s['text'] for p in row['paragraphs'] for s in p['sentences']};texts['Q']=row['question']
         ptexts={p['id']:' '.join(s['text'] for s in p['sentences']) for p in row['paragraphs']}
@@ -396,16 +401,16 @@ def refresh_examples():
             attempts=[read_json(output/f'attempt_{i}'/name) for i in (1,2)]
             lines += [example(row,joined,judge),diagnostic_examples(row,joined,attempts,diagnostic)]
         updated='\n'.join(lines)
-        archive=output/'final_complete_before_compact_relations.json'
+        archive=output/'final_complete_before_raw_links.json'
         if not archive.exists():
             atomic_new(archive,final)
-        prior_examples=output/'examples_before_compact_relations.md'
+        prior_examples=output/'examples_before_raw_links.md'
         if not prior_examples.exists():
             prior_examples.write_bytes(Path(final['examples_path']).read_bytes())
         temporary=Path(final['examples_path']).with_suffix('.md.tmp')
         temporary.write_text(updated,encoding='utf-8');temporary.replace(final['examples_path'])
         final.update(examples_sha256=file_sha(final['examples_path']),
-            presentation_revision='compact ID-arrow-type relation lists',presentation_paid_calls=0,
+            presentation_revision='compact ID-arrow-type relation lists and links to raw JSON',presentation_paid_calls=0,
             previous_final_marker_sha256=file_sha(archive))
         write_json(output/'final_complete.json',final)
         write_json(output/'diagnostic_status.json',final)
