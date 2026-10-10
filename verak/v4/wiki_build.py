@@ -149,6 +149,8 @@ def extract(root=ROOT):
     from .wiki_local import iter_pages, page_filter, passages
     verified = read(root / 'dump/verified.json')
     contract = {'version': EXTRACTOR_VERSION, 'dump_sha256': verified['sha256'], 'minimum_paragraph_chars': 1,
+                'extractor_code_sha256': digest(Path(__file__).with_name('wiki_local.py')),
+                'driver_code_sha256': digest(Path(__file__)),
                 'license': LICENSE, 'remove': ['redirect', 'disambiguation', 'list_page', 'non_article_namespace'],
                 'markup_policy': 'no online template expansion; remove templates/tables/lists/refs; retain prose paragraphs'}
     frozen(root / 'extract_contract.json', contract)
@@ -191,6 +193,7 @@ def extract(root=ROOT):
 def tokenize(root=ROOT):
     from .wiki_local import KiwiTokenizer
     contract = {'version': TOKENIZER_VERSION, 'fields': ['title', 'section', 'text'], 'kiwi_workers': 2,
+                'tokenizer_code_sha256': digest(Path(__file__).with_name('wiki_local.py')),
                 'kiwipiepy': importlib.metadata.version('kiwipiepy'), 'bm25s': importlib.metadata.version('bm25s'),
                 'mwparserfromhell': importlib.metadata.version('mwparserfromhell')}
     frozen(root / 'tokenizer_contract.json', contract)

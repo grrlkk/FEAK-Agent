@@ -121,10 +121,14 @@ def api_for(root=ROOT):
 
 
 def run(root=ROOT):
+    import socket
     from .wiki_local import LocalWikiSearch
     from feak_tc.runtime.openai import CallBudgetExceeded
     sample = prepare(root)
-    api = api_for(root); api.settle_interrupted()
+    api = api_for(root)
+    # A sandbox/network preflight failure is not a failed research item.
+    socket.getaddrinfo('api.openai.com', 443)
+    api.settle_interrupted()
     engine = LocalWikiSearch(root)
     try:
         for index, value in enumerate(sample['items'], 1):
