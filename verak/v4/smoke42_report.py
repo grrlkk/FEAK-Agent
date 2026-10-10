@@ -18,7 +18,7 @@ def rejection_category(call):
     if '문장 수' in error:
         from .smoke41_report import classify_edit
         return classify_edit(call)['category'] if a['action']=='EDIT' else 'analyzer_sentence_count'
-    if '익명화' in error: return 'mask_change'
+    if '익명화' in error: return 'mask_guard'
     if '부분 문자열' in error: return 'substring_not_unique_or_missing'
     if '위치 밖' in error or '목적지도' in error: return 'outside_assigned_scope'
     if '현재 문장 ID' in error: return 'missing_sentence_ID'
@@ -47,6 +47,21 @@ def gate_fields(metrics,all_started):
         'stop_all_B_compatibility_scope':'B2/B3 only; B4 is independent under the latest user instruction',
         'stop_B2_B3':not passed,'B4_independent':True,
         'valid_actions':metrics['valid_actions'],'returned_actions':metrics['returned_action_calls']}
+
+
+def mask_diagnostics(attempts):
+    from verak.v3.corrupt.document import MARKER
+    cases=[]
+    for a in attempts:
+        for c in a.get('calls',[]):
+            if c['action']['valid'] or '익명화' not in c['action'].get('error',''): continue
+            value=c['action'].get('value') or {};old=value.get('old');new=value.get('new')
+            preserved=(value.get('action')=='EDIT' and isinstance(old,str) and isinstance(new,str)
+                and bool(MARKER.findall(old)) and MARKER.findall(old)==MARKER.findall(new))
+            cases.append({'source_id':a['source_id'],'role':c['role'],'delegation':c['delegation'],'turn':c['turn'],
+                'value':value,'error':c['action']['error'],'EDIT_literal_markers_preserved':bool(preserved)})
+    return {'guard_rejections':len(cases),'EDIT_with_literal_markers_preserved':sum(c['EDIT_literal_markers_preserved'] for c in cases),
+        'cases':cases,'gate_adjusted':False}
 
 
 def report(tokenizer):
@@ -91,6 +106,7 @@ def report(tokenizer):
             for a in attempts if a['status']!='completed'],genres=dict(Counter(a['genre'] for a in attempts)),
         normalization=prepared,planner_calls=0,plans_reused=20,revision_splits=splits,
         paired_sources=paired,paired_summary={'v41':summarize(old),'v42':summarize(attempts)},
+        paired_mask_guard={'v41':mask_diagnostics(old),'v42':mask_diagnostics(attempts)},
         attempt_files_sha256=paths,api=account,smoke_cap_usd=2.,content_cumulative_cap_usd=50.,
         prior_v41_confirmed_usd=prior_metrics['api']['confirmed_usd'],content_cumulative_confirmed_usd=total,
         B2_remaining_cap_usd=50-total-account['reserved_usd'],gate=gate,
@@ -126,6 +142,10 @@ def report(tokenizer):
         lines.append('|'+category+'|'+'|'.join(map(str,values))+'|')
     lines += ['', 'These are action-weighted counts; repeated rejected proposals are counted each time. '
         'Different trajectories can have different action counts. The v4.1 gate and artifacts were not adjusted.','',
+        f"The mask_guard label is a mechanical rejection, not proof that literal mask contents were changed: "
+        f"{metrics['paired_mask_guard']['v41']['EDIT_with_literal_markers_preserved']}/{metrics['paired_mask_guard']['v41']['guard_rejections']} v4.1 and "
+        f"{metrics['paired_mask_guard']['v42']['EDIT_with_literal_markers_preserved']}/{metrics['paired_mask_guard']['v42']['guard_rejections']} v4.2 mask rejections were EDITs whose old/new strings preserved the same literal masks. "
+        'The inherited guard also rejects an old span that covers a mask. These remain invalid under the frozen contract.','',
         f"Revision delegation endings: {metrics['revision_delegation_endings']}; STOP statuses: {metrics['revision_STOP_status']}. "
         f"Korean endings: {metrics['korean_endings']}; STOP statuses: {metrics['korean_STOP_status']}.",'',
         '|Role|Body / system-message tokens|Prompt SHA-256|','|---|---:|---|']
