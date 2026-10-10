@@ -1,6 +1,7 @@
 """Readable C pilot reports from immutable extraction/judgment artifacts only."""
 from collections import Counter, defaultdict
 import json
+from pathlib import Path
 
 from .common import GENRES, GENRE_KO, REPO, atomic_new, file_sha, read_json, safe_id, write_json
 from .maps import SENTENCE_TYPES, PARAGRAPH_TYPES
@@ -48,6 +49,8 @@ def aggregate(rows, output, frozen, accounting):
         flags = [j['diagnostics']['off_topic'] for j in usable]
         totals[genre] = {'planned_essays':len(members), 'valid_pairs':len(usable),
             'attempt_statuses':dict(Counter(a['status'] for r in members for a in attempts[r['source_id']])),
+            'invalid_or_api_error_reasons':dict(Counter(a.get('error','unspecified') for r in members
+                for a in attempts[r['source_id']] if a['status'] not in {'valid','budget_not_dispatched'})),
             'relations':relations, 'paragraph_roles':{'total':len(para),
                 'agree':sum(p['role_agrees'] for p in para),
                 'both_unknown':sum(p['left']['role'] is None and p['right']['role'] is None for p in para),
@@ -114,6 +117,9 @@ def render_component(metrics):
              json.dumps(metrics['extraction'][g]['attempt_statuses'],ensure_ascii=False),
              json.dumps(metrics['sol'][g]['map_statuses'],ensure_ascii=False)] for g in GENRES]), '',
         '아래 일치율은 유효한 쌍의 관계 수를 합친 intersection/union이다. 두 추출 모두 해당 유형을 쓰지 않은 경우는 NA이며 정답률이 아니다.', '',
+        '검증은 문장/문단 ID, 방향, 중복, 지지·예시의 외향 관계 수와 문단 간 관계의 main/key 끝점 제약을 포함한다. '
+        '위반한 원시 지도는 임의로 수정하거나 유료 재추출하지 않고 전체를 invalid로 보존했다.', '',
+        table(['invalid/API 오류 사유','추출 건수'],sorted(totals['invalid_or_api_error_reasons'].items())), '',
         table(['장르','관계','유효 쌍','추출1','추출2','교집합','합집합','일치율'],relation_rows(metrics)), '',
         'Sol 대상 60편(장르별 20편, seed 131)은 추출 전에 고정했다. 유지된 모든 문장·문단 관계를 점검하고 문단 역할과 off_topic도 별도 집계했다. '
         'invalid/API 실패는 wrong 또는 unknown에 합산하지 않는다. 유효한 두 추출이 없는 사전 대상은 교체하지 않았다.', '',
@@ -233,3 +239,135 @@ def publish(rows, output, frozen, accounting):
         atomic_new(output/'complete.json',finished)
     write_json(output/'status.json',finished)
     return finished
+
+
+def _diagnostic_summary(values):
+    bins=defaultdict(Counter); meanings=Counter(); assessments=Counter()
+    for item in values:
+        checks={c['id']:c for c in item['checks']}
+        if item['status']=='valid':
+            for verdict in item['value']['judgments']:
+                check=checks[verdict['id']]
+                bins[check['kind']+':'+check['type']][verdict['verdict']]+=1
+            meanings.update(x['meaning_status'] for x in item['value']['diagnosed_attempts'])
+            assessments[item['value']['map_assessment']]+=1
+        else:
+            for check in checks.values():
+                bins[check['kind']+':'+check['type']]['unmeasured']+=1
+    return {'maps':len(values),'statuses':dict(Counter(x['status'] for x in values)),
+        'by_check_type':{k:{v:c[v] for v in ('plausible','wrong','unknown','unmeasured')} for k,c in sorted(bins.items())},
+        'raw_attempt_meaning_status':dict(meanings),'map_assessment':dict(assessments)}
+
+
+def diagnostic_examples(row,joined,attempts,diagnostic):
+    """Append raw evidence for every fixed example, including unusable ones."""
+    from .maps import diagnostic_candidate
+    candidate=diagnostic['candidate'] if diagnostic else diagnostic_candidate(attempts,row)
+    lines=['### 원시 두 추출과 형식 진단','',
+        '문단 간 main/key 끝점 제한은 이 파일럿 구현에서 **모든 길이의 글**에 적용됐다. 방법론 §4.5가 이를 긴 글에 명시한 것보다 엄격하다. '
+        '이 기계적 실패는 관계의 의미상 wrong 판정이 아니다. 다음 원시 출력과 후보 관계는 채택 지도나 학습 정답으로 승격하지 않았다.','']
+    for i,item in enumerate(attempts,1):
+        lines += [f"추출 {i}: {item['status']}; 사유: {item.get('error','없음')}.",'','```json',
+                  json.dumps(item.get('parsed'),ensure_ascii=False,indent=2),'```','']
+    if joined['status']!='valid':
+        texts={s['id']:s['text'] for p in row['paragraphs'] for s in p['sentences']};texts['Q']=row['question']
+        ptexts={p['id']:' '.join(s['text'] for s in p['sentences']) for p in row['paragraphs']}
+        lines += ['해석 가능한 ID/type의 **진단 전용** 교집합(형식 유효성은 보장하지 않음):','',
+            _relations(candidate['candidate_map']['sentence_relations'],texts),'',
+            _relations(candidate['candidate_map']['paragraph_relations'],ptexts),'']
+        for field,label,lookup in [('sentence_relations','문장',texts),('paragraph_relations','문단',ptexts)]:
+            for side,title in [('left_only','추출1에만 있음'),('right_only','추출2에만 있음')]:
+                lines += [f'진단 후보 교집합에서 빠진 {label} 관계 — {title}:','',
+                    _relations(candidate['diagnostics']['dropped'][field][side],lookup),'']
+        lines += ['진단 후보에서 ID/type/중복 등의 이유로 해석하지 못한 원시 관계:','',
+                  '```json',json.dumps(candidate['omitted_unreadable_or_duplicate_edges'],ensure_ascii=False,indent=2),'```','',
+                  '진단 전용 Mermaid(채택 지도 아님):','',_mermaid(row,candidate['candidate_map']),'']
+    if diagnostic:
+        lines += [f"고정 Sol 대상의 추가 진단 상태: {diagnostic['status']}.",'']
+        if diagnostic['status']=='valid':
+            value=diagnostic['value'];checks={c['id']:c for c in diagnostic['checks']}
+            lines += [f"map assessment: {value['map_assessment']} — {value['assessment_reason']}",'',
+                table(['원시 추출','의미 진단','이유'],[[r['attempt'],r['meaning_status'],r['reason']] for r in value['diagnosed_attempts']]),'',
+                table(['check','진단 관계','판정','이유'],[[v['id'],checks[v['id']]['kind']+':'+checks[v['id']]['type'],v['verdict'],v['reason']]
+                      for v in value['judgments']]),'']
+    return '\n'.join(lines)
+
+
+def publish_final(rows,output,frozen,diagnostic_design,accounting):
+    if (output/'final_complete.json').exists():
+        saved=read_json(output/'final_complete.json')
+        for name in ('metrics','report','examples'):
+            if file_sha(saved[name+'_path'])!=saved[name+'_sha256']:
+                raise ValueError('Final C report changed')
+        return saved
+    metrics,joined,judgments=aggregate(rows,output,frozen,accounting)
+    diagnostics={sid:read_json(output/'diagnostics'/(safe_id(sid)+'.json')) for sid in diagnostic_design['diagnostic_ids']}
+    coverage=[]
+    for sid in frozen['sol_maps60']:
+        original=judgments[sid]
+        item=original if original['status']=='valid' else diagnostics[sid]
+        coverage.append({'source_id':sid,'genre':original['genre'],'initial_map_status':joined[sid]['status'],
+            'initial_sol_status':original['status'],'mode':'accepted_map_relations' if original['status']=='valid' else 'raw_map_diagnostic',
+            'final_status':item['status'],'checked_items':len(item['checks'])})
+    by_genre={g:_diagnostic_summary([x for x in diagnostics.values() if g=='all' or x['genre']==g]) for g in ('all',*GENRES)}
+    final_audit={'fixed_sources':len(coverage),'unique_sources':len({x['source_id'] for x in coverage}),
+        'valid_source_audits':sum(x['final_status']=='valid' for x in coverage),
+        'source_statuses':dict(Counter(x['final_status'] for x in coverage)),
+        'coverage':coverage,'diagnostic_groups':by_genre,
+        'no_re_extraction':True,'no_source_replacement':True,'normal_and_diagnostic_relations_are_separate':True}
+    metrics.update(schema_version=2,final_audit=final_audit,
+        implementation_limitation='All essay lengths used the cross-paragraph main/key endpoint constraint; method section 4.5 states this for long essays.',
+        diagnostic_design_sha256=file_sha(output/'diagnostic_design.json'))
+    initial=read_json(output/'complete.json'); archived={}
+    for name in ('metrics','report','examples'):
+        source=Path(initial[name+'_path']);suffix='.json' if name=='metrics' else '.md'
+        archive=output/('initial_'+name+suffix)
+        if not archive.exists():
+            if file_sha(source)!=initial[name+'_sha256']:
+                raise ValueError('Initial report changed before archival')
+            archive.write_bytes(source.read_bytes())
+        if file_sha(archive)!=initial[name+'_sha256']:
+            raise ValueError('Initial report archive changed')
+        archived[name]={'path':str(archive),'sha256':file_sha(archive)}
+    normal=sum(x['mode']=='accepted_map_relations' for x in coverage)
+    opening=['# C 최종 지도 파일럿 및 고정 60편 감사','',
+        f"**150편 중 두 추출이 형식 검증을 모두 통과한 지도는 {metrics['extraction']['all']['valid_pairs']}/150편이다. "
+        f"고정 Sol 60편은 정상 지도 {normal}편과 원시/빈 지도 진단 {len(diagnostics)}편으로 나누어 모두 시도했고, "
+        f"{final_audit['valid_source_audits']}/60편의 감사 응답이 유효했다.**",'',
+        '**방법론과 구현의 차이:** §4.5는 긴 글의 문단 간 관계에 main/key 끝점 조건을 명시하지만, 이번 추출 검증은 길이 임계값 없이 모든 글에 이 조건을 적용했다. '
+        '아래 형식-invalid는 의미상 관계 오답과 다르다. 원시 결과를 보존했고 재추출·원문 교체·관계 정답의 임의 보충은 하지 않았다.', '',
+        f'정상 지도 관계 정확도 표는 처음 {normal}개 감사처럼 채택 가능한 map의 관계만 집계한다. '
+        '추가 진단 표는 형식 실패 또는 빈 지도에서 해석 가능한 교집합의 의미를 검사하며 별도 표본이다. '
+        '빈 교집합은 검사 관계 0건/정확도 NA이며 100% 정확으로 계산하지 않는다.','']
+    extra=['## 형식 실패·빈 map의 별도 Sol 진단','',
+        table(['장르','진단 map 수','응답 상태','원시 추출 의미 진단','지도 assessment'],[
+            [g,v['maps'],json.dumps(v['statuses']),json.dumps(v['raw_attempt_meaning_status']),json.dumps(v['map_assessment'])]
+            for g,v in by_genre.items()]),'',
+        table(['장르','진단 관계/역할','plausible','wrong','unknown','미측정'],[
+            [g,key,*[v.get(k,0) for k in ('plausible','wrong','unknown','unmeasured')]]
+            for g,d in by_genre.items() for key,v in d['by_check_type'].items()]),'',
+        '고정 60편 전수 coverage:','',table(['원문','장르','초기 map','감사 경로','최종 응답','검사 항목 수'],[
+            [x['source_id'],x['genre'],x['initial_map_status'],x['mode'],x['final_status'],x['checked_items']] for x in coverage]),'',
+        '전체 300개 원시 추출, 초기 판단 파일과 요청 ledger를 보존했다. 초기 보고서는 C/initial_*에 SHA 검증 사본을 보관하고 이 최종 보고서로 대체했다. '
+        '추출 범위는 고정 150편에서 종료했다. 추가 Sol 진단도 같은 $4 누적 한도 안에서만 시행했다.','']
+    report_path=output/'component_report.md';metrics_path=output/'component_metrics.json'
+    write_json(metrics_path,metrics)
+    report_path.write_text('\n'.join(opening)+render_component(metrics)+'\n'+'\n'.join(extra),encoding='utf-8')
+    sources={r['source_id']:r for r in rows}; example_path=REPO/'imple/reports/V4_MAP_EXAMPLES.md'
+    examples=['# V4 장르 중립 지도: 고정 6개 예시','',
+        '장르별 len(text), source_id 오름차순의 최단 두 편을 추출 전에 고정했다. 실패한 예시도 바꾸지 않았다. '
+        '모든 길이에 main/key 문단 간 끝점 제한을 적용한 구현 차이와 형식-invalid/의미상 wrong의 구분을 함께 제시한다. '
+        '정상 지도, 원시 두 추출, 탈락 관계, 진단 후보를 분리한다. 원시 후보는 정답이나 학습 대상으로 승격하지 않는다.','']
+    for sid in frozen['examples6']:
+        row=sources[sid];attempts=[read_json(output/f'attempt_{i}'/(safe_id(sid)+'.json')) for i in (1,2)]
+        examples += [example(row,joined[sid],judgments.get(sid)),diagnostic_examples(row,joined[sid],attempts,diagnostics.get(sid))]
+    example_path.write_text('\n'.join(examples),encoding='utf-8')
+    result={'schema_version':2,'component':'C','status':'complete' if final_audit['valid_source_audits']==60 else 'complete_with_unmeasured',
+        'fixed_sources_audited':60,'valid_source_audits':final_audit['valid_source_audits'],
+        'metrics_path':str(metrics_path),'metrics_sha256':file_sha(metrics_path),'report_path':str(report_path),'report_sha256':file_sha(report_path),
+        'examples_path':str(example_path),'examples_sha256':file_sha(example_path),'initial_archives':archived,
+        'accounting':accounting,'no_live_paid_calls':accounting['pending']==0,'gpu_used':False,'training':False,
+        'extraction_source_limit':150,'stopped':True,'no_scale_up':True}
+    atomic_new(output/'final_complete.json',result)
+    write_json(output/'diagnostic_status.json',result)
+    return result

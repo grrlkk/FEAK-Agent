@@ -175,3 +175,71 @@ def test_report_keeps_unknown_wrong_and_unmeasured_separate_and_full_example_ids
     rendered=example(row,joined,judged)
     assert 'train:1' in rendered and '```mermaid' in rendered and 'S1 -->|main| Q' in rendered
     assert all(f'S{i}' in rendered for i in range(1,6))
+
+
+def test_invalid_diagnostic_preserves_original_failures_and_separates_possible_edges():
+    from verak.v4.maps import diagnostic_candidate,diagnostic_request,validate_diagnostic
+    row=source()
+    raw=graph([('S1','Q','main'),('S2','S1','support'),('S2','S3','example'),('S5','Q','support')])
+    attempts=[{'status':'invalid','error':'cardinality/direction','parsed':deepcopy(raw)} for _ in (1,2)]
+    before=deepcopy(attempts)
+    candidate=diagnostic_candidate(attempts,row)
+    assert not candidate['is_accepted_map'] and candidate['original_statuses']==['invalid','invalid']
+    assert len(candidate['candidate_map']['sentence_relations'])==3
+    assert len(candidate['omitted_unreadable_or_duplicate_edges'][0])==1
+    assert attempts==before
+    messages,_,checks=diagnostic_request(row,attempts,candidate)
+    assert 'PRIVILEGED' not in json.dumps(messages) and 'feedback' not in json.dumps(messages)
+    good={'judgments':[{'id':c['id'],'verdict':'plausible','reason':'의미상 타당'} for c in checks],
+          'diagnosed_attempts':[{'attempt':str(i),'meaning_status':'no_obvious_semantic_error','reason':'형식 위반'} for i in (1,2)],
+          'map_assessment':'uncertain','assessment_reason':'형식 위반과 의미를 구분'}
+    validate_diagnostic(good,checks)
+    good['diagnosed_attempts']=good['diagnosed_attempts'][:1]
+    with pytest.raises(ValueError,match='both raw'):
+        validate_diagnostic(good,checks)
+    with pytest.raises(ValueError):
+        validate(candidate['candidate_map'],row)
+
+
+def test_empty_candidate_has_no_invented_semantic_accuracy_and_still_gets_map_diagnosis():
+    from verak.v4.maps import diagnostic_candidate,diagnostic_request,validate_diagnostic
+    empty=graph();empty['paragraph_roles'][0].update(role=None,key_sentence=None)
+    attempts=[{'status':'valid','parsed':empty} for _ in (1,2)]
+    candidate=diagnostic_candidate(attempts,source())
+    _,output,checks=diagnostic_request(source(),attempts,candidate)
+    assert checks==[] and output['properties']['judgments']['items']['properties']['id']=={'type':'string'}
+    good={'judgments':[],'diagnosed_attempts':[{'attempt':str(i),'meaning_status':'uncertain','reason':'관계 없음'} for i in (1,2)],
+          'map_assessment':'missing_relations','assessment_reason':'중심 관계 누락'}
+    validate_diagnostic(good,checks)
+
+
+def test_final_audit_archives_initial_reports_and_keeps_invalid_example_raw_evidence(tmp_path,monkeypatch):
+    import verak.v4.map_report as reports
+    from verak.v4.common import file_sha,write_json
+    from verak.v4.maps import diagnostic_candidate,diagnostic_request,diagnose_one
+    monkeypatch.setattr(reports,'REPO',tmp_path/'repo')
+    output=tmp_path/'C';row=source();frozen=minimal_frozen(row)
+    frozen.update(source_manifest_sha256='manifest',sol_maps60=[row['source_id']],examples6=[row['source_id']])
+    write_json(output/'design.json',frozen)
+    raw=graph([('S2','S1','support'),('S2','S3','example')])
+    attempts=[extract_one(StubAPI(raw),row,i,output,frozen) for i in (1,2)]
+    joined=join_one(row,output)
+    assert joined['status']=='unavailable'
+    judge_one(StubAPI({}),row,output,frozen)
+    costs={'confirmed_usd':0,'reserved_usd':0,'calls':0,'pending':0,'by_stage':{}}
+    initial=reports.publish([row],output,frozen,costs)
+    raw_hashes={str(p):file_sha(p) for p in output.glob('attempt_*/*.json')}
+    candidate=diagnostic_candidate(attempts,row)
+    checks=diagnostic_request(row,attempts,candidate)[2]
+    response={'judgments':[{'id':c['id'],'verdict':'unknown','reason':'불확실'} for c in checks],
+        'diagnosed_attempts':[{'attempt':str(i),'meaning_status':'uncertain','reason':'형식 위반과 별개'} for i in (1,2)],
+        'map_assessment':'uncertain','assessment_reason':'형식과 의미 구분'}
+    diagnose_one(StubAPI(response),row,output)
+    design={'diagnostic_ids':[row['source_id']]};write_json(output/'diagnostic_design.json',design)
+    final=reports.publish_final([row],output,frozen,design,costs)
+    assert final['valid_source_audits']==1
+    assert raw_hashes=={str(p):file_sha(p) for p in output.glob('attempt_*/*.json')}
+    assert final['initial_archives']['examples']['sha256']==initial['examples_sha256']
+    text=(tmp_path/'repo/imple/reports/V4_MAP_EXAMPLES.md').read_text()
+    assert '원시 두 추출' in text and '진단 전용 Mermaid' in text and '형식-invalid' in text
+    assert reports.publish_final([row],output,frozen,design,costs)==final

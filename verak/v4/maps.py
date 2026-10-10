@@ -138,8 +138,9 @@ def edge_dicts(values):
     return [{'source': s, 'target': t, 'type': k} for s, t, k in sorted(values)]
 
 
-def consensus(left, right, row):
-    left, right = validate(left, row), validate(right, row)
+def consensus(left, right, row, *, strict=True):
+    if strict:
+        left, right = validate(left, row), validate(right, row)
     result = {'genre': row['genre'], 'paragraph_roles': [], 'sentence_relations': [],
               'paragraph_relations': [], 'off_topic': []}
     diagnostics = {'relations': {}, 'paragraph_roles': [], 'dropped': {}}
@@ -392,3 +393,158 @@ def run():
             if sol is not None:
                 sol.close()
             luna.close()
+
+
+DIAGNOSTIC_PROMPT = SOL_PROMPT + '''
+이 요청은 정식 채택 map이 아닌 형식-invalid 또는 빈 map의 진단이다. 원시 두 추출, 기계 검증 사유, 해석 가능한 관계의 교집합을 제공한다.
+기계 제약 위반과 관계의 의미상 오류를 구분한다. 특히 현재 구현은 문단 간 관계의 양끝을 main/key로 제한하는 조건을 모든 길이의 글에 적용했다.
+방법론은 이 계층 조건을 긴 글에 명시한다. 짧은 글에서 main/key로 표시되지 않았다는 이유만으로 문맥상 타당한 관계를 wrong으로 판단하지 않는다.
+checks의 각 가능한 교집합 관계/역할/off_topic을 의미적으로 평가한다. checks가 비어 있으면 judgments를 빈 배열로 두며 정확도 100%라고 판단하지 않는다.
+각 원시 추출에는 diagnosed_attempts로 meaning_status를 기록한다: no_obvious_semantic_error, semantic_error, uncertain.
+형식-invalid가 no_obvious_semantic_error일 수도 있다. 이상이 없다는 표시는 모든 의미 관계가 완전하다는 뜻이 아니다.
+map_assessment는 usable, missing_relations, semantic_problem, uncertain 중 하나다. 중심 관계가 빠져 빈 map이 된 것인지 원문과 함께 판단하고 짧은 이유를 적는다.
+교집합에 남지 않은 원시 관계는 본문 정보로 검토하되 새 relation 정답을 만들어 추가하지 않는다.'''
+
+
+def diagnostic_candidate(attempts, row):
+    """Project readable IDs/types for auditing, never promote an invalid map to valid."""
+    sids,pids,members=indexes(row)
+    projected=[]; omitted=[]
+    for attempt in attempts:
+        value=attempt.get('parsed') if isinstance(attempt.get('parsed'),dict) else {}
+        clean={'genre':row['genre'],'sentence_relations':[],'paragraph_relations':[],
+               'paragraph_roles':[],'off_topic':[]}
+        discarded=[]
+        for field,ids,kinds in [('sentence_relations',set(sids),SENTENCE_TYPES),('paragraph_relations',set(pids),PARAGRAPH_TYPES)]:
+            entries=value.get(field,[])
+            if not isinstance(entries,list):
+                entries=[]
+            seen=set()
+            for edge in entries:
+                if not isinstance(edge,dict):
+                    discarded.append({'field':field,'raw':edge,'reason':'not an object'}); continue
+                source,target,kind=(edge.get(k) for k in ('source','target','type'))
+                strings=all(isinstance(x,str) for x in (source,target,kind))
+                target_ok=target=='Q' if field=='sentence_relations' and kind=='main' else target in ids if isinstance(target,str) else False
+                valid=strings and source in ids and target_ok and kind in kinds and source!=target
+                key=(source,target,kind) if strings else None
+                if not valid or key in seen:
+                    discarded.append({'field':field,'raw':edge,'reason':'invalid ID/type/direction, self relation or duplicate'}); continue
+                seen.add(key); clean[field].append({'source':source,'target':target,'type':kind})
+        roles=value.get('paragraph_roles',[])
+        roles=roles if isinstance(roles,list) else []
+        for pid in pids:
+            entries=[r for r in roles if isinstance(r,dict) and r.get('paragraph')==pid]
+            role=entries[0] if len(entries)==1 else {}
+            key=role.get('key_sentence')
+            key=key if isinstance(key,str) and members.get(key)==pid else None
+            label=role.get('role')
+            clean['paragraph_roles'].append({'paragraph':pid,'role':label if label in GENRE_ROLES[row['genre']] else None,'key_sentence':key})
+        flags=value.get('off_topic',[])
+        clean['off_topic']=sorted({s for s in flags if isinstance(s,str) and s in sids}) if isinstance(flags,list) else []
+        projected.append(clean); omitted.append(discarded)
+    value,diagnostics=consensus(*projected,row,strict=False)
+    return {'candidate_map':value,'diagnostics':diagnostics,'omitted_unreadable_or_duplicate_edges':omitted,
+        'is_accepted_map':False,'preserves_invalid_cardinality_in_diagnostic_only':True,
+        'original_statuses':[a['status'] for a in attempts],'original_errors':[a.get('error') for a in attempts]}
+
+
+def diagnostic_request(row, attempts, candidate):
+    checks=sol_checks(candidate['candidate_map'])
+    raw=[{'attempt':str(i),'status':a['status'],'validation_error':a.get('error'),
+          'raw_map':a.get('parsed',a.get('raw_text'))} for i,a in enumerate(attempts,1)]
+    output=obj({'judgments':array(obj({'id':enum([c['id'] for c in checks]) if checks else {'type':'string'},
+            'verdict':enum(['plausible','wrong','unknown']),'reason':{'type':'string'}})),
+        'diagnosed_attempts':array(obj({'attempt':enum(['1','2']),
+            'meaning_status':enum(['no_obvious_semantic_error','semantic_error','uncertain']), 'reason':{'type':'string'}})),
+        'map_assessment':enum(['usable','missing_relations','semantic_problem','uncertain']),
+        'assessment_reason':{'type':'string'}})
+    messages=[{'role':'system','content':DIAGNOSTIC_PROMPT},{'role':'user','content':json.dumps(
+        {**public_input(row),'raw_attempts':raw,'possible_intersection':candidate,'checks':checks},ensure_ascii=False)}]
+    return messages,output,checks
+
+
+def validate_diagnostic(value,checks):
+    if not isinstance(value,dict) or set(value)!={'judgments','diagnosed_attempts','map_assessment','assessment_reason'}:
+        raise ValueError('Invalid diagnostic output fields')
+    validate_sol({'judgments':value['judgments']},checks)
+    rows=value['diagnosed_attempts']
+    if not isinstance(rows,list) or any(not isinstance(r,dict) or set(r)!={'attempt','meaning_status','reason'} for r in rows):
+        raise ValueError('Invalid diagnostic attempts')
+    if Counter(r['attempt'] for r in rows)!=Counter(['1','2']):
+        raise ValueError('Diagnose both raw extractions exactly once')
+    if any(r['meaning_status'] not in {'no_obvious_semantic_error','semantic_error','uncertain'} or not isinstance(r['reason'],str) for r in rows):
+        raise ValueError('Invalid semantic diagnostic')
+    if value['map_assessment'] not in {'usable','missing_relations','semantic_problem','uncertain'} or not isinstance(value['assessment_reason'],str):
+        raise ValueError('Invalid map assessment')
+    return deepcopy(value)
+
+
+def diagnose_one(api,row,output):
+    from .common import atomic_new,read_json,safe_id,file_sha
+    name=safe_id(row['source_id'])+'.json'; paths=[output/f'attempt_{i}'/name for i in (1,2)]
+    identity={'source_id':row['source_id'],'genre':row['genre'],'attempt_sha256':[file_sha(p) for p in paths]}
+    path=output/'diagnostics'/name
+    if path.exists():
+        saved=read_json(path)
+        if any(saved.get(k)!=v for k,v in identity.items()):
+            raise ValueError('Saved diagnostic identity changed')
+        return saved
+    attempts=[read_json(p) for p in paths]
+    for attempt in attempts:
+        if 'parsed' not in attempt:
+            saved=[r for r in attempt.get('requests',[]) if r.get('path')]
+            if saved:
+                attempt['raw_text']=read_json(saved[-1]['path']).get('raw')
+    candidate=diagnostic_candidate(attempts,row)
+    messages,output_schema,checks=diagnostic_request(row,attempts,candidate)
+    outcome=_request_outcome(api,messages,output_schema,stage='v4_map_invalid_audit_v1',
+        source_id=row['source_id'],maximum=8192,check=lambda v:validate_diagnostic(v,checks))
+    result={**identity,'candidate':candidate,'checks':checks,**outcome}
+    atomic_new(path,result)
+    return result
+
+
+def diagnose():
+    """Complete the SAME fixed 60 sources; no extraction or source replacement."""
+    from concurrent.futures import ThreadPoolExecutor,as_completed
+    import time
+    from .common import ROOT,atomic_new,collection_lock,constrain_cpu,file_sha,read_json,rows_for,safe_id,sha_text,write_json
+    from .paid import api_for
+    constrain_cpu(); output=ROOT/'C'
+    with collection_lock(output):
+        if (output/'final_complete.json').exists():
+            return read_json(output/'final_complete.json')
+        if not (output/'complete.json').exists():
+            raise RuntimeError('Wait for the initial collector to settle before diagnostic calls')
+        frozen=read_json(output/'design.json'); rows=list(rows_for('maps150')); lookup={r['source_id']:r for r in rows}
+        ids=[sid for sid in frozen['sol_maps60'] if read_json(output/'sol'/(safe_id(sid)+'.json'))['status']!='valid']
+        design={'schema_version':2,'fixed_sol_sources':frozen['sol_maps60'],'diagnostic_ids':ids,
+            'initial_design_sha256':file_sha(output/'design.json'),'initial_complete_sha256':file_sha(output/'complete.json'),
+            'prompt_sha256':sha_text(DIAGNOSTIC_PROMPT),'cap_shared_with_initial_usd':4.,
+            'all_length_endpoint_check_is_stricter_than_method_long_essays':True,
+            'extraction_sha256':{str(p.relative_to(output)):file_sha(p) for p in sorted(output.glob('attempt_*/*.json'))},
+            'no_re_extraction':True,'no_source_replacement':True}
+        if (output/'diagnostic_design.json').exists():
+            if read_json(output/'diagnostic_design.json')!=design:
+                raise ValueError('Diagnostic contract changed')
+        else:
+            atomic_new(output/'diagnostic_design.json',design)
+        api=api_for('C','sol')
+        try:
+            api.settle_interrupted()
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures=[pool.submit(diagnose_one,api,lookup[sid],output) for sid in ids]
+                for done,future in enumerate(as_completed(futures),1):
+                    item=future.result()
+                    write_json(output/'diagnostic_status.json',{'stage':'diagnosing','saved':done,'planned':len(ids),
+                        'last_source':item['source_id'],'last_status':item['status'],'accounting':api.accounting(),'at':time.time()})
+            accounting=api.accounting()
+            if {str(p.relative_to(output)):file_sha(p) for p in sorted(output.glob('attempt_*/*.json'))}!=design['extraction_sha256']:
+                raise RuntimeError('Original extraction artifacts changed during the diagnostic audit')
+            if accounting['pending'] or accounting['confirmed_usd']+accounting['reserved_usd']>4.+1e-9:
+                raise RuntimeError('Diagnostic ledger is unsettled or above cap')
+            from .map_report import publish_final
+            return publish_final(rows,output,frozen,design,accounting)
+        finally:
+            api.close()
