@@ -190,3 +190,13 @@ def test_gate_keeps_numerical_rule_while_B4_is_independent():
         assert gate['passed']==(numerical and started)
         assert gate['stop_B2_B3']==gate['stop_all_B']==(not gate['passed'])
         assert gate['B4_independent'] is True
+
+
+def test_mask_report_distinguishes_literal_preservation_from_guard_rejection():
+    from verak.v4.smoke42_report import mask_diagnostics,rejection_category
+    call={'role':'korean','delegation':1,'turn':1,'action':{'action':'EDIT','valid':False,
+        'value':{'action':'EDIT','old':'#@이름#와','new':'#@이름#의'},
+        'error':'ActionError: 익명화 표지 내부는 편집할 수 없습니다.'}}
+    result=mask_diagnostics([{'source_id':'fixture','calls':[call]}])
+    assert result['guard_rejections']==result['EDIT_with_literal_markers_preserved']==1
+    assert result['gate_adjusted'] is False and rejection_category(call)=='mask_guard'
