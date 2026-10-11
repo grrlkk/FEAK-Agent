@@ -178,3 +178,14 @@ def test_returned_template_failure_counts_as_invalid_action(tmp_path):
     for role in ('orchestrator', 'korean'):
         assert stats['roles'][role]['returned_actions'] == 1
         assert stats['roles'][role]['valid_action_rate'] == 0.
+
+
+def test_dependency_recheck_does_not_retry_model_or_context_failures():
+    from verak.v4.inference_recovery44 import dependency_failure
+    context_failure = {'calls': [], 'context_limits': [{'role': 'orchestrator'}]}
+    model_failure = {'calls': [{'action': {'valid': False, 'error': 'ValueError: invalid JSON'}}]}
+    missing_search = {'calls': [{'action': {'valid': False,
+        'error': "ModuleNotFoundError: No module named 'bm25s'"}}]}
+    assert not dependency_failure(context_failure)
+    assert not dependency_failure(model_failure)
+    assert dependency_failure(missing_search)
