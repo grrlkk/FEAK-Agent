@@ -189,3 +189,18 @@ def test_dependency_recheck_does_not_retry_model_or_context_failures():
     assert not dependency_failure(context_failure)
     assert not dependency_failure(model_failure)
     assert dependency_failure(missing_search)
+
+
+def test_inference_runtime_preflight_has_search_and_cannot_use_training_GPUs(monkeypatch):
+    from verak.v4 import full_run
+    recorded = {}
+    def check(command, **kwargs):
+        recorded.update(command=command, **kwargs)
+        return '{"packages":{"bm25s":"0.3.13"},"index":{"search_top_k":3}}\n'
+    monkeypatch.setattr(full_run.subprocess, 'check_output', check)
+    value = full_run.inference_runtime()
+    assert recorded['env']['CUDA_VISIBLE_DEVICES'] == ''
+    assert recorded['command'][0] == value['python']
+    assert value['python'] != str(full_run.TRAIN_PYTHON)
+    assert 'import bm25s,kiwipiepy' in recorded['command'][-1]
+    assert value['index']['search_top_k'] == 3

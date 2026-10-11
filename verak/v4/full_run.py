@@ -8,13 +8,26 @@ import subprocess
 import time
 import traceback
 
-from .common import atomic_new, file_sha, read_json, write_json
+from .common import REPO, atomic_new, file_sha, read_json, write_json
 from .dryrun_common import BASE, TRAIN_PYTHON, VLLM_PYTHON
 from .full_data import ROOT, ROLES, verify, ref
 from .full_infer import PORT
 from . import orchestrator_v44 as orch
 
 WORKTREE = Path(__file__).resolve().parents[2]
+INFERENCE_PYTHON = REPO/'verak/v4/outputs/scale2/search/venv/bin/python'
+
+
+def inference_runtime():
+    """Validate the established local SEARCH runtime before starting training."""
+    code = ('import importlib.metadata,json; import bm25s,kiwipiepy; '
+        'from verak.v4.search_v43 import verify_index; '
+        'print(json.dumps({"packages":{n:importlib.metadata.version(n) '
+        'for n in ("bm25s","kiwipiepy","torch","transformers","peft","bitsandbytes")},'
+        '"index":verify_index()}))')
+    output = subprocess.check_output([str(INFERENCE_PYTHON), '-c', code], cwd=WORKTREE,
+        env={**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'OMP_NUM_THREADS': '1'}, text=True)
+    return {'python': str(INFERENCE_PYTHON), **json.loads(output.splitlines()[-1])}
 
 
 def preflight():
@@ -29,7 +42,8 @@ def preflight():
                    'world_size': 2, 'micro_batch': 1, 'gradient_accumulation_per_rank': 4},
         'code_sha256': {p.name: file_sha(p) for p in sorted(Path(__file__).parent.glob('full_*.py'))},
         'no_RFT': True, 'no_full_evaluation': True, 'no_oneshot_evaluation': True, 'test_cohort_untouched': True,
-        'new_paid_API_calls': 0, 'data_counts': {r: {p: x['turns'] for p, x in parts.items()} for r, parts in data['roles'].items()}}
+        'new_paid_API_calls': 0, 'inference_runtime': inference_runtime(),
+        'data_counts': {r: {p: x['turns'] for p, x in parts.items()} for r, parts in data['roles'].items()}}
     path = ROOT/'preflight.json'
     if path.exists() and read_json(path) != value:
         raise ValueError('Saved full-training preflight differs')
@@ -107,7 +121,7 @@ def infer():
                 time.sleep(2)
             else: raise RuntimeError('vLLM readiness timeout')
             with (ROOT/'inference.log').open('a') as out:
-                run = subprocess.run([str(TRAIN_PYTHON), '-u', '-m', 'verak.v4.full_infer'], cwd=WORKTREE,
+                run = subprocess.run([str(INFERENCE_PYTHON), '-u', '-m', 'verak.v4.full_infer'], cwd=WORKTREE,
                     env={**environment, 'CUDA_VISIBLE_DEVICES': '1'}, stdout=out, stderr=subprocess.STDOUT)
             if run.returncode: raise RuntimeError('Integrated smoke failed; inspect inference.log')
     finally:
