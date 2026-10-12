@@ -20,8 +20,18 @@ def spread(values, *, percent=False):
 
 
 def fmt(values, percent=False):
-    v = spread(values, percent=percent)
-    return f"{v['mean']:.2f}" + (f" ± {v['sd']:.2f} [{v['min']:.2f}, {v['max']:.2f}]" if len(values)>1 else '')
+    defined = [v for v in values if v is not None]
+    if not defined:
+        return 'undefined (no eligible observations)'
+    v = spread(defined, percent=percent)
+    result = f"{v['mean']:.2f}" + (f" ± {v['sd']:.2f} [{v['min']:.2f}, {v['max']:.2f}]" if len(defined)>1 else '')
+    if len(defined) != len(values):
+        result += f' ({len(defined)}/{len(values)} runs defined)'
+    return result
+
+
+def rate(numerator, denominator):
+    return numerator/denominator if denominator else None
 
 
 def stage_protocol(stage):
@@ -86,15 +96,33 @@ def report():
              'recovery_definition': 'v1 main per-record recovery at final endpoint; normalization baseline separate; unknown projections not zero',
              'test_cohort_untouched': True, 'API_calls': 0}
     write_json(ROOT/'report_metrics.json', value)
+    deterministic = [c for c in cells if c['setting']['name'] == 'deterministic']
+    overview = []
+    for cohort in ('smoke20', 'agent_dev10'):
+        metrics = {}
+        for condition in ('old', 'new'):
+            subset = [c for c in deterministic if c['cohort'] == cohort and c['condition'] == condition]
+            metrics[condition] = {key: mean(c['metrics'][key]/c['metrics']['planned'] for c in subset)
+                for key in ('no_protocol_error', 'all_stages_STOP_done')}
+        a = [metrics[c]['no_protocol_error'] for c in ('old', 'new')]
+        b = [metrics[c]['all_stages_STOP_done'] for c in ('old', 'new')]
+        overview.append(f"- {cohort}, deterministic three-run means (old → new): no protocol error "
+            f"{a[0]:.2%} → {a[1]:.2%} ({100*(a[1]-a[0]):+.2f} pp); all stages STOP(done) "
+            f"{b[0]:.2%} → {b[1]:.2%} ({100*(b[1]-b[0]):+.2f} pp).")
     lines = ['# V4_FIX1 — targeted worker corrections', '',
         'Completed the failure audit, v4.6 exception, deterministic SFT-data fixes, one continuation epoch per worker, '
         'and 240 diagnostic executions. No external API calls, test-cohort evaluation, Orchestrator training, or large RFT.', '',
         'Both old and new workers run in v4.6: old Revision epoch 1 / Korean epoch 2; new continuations from those exact checkpoints. '
         'The Orchestrator remains epoch 2 with its frozen prompt. The comparison measures the combined data corrections and continued SFT; '
-        'it does not isolate the three data fixes or extra training alone.', '',
+        'it does not isolate the three data fixes or extra training alone.', '', *overview, '',
+        'These are repeated runs on the same 30 diagnostic essays. They do not establish held-out writing quality or justify a large RFT run by themselves.', '',
         '## 1. Saved failure taxonomy', '', taxonomy['scope'], '',
         f"Audited {taxonomy['episodes']} saved executions and every one of {taxonomy['rejections']} rejected worker actions. "
         'Historical SEARCH dependency errors remain visible as other/search_dependency, rather than model editing errors.', '',
+        f"The next model action repeated the identical rejected action in "
+        f"{sum(r['next'] == 'repeat' for r in taxonomy['rows'])}/{taxonomy['rejections']} cases. "
+        f"The new terminal-only exception directly covers {sum(r['type'] == 'boundary_terminal_only' for r in taxonomy['rows'])} "
+        'historical rejected actions; it is not the explanation for any broad gain.', '',
         '|Role|Type|Count|Near-copy / short ambiguous|Next action or stage ending|', '|---|---|---:|---|---|']
     for role, kinds in taxonomy['summary'].items():
         for kind, stats in kinds.items():
@@ -143,14 +171,14 @@ def report():
         'NF4 double quantization/BF16, lr 5e-5, one epoch, 8192 context, gradient checkpointing, two-GPU data parallelism, '
         'effective batch 8, cosine/warmup .03. Fresh optimizer with saved adapter weights; target-token-normalized CE. '
         'Orchestrator weights and all three prompts are unchanged.', '',
-        '|Role|Initial checkpoint|Initial validation NLL|After one epoch NLL|Training seconds|New adapter SHA256|',
-        '|---|---|---:|---:|---:|---|']
+        '|Role|Initial checkpoint|Initial validation NLL|Absolute delta from saved parent NLL|After one epoch NLL|Training seconds|New adapter SHA256|',
+        '|---|---|---:|---:|---:|---:|---|']
     for role in ('korean', 'revision'):
         path = ROOT/'adapters'/role
         initial = read_json(path/'initial_validation.json')
         done = read_json(path/'complete.json')
         loss = [x['eval_loss'] for x in done['log_history'] if 'eval_loss' in x][-1]
-        lines.append(f"|{role}|epoch {2 if role == 'korean' else 1}|{initial['eval_loss']:.6f}|{loss:.6f}|"
+        lines.append(f"|{role}|epoch {2 if role == 'korean' else 1}|{initial['eval_loss']:.6f}|{initial['absolute_replay_delta']:.8f}|{loss:.6f}|"
                      f"{done['elapsed_s']:.1f}|`{file_sha(path/'epoch_1/adapter_model.safetensors')}`|")
     lines += ['', '## 5. Deterministic comparison — three repeated runs', '',
         'Temperature 0 / top_p 1; request seeds 47, 73, 101. Seeds do not create stochastic sampling at temperature zero. '
@@ -161,7 +189,6 @@ def report():
         '(b) additionally every worker stage is STOP(done). Valid STOP(done) is a protocol report, not proof that every content task is fixed.', '',
         '|Cohort|Workers|(a) % mean ± SD [range]|(b) % mean ± SD [range]|Per-run (a), (b) counts|',
         '|---|---|---:|---:|---|']
-    deterministic = [c for c in cells if c['setting']['name'] == 'deterministic']
     for cohort in ('smoke20', 'agent_dev10'):
         for condition in ('old', 'new'):
             subset = [c for c in deterministic if c['cohort'] == cohort and c['condition'] == condition]
@@ -175,7 +202,7 @@ def report():
         for condition in ('old', 'new'):
             subset = [c for c in deterministic if c['cohort'] == cohort and c['condition'] == condition]
             for role in ('revision', 'korean'):
-                stop = [c['extra'][role]['STOP_done']/c['extra'][role]['stages'] for c in subset]
+                stop = [rate(c['extra'][role]['STOP_done'], c['extra'][role]['stages']) for c in subset]
                 valid = [c['metrics']['roles'][role]['valid_action_rate'] for c in subset]
                 lines.append(f"|{cohort}|{condition}|{role}|{fmt(stop, True)}|{fmt(valid, True)}|{sum(c['extra'][role]['stages'] for c in subset)}|")
     lines += ['', '### Rejected actions by the original taxonomy', '',
@@ -222,6 +249,11 @@ def report():
         f"Saved episodes: {len(inventory)}. HF/vLLM prompt-token-count audit: `{dict(requests)}`. "
         'This is not a server token-ID equality claim. Every original checkpoint, source export, prompt, cohort and protected report '
         'was checked against its frozen hash. Q comes only from the unchanged GPU reference SCORE tool; no CPU Q or combined reward is reported.', '',
+        'Validation before GPU execution: 64 CPU tests passed; all 10 dev initial-document projections matched the saved reward documents. '
+        'A separate streaming audit of all 14,484 training states found no holdout leakage, target-mask or context/reserve violation, '
+        'or synthetic-rejection mismatch under exact/whitespace-normalized span matching (1,197 recovery states). '
+        'The latter audit is saved in `fix1/data_independent_audit.json`. Each loaded parent adapter also had to reproduce its saved '
+        'validation NLL within 0.001 before continued training; the measured differences appear above.', '',
         '- Frozen contract: `verak/v4/outputs/fix1/preflight.json`.',
         '- All original rejected actions and examples: `fix1/taxonomy.json`.',
         '- Data counts, source partition and audit: `fix1/data/manifest.json`.',
