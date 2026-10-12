@@ -127,12 +127,24 @@ def report():
         overview.append(f"- {cohort}, deterministic three-run means (old → new): no protocol error "
             f"{a[0]:.2%} → {a[1]:.2%} ({100*(a[1]-a[0]):+.2f} pp); all stages STOP(done) "
             f"{b[0]:.2%} → {b[1]:.2%} ({100*(b[1]-b[0]):+.2f} pp).")
+    totals = {condition: {key: sum(c['metrics'][key] for c in deterministic if c['condition'] == condition)
+              for key in ('planned', 'no_protocol_error', 'all_stages_STOP_done')} for condition in ('old', 'new')}
+    totals_text = 'Across the fixed 30 essays and three deterministic repeats, '
+    totals_text += '; '.join(f"{condition}: {t['no_protocol_error']}/{t['planned']} without protocol error, "
+                           f"{t['all_stages_STOP_done']}/{t['planned']} all stages done" for condition, t in totals.items())+'. '
+    totals_text += 'These pooled counts retain the prescribed 20:10 cohort mixture; the cohort results above remain primary.'
+    interpretation = ''
+    if (totals['new']['no_protocol_error'] <= totals['old']['no_protocol_error']
+            and totals['new']['all_stages_STOP_done'] <= totals['old']['all_stages_STOP_done']):
+        interpretation = ('Interpretation: the main comparison does not establish a consistent completion benefit from this '
+            'correction bundle. It does not support promoting the new workers or starting a large RFT run yet. '
+            'The sampling preview below remains a separate, single-pass diagnostic.')
     lines = ['# V4_FIX1 — targeted worker corrections', '',
         'Completed the failure audit, v4.6 exception, deterministic SFT-data fixes, one continuation epoch per worker, '
         'and 240 diagnostic executions. No external LLM API calls, test-cohort evaluation, Orchestrator training, or large RFT.', '',
         'Both old and new workers run in v4.6: old Revision epoch 1 / Korean epoch 2; new continuations from those exact checkpoints. '
         'The Orchestrator remains epoch 2 with its frozen prompt. The comparison measures the combined data corrections and continued SFT; '
-        'it does not isolate the three data fixes or extra training alone.', '', *overview, '',
+        'it does not isolate the three data fixes or extra training alone.', '', *overview, '', totals_text, '', interpretation, '',
         'These are repeated runs on the same 30 diagnostic essays. They do not establish held-out writing quality or justify a large RFT run by themselves.', '',
         '## 1. Saved failure taxonomy', '', taxonomy['scope'], '',
         f"Audited {taxonomy['episodes']} saved executions and every one of {taxonomy['rejections']} rejected worker actions. "
@@ -260,24 +272,41 @@ def report():
                 columns = ['`'+str([c['extra'][role][name] for c in subset])+'`'
                            for name in ('near_copy_not_found', 'short_ambiguous', 'repeated_rejections')]
                 lines.append(f'|{cohort}|{condition}|{role}|'+ '|'.join(columns)+'|')
+    lines += ['', 'Aggregate rejected actions across both cohorts and the three deterministic repeats (old → new):', '']
+    for kind in ('span_not_found', 'span_ambiguous', 'no_op_edit'):
+        counts = [sum(r['type'] == kind for c in deterministic if c['condition'] == condition for r in c['rejections'])
+                  for condition in ('old', 'new')]
+        lines.append(f'- {kind}: {counts[0]} → {counts[1]}.')
+    repeated = [sum(r['next'] == 'repeat' for c in deterministic if c['condition'] == condition for r in c['rejections'])
+                for condition in ('old', 'new')]
+    lines += [f'- Immediate repetitions of rejected actions: {repeated[0]} → {repeated[1]}.', '',
+              'Other rejected actions, kept separate from no-op EDIT:', '',
+              '|Cohort|Workers|Role|Action / subtype|Count across three runs|', '|---|---|---|---|---:|']
+    other = Counter((c['cohort'], c['condition'], r['role'],
+                     (r.get('action') or {}).get('action', 'INVALID')+'/'+r.get('subtype', 'other'))
+                    for c in deterministic for r in c['rejections'] if r['type'] == 'other')
+    for keys, n in sorted(other.items()):
+        lines.append('|'+'|'.join(keys)+f'|{n}|')
     lines += ['', '### agent_dev10 corruption recovery (diagnostic only)', '',
         'Existing v1 record-level main recovery at the final essay is used unchanged. Initial normalization recovery is shown '
-        'separately. Unknown exact projections remain unknown and retain their count; they are not assigned zero or silently dropped.', '',
-        '|Workers|Operator|Distinct records|Initially full|Final full / observed record-runs|Unknown record-runs|Mean main recovery per run|',
-        '|---|---|---:|---:|---:|---:|---|']
+        'separately. Unknown exact projections remain unknown and retain their count; they are not assigned zero or silently dropped. '
+        'Weighted recovery uses the unchanged v1 rule: 0.7 main + 0.3 coupled when coupled targets exist, otherwise main.', '',
+        '|Workers|Operator|Distinct records|Initially full|Final full / observed record-runs|Unknown record-runs|Mean main recovery per run|Mean weighted recovery per run|',
+        '|---|---|---:|---:|---:|---:|---|---|']
     for condition in ('old', 'new'):
         subset = [c for c in deterministic if c['cohort'] == 'agent_dev10' and c['condition'] == condition]
         ops = sorted({r['op'] for c in subset for e in c['recovery'] for r in e['initial']})
         for op in ops:
             initial = [r for e in subset[0]['recovery'] for r in e['initial'] if r['op'] == op]
-            observed = []; unknown = 0; run_means = []
+            observed = []; unknown = 0; run_means = []; weighted_means = []
             for c in subset:
                 run = [r for e in c['recovery'] for r in (e['final'] or []) if r['op'] == op]
                 observed += run
                 unknown += sum(r['op'] == op for e in c['recovery'] if e['final'] is None for r in e['initial'])
                 run_means.append(mean(r['main'] for r in run) if run else None)
+                weighted_means.append(mean(r['recovery'] for r in run) if run else None)
             lines.append(f"|{condition}|{op}|{len(initial)}|{sum(r['main'] == 1 for r in initial)}|"
-                f"{sum(r['main'] == 1 for r in observed)} / {len(observed)}|{unknown}|`{run_means}`|")
+                f"{sum(r['main'] == 1 for r in observed)} / {len(observed)}|{unknown}|`{run_means}`|`{weighted_means}`|")
     lines += ['', '## 6. Sampling preview — separate from deterministic results', '',
         'One pass per condition at temperature .7 / top_p .95 / seed 173, for all three roles. '
         'This is only a preview of rollout protocol reliability; no rollout is selected for RFT or trained on.', '',
@@ -300,6 +329,10 @@ def report():
         'or synthetic-rejection mismatch under exact/whitespace-normalized span matching (1,197 recovery states). '
         'The latter audit is saved in `fix1/data_independent_audit.json`. Each loaded parent adapter also had to reproduce its saved '
         'validation NLL within 0.001 before continued training; the measured differences appear above.', '',
+        'The independent post-run audit reconciled all aggregate counts to 240 raw attempts on the same 30 diagnostic essays '
+        'in 16 comparison cells. Initial text and sentence/paragraph layout are identical across every repeat and condition. '
+        'There were zero runner, transport, or scorer errors, and zero unknown recovery projections. Model protocol failures '
+        'are retained in the results above. Audit: `fix1/outputs_independent_audit.json`.', '',
         '- Frozen contract: `verak/v4/outputs/fix1/preflight.json`.',
         '- Code worktree: `/home/chanwoo/FEAK-Agent-v46-fix1`, branch `fix/feak-v46-fix1-20261012`.',
         '- All original rejected actions and examples: `fix1/taxonomy.json`.',
