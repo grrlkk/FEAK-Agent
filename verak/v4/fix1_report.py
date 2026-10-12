@@ -39,6 +39,20 @@ def stage_protocol(stage):
             stage.get('stop_status') == 'blocked' and blocked_reason(stage.get('report', {}))))
 
 
+def budget_states(attempt):
+    result = []
+    for index, stage in enumerate(attempt['stages'], 1):
+        if stage['ending'] != 'step_limit':
+            continue
+        calls = [c for c in attempt['calls'] if c['role'] == stage['role'] and c['stage'] == index]
+        if not calls:
+            raise ValueError('A step-limit stage has no recorded calls')
+        result.append({'case_id': attempt['case_id'], 'role': stage['role'], 'stage': index,
+            'actions': len(calls), 'all_actions_valid': all(c['action']['valid'] for c in calls),
+            'last_two_actions': [c['action'].get('value') for c in calls[-2:]]})
+    return result
+
+
 def recovery(case, attempt):
     # This function runs only after all policy generations are saved. These
     # references, source answers and records never enter model observations.
@@ -70,24 +84,28 @@ def report():
     cases = {c['case_id']: c for cohort in manifest['cohorts'].values() for c in cohort['cases']}
     inventory = []; cells = []; requests = Counter()
     for cell in results['cells']:
-        attempts = []; rejects = []; mechanics = []
+        attempts = []; rejects = []; mechanics = []; budgets = []
         for path in sorted((Path(cell['directory'])/'attempts').glob('*.json')):
             attempt = read_json(path)
             assert completion(attempt) == attempt['completion']
             assert not attempt['privileged_plan_at_inference'] and not attempt['records_at_inference']
             inventory.append(ref(path)); attempts.append(attempt)
-            rejects.extend(rejection_rows(attempt, path, near=False))
+            budgets.extend(budget_states(attempt))
+            rejects.extend(rejection_rows(attempt, path))
             for call in attempt['calls']:
                 requests[call['template_audit']['status']] += 1
             if cell['cohort'] == 'agent_dev10':
                 mechanics.append(recovery(cases[attempt['case_id']], attempt))
         if len(attempts) != (20 if cell['cohort'] == 'smoke20' else 10):
             raise ValueError('An evaluation cell is incomplete')
-        measured = {**cell, 'rejections': rejects, 'recovery': mechanics, 'extra': {}}
+        measured = {**cell, 'rejections': rejects, 'recovery': mechanics, 'budget_states': budgets, 'extra': {}}
         for role in ('revision', 'korean'):
             stages = [s for a in attempts for s in a['stages'] if s['role'] == role]
             measured['extra'][role] = {'stages': len(stages), 'protocol_stages': sum(stage_protocol(s) for s in stages),
                 'STOP_done': sum(s['ending'] == 'STOP' and s['stop_status'] == 'done' for s in stages),
+                'near_copy_not_found': sum(bool((r.get('nearest') or {}).get('near_copy')) for r in rejects if r['role'] == role),
+                'short_ambiguous': sum(r.get('ambiguous_short', False) for r in rejects if r['role'] == role),
+                'repeated_rejections': sum(r['next'] == 'repeat' for r in rejects if r['role'] == role),
                 'rejection_types': dict(Counter(r['type'] for r in rejects if r['role'] == role))}
         cells.append(measured)
     if len(inventory) != 240:
@@ -111,7 +129,7 @@ def report():
             f"{b[0]:.2%} → {b[1]:.2%} ({100*(b[1]-b[0]):+.2f} pp).")
     lines = ['# V4_FIX1 — targeted worker corrections', '',
         'Completed the failure audit, v4.6 exception, deterministic SFT-data fixes, one continuation epoch per worker, '
-        'and 240 diagnostic executions. No external API calls, test-cohort evaluation, Orchestrator training, or large RFT.', '',
+        'and 240 diagnostic executions. No external LLM API calls, test-cohort evaluation, Orchestrator training, or large RFT.', '',
         'Both old and new workers run in v4.6: old Revision epoch 1 / Korean epoch 2; new continuations from those exact checkpoints. '
         'The Orchestrator remains epoch 2 with its frozen prompt. The comparison measures the combined data corrections and continued SFT; '
         'it does not isolate the three data fixes or extra training alone.', '', *overview, '',
@@ -205,6 +223,23 @@ def report():
                 stop = [rate(c['extra'][role]['STOP_done'], c['extra'][role]['stages']) for c in subset]
                 valid = [c['metrics']['roles'][role]['valid_action_rate'] for c in subset]
                 lines.append(f"|{cohort}|{condition}|{role}|{fmt(stop, True)}|{fmt(valid, True)}|{sum(c['extra'][role]['stages'] for c in subset)}|")
+    lines += ['', '### Stage endings and the remaining budget failures', '',
+        'Counts below are summed across the three deterministic repeats. A step-limit failure can occur even when every action '
+        'was accepted; it is separate from the rejected-action taxonomy.', '',
+        '|Cohort|Workers|Role|Model STOP(blocked)|Controller forced stop|Step limit|Of step limits: all actions valid|Context limit|',
+        '|---|---|---|---:|---:|---:|---:|---:|']
+    for cohort in ('smoke20', 'agent_dev10'):
+        for condition in ('old', 'new'):
+            subset = [c for c in deterministic if c['cohort'] == cohort and c['condition'] == condition]
+            for role in ('revision', 'korean'):
+                rows = [c['metrics']['roles'][role] for c in subset]
+                ends = Counter()
+                for row in rows:
+                    ends.update(row['stage_endings'])
+                all_valid = sum(b['all_actions_valid'] for c in subset for b in c['budget_states'] if b['role'] == role)
+                contexts = sum(n for k, n in ends.items() if 'context_limit' in k)
+                lines.append(f"|{cohort}|{condition}|{role}|{sum(r['model_STOP_blocked'] for r in rows)}|"
+                    f"{ends['controller_STOP_blocked']}|{ends['step_limit']}|{all_valid}|{contexts}|")
     lines += ['', '### Rejected actions by the original taxonomy', '',
               '|Cohort|Workers|Role|Type|Counts in runs 1 / 2 / 3|Mean ± SD [range]|', '|---|---|---|---|---|---:|']
     for cohort in ('smoke20', 'agent_dev10'):
@@ -214,6 +249,17 @@ def report():
                 for kind in TYPES:
                     counts = [c['extra'][role]['rejection_types'].get(kind, 0) for c in subset]
                     lines.append(f'|{cohort}|{condition}|{role}|{kind}|`{counts}`|{fmt(counts)}|')
+    lines += ['', 'The following are overlapping audit flags, not additional rejection categories. Near-copy uses the identical '
+              'character-distance rule as the historical audit; repeated means the very next model action repeated the rejection.', '',
+              '|Cohort|Workers|Role|Near-copy not-found in runs 1 / 2 / 3|Short ambiguous in runs 1 / 2 / 3|Repeated rejected action in runs 1 / 2 / 3|',
+              '|---|---|---|---|---|---|']
+    for cohort in ('smoke20', 'agent_dev10'):
+        for condition in ('old', 'new'):
+            subset = [c for c in deterministic if c['cohort'] == cohort and c['condition'] == condition]
+            for role in ('revision', 'korean'):
+                columns = ['`'+str([c['extra'][role][name] for c in subset])+'`'
+                           for name in ('near_copy_not_found', 'short_ambiguous', 'repeated_rejections')]
+                lines.append(f'|{cohort}|{condition}|{role}|'+ '|'.join(columns)+'|')
     lines += ['', '### agent_dev10 corruption recovery (diagnostic only)', '',
         'Existing v1 record-level main recovery at the final essay is used unchanged. Initial normalization recovery is shown '
         'separately. Unknown exact projections remain unknown and retain their count; they are not assigned zero or silently dropped.', '',
@@ -255,6 +301,7 @@ def report():
         'The latter audit is saved in `fix1/data_independent_audit.json`. Each loaded parent adapter also had to reproduce its saved '
         'validation NLL within 0.001 before continued training; the measured differences appear above.', '',
         '- Frozen contract: `verak/v4/outputs/fix1/preflight.json`.',
+        '- Code worktree: `/home/chanwoo/FEAK-Agent-v46-fix1`, branch `fix/feak-v46-fix1-20261012`.',
         '- All original rejected actions and examples: `fix1/taxonomy.json`.',
         '- Data counts, source partition and audit: `fix1/data/manifest.json`.',
         '- Full paired metrics and every attempt hash: `fix1/report_metrics.json`.',
@@ -262,7 +309,8 @@ def report():
         'Stopped after the requested targeted experiment. No full evaluation, test-cohort use or large RFT.']
     path = REPO/'imple/reports/V4_FIX1.md'
     path.write_text('\n'.join(lines)+'\n', encoding='utf-8')
-    write_json(ROOT/'report_complete.json', {'report': ref(path), 'metrics': ref(ROOT/'report_metrics.json'), 'episodes': 240})
+    write_json(ROOT/'report_complete.json', {'report': ref(path), 'metrics': ref(ROOT/'report_metrics.json'),
+        'report_code_sha256': file_sha(Path(__file__)), 'episodes': 240})
     print(str(path))
 
 
