@@ -10,6 +10,10 @@ from verak.v4.render_v43 import assert_rendered, render
 VERSION = 'v5_cooperate1_20261013'
 
 
+def search_unavailable(query):
+    raise ValueError('SEARCH is disabled; the requested evidence belongs in writer_notes')
+
+
 def snapshot(env):
     return sha_text(dumps([[[p.pid, [[u.sid, u.text] for u in p.units]]
                             for p in env.document.paragraphs], env.relations]))
@@ -39,18 +43,47 @@ def orchestrator_observation(messages, env, reports, *, final_review_pending):
     }
     # orch.messages already receives these reports; do not duplicate them.
     payload['worker_reports'] = deepcopy(reports)
+    if not env.search_enabled:
+        payload['integration']['search_available'] = False
+        payload['integration']['deferred_search_tasks'] = deepcopy(env.deferred_search_tasks)
     messages[1]['content'] = dumps(payload)
     return messages
 
 
 class CooperationEnvironment(V46Environment):
     """Keep full Korean scope; never blacklist a sentence after a failed action."""
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, search_enabled=True, **kwargs):
         super().__init__(*args, **kwargs)
         self.stage_rejections = {}
         self.worker_reports = []
+        self.search_enabled = search_enabled
+        self.deferred_search_tasks = []
+        if not search_enabled:
+            self.search.backend = search_unavailable
+
+    def route_revision_items(self, items):
+        """Defer evidence tasks before dispatch; never fabricate a worker STOP."""
+        if self.search_enabled:
+            return deepcopy(items), []
+        ready, deferred = [], []
+        for item in items:
+            if item['needs_search'] == 'no':
+                ready.append(deepcopy(item))
+                continue
+            entry = {'task': deepcopy(item), 'status': 'deferred_to_writer',
+                     'reason': 'search_disabled', 'origin': 'controller',
+                     'note': '추가 근거 확인 필요 ('+', '.join(item['location'])+'): '+item['instruction']}
+            deferred.append(entry)
+            if entry not in self.deferred_search_tasks:
+                self.deferred_search_tasks.append(deepcopy(entry))
+        return ready, deferred
+
+    def writer_notes(self, existing=()):
+        return list(dict.fromkeys([*existing, *(x['note'] for x in self.deferred_search_tasks)]))
 
     def delegate(self, items, number):
+        if not self.search_enabled and any(x.get('needs_search') == 'yes' for x in items):
+            raise ValueError('Defer SEARCH tasks to writer_notes before worker dispatch')
         super().delegate(items, number)
         self.stage_rejections = {}
 
@@ -76,6 +109,8 @@ class CooperationEnvironment(V46Environment):
                                                   in self.stage_rejections.items() if s == key],
             'retry_rule': '같은 상태에서 이미 거절된 똑같은 행동을 반복하지 않는다. 다른 유효한 수정은 가능하다. 할 일이 없으면 STOP done, 못하면 이유를 적어 STOP blocked한다.',
         }
+        if not self.search_enabled:
+            payload['cooperation']['search_available'] = False
         if role == 'korean':
             # This is the original whole-essay form scope, NOT a per-notice queue.
             payload['scope'] = 'whole_essay_form_pass'

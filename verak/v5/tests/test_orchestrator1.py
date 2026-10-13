@@ -154,3 +154,51 @@ def test_unchanged_text_cannot_be_counted_as_improved_or_strictly_preferred():
     verdict['preference'] = 'A'
     assert set(identity_errors(verdict, messages)) == {
         'unchanged_original_rated_better', 'identical_texts_strict_preference'}
+
+
+def test_no_search_pair_uses_new_control_and_preserves_hybrid_input_parity(tmp_path):
+    from verak.v5.tests.test_no_search import Backend, SEARCH, EDIT, run as no_search_run
+    from verak.v5.orchestrator1 import audit_no_search
+    baseline_backend = Backend([SEARCH, EDIT])
+    baseline = no_search_run(tmp_path/'control', baseline_backend)
+    api = FakeAPI()
+    api.script = Backend([SEARCH, EDIT])
+    workers = Backend([SEARCH, EDIT])
+    backend = HybridBackend(workers, api, 'fixture',
+                            expected_first_messages=baseline_backend.observations[0][1])
+    result = no_search_run(tmp_path/'luna', backend)
+    assert audit_no_search(baseline) and audit_no_search(result)
+    assert result['final'] == baseline['final']
+    assert result['writer_notes'] == baseline['writer_notes']
+    assert result['deferred_task_count'] == 1
+    assert api.script.observations == [(r,m) for r,m in baseline_backend.observations if r=='orchestrator']
+    assert workers.observations == [(r,m) for r,m in baseline_backend.observations if r!='orchestrator']
+
+
+@pytest.mark.parametrize('corruption', ['enabled','history','citation','action','task'])
+def test_no_search_audit_fails_closed(corruption):
+    from verak.v5.orchestrator1 import audit_no_search
+    episode = {'search_enabled':False, 'source_citations':{}, 'actions':{}, 'stages':[]}
+    if corruption == 'enabled': episode['search_enabled'] = True
+    if corruption == 'history': episode['source_citations']['search_history'] = [{}]
+    if corruption == 'citation': episode['source_citations']['source_citations'] = [{}]
+    if corruption == 'action': episode['actions']['revision'] = [{'action':'SEARCH','valid':True}]
+    if corruption == 'task': episode['stages'] = [{'assigned_tasks':[{'needs_search':'yes'}]}]
+    with pytest.raises(ValueError): audit_no_search(episode)
+
+
+def test_no_search_control_cannot_reuse_search_enabled_artifacts(tmp_path, monkeypatch):
+    from verak.v5 import orchestrator1
+    monkeypatch.setattr(orchestrator1, 'SEARCH_ENABLED', False)
+    monkeypatch.setattr(orchestrator1, 'ROOT', tmp_path)
+    case = {'case_id':'fixture', 'cohort':'smoke20', 'controls':{'1':{'episode':'historical_search_enabled'}}}
+    with pytest.raises(FileNotFoundError): orchestrator1.control_artifacts(case)
+    artifacts = {}
+    for kind,folder in (('episode','attempts'), ('scores','quality_scores')):
+        path = orchestrator1.control_dir(case)/folder/'fixture.json'
+        write_json(path, {'search_enabled':False})
+        artifacts[kind] = ref(path)
+    assert orchestrator1.control_artifacts(case) == artifacts
+    write_json(tmp_path/'control_complete.json', {'artifacts':{'fixture':artifacts}})
+    write_json(orchestrator1.control_dir(case)/'attempts/fixture.json', {'changed':True})
+    with pytest.raises(ValueError): orchestrator1.verified(orchestrator1.control_artifacts(case)['episode'])

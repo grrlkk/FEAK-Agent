@@ -98,14 +98,19 @@ def sync_map(env):
 
 
 def run_case(row, *, case_id, output, backend, tok, analysis, score,
-             cooperation=False, capture_states=False):
+             cooperation=False, capture_states=False, search_enabled=True):
+    if not search_enabled and not cooperation:
+        raise ValueError('Disabling SEARCH requires the cooperation controller')
     path = output/'attempts'/(safe_id(case_id)+'.json')
     if path.exists():
-        return read_json(path)
+        saved = read_json(path)
+        if saved.get('search_enabled', True) != search_enabled:
+            raise ValueError('Saved SEARCH setting differs; use a separate output directory')
+        return saved
     if cooperation:
         from verak.v5.cooperate_env import (CooperationEnvironment, snapshot,
                                             worker_report, orchestrator_observation, VERSION)
-        env = CooperationEnvironment(row, analysis)
+        env = CooperationEnvironment(row, analysis, search_enabled=search_enabled)
     else:
         env = V46Environment(row, analysis)
     result = {'case_id': case_id, 'source_id': row['source_id'], 'genre': row['genre'],
@@ -116,6 +121,8 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score,
         'environment_version': 'v4.6', 'worker_prompts': 'v4.3', 'orchestrator_prompt': 'v4.4'}
     if cooperation:
         result['environment_version'] = VERSION
+    if not search_enabled:
+        result['search_enabled'] = False
     if capture_states:
         result['initial_token_document'] = save_document(env.document)
     directory = output/'requests'/safe_id(case_id)
@@ -249,11 +256,20 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score,
                     phase = 'plan'
                 elif name == 'DELEGATE':
                     # Only student-produced public items enter worker delegation.
-                    report = stage(action['to'], action['items'])
-                    korean_current = action['to'] == 'korean'
-                    reports.append(worker_report(report) if cooperation else
-                        {k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
-                    final_review_pending = False
+                    items = action['items']
+                    if not search_enabled and action['to'] == 'revision':
+                        items, deferred = env.route_revision_items(items)
+                        record.update(executed_items=deepcopy(items),
+                                      deferred_to_writer_notes=deepcopy(deferred),
+                                      worker_dispatched=bool(items))
+                        result['deferred_search_tasks'] = deepcopy(env.deferred_search_tasks)
+                        result['writer_notes'] = env.writer_notes()
+                    if items or action['to'] == 'korean':
+                        report = stage(action['to'], items)
+                        korean_current = action['to'] == 'korean'
+                        reports.append(worker_report(report) if cooperation else
+                            {k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
+                        final_review_pending = False
                 else:
                     ran_final_pass = False
                     if not korean_current:
@@ -303,6 +319,13 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score,
                  and all(s['status'] == 'completed' for s in result['score_tools']))
     result['completion'] = completion(result)
     result['new_paid_calls'] = sum(bool(c.get('new_paid_call')) for c in result['calls'])
+    if not search_enabled:
+        model_notes = result.get('finish_report', {}).get('writer_notes', [])
+        result['deferred_search_tasks'] = deepcopy(env.deferred_search_tasks)
+        result['writer_notes'] = env.writer_notes(model_notes)
+        # Keep the actual model FINISH in calls/finish_report; deferred work
+        # is separately attributed to the controller, never claimed as done.
+        result['deferred_task_count'] = len(env.deferred_search_tasks)
     if capture_states:
         result['lineage'] = deepcopy(env.lineage)
     result['complete'] = result['completion']['no_protocol_error']

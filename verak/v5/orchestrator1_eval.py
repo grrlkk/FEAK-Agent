@@ -8,7 +8,8 @@ import statistics
 import time
 
 from .orchestrator1 import (ROOT, REPORT, case_dir, verify_design,
-    accounting, ref, verified, read_json, write_json, safe_id, sha_text)
+    accounting, ref, verified, read_json, write_json, safe_id, sha_text,
+    SEARCH_ENABLED, control_artifacts, audit_no_search)
 from .api import PaidAPI, BudgetStop
 from .check_judge import freeze
 from .recovery1_eval import PROMPT, validate, evidence_only
@@ -17,7 +18,7 @@ from verak.v4.fix1_infer import summarize
 
 
 def source_pair(case):
-    return {'control':case['controls']['1']['episode'],
+    return {'control':control_artifacts(case)['episode'],
             'luna':ref(case_dir(case)/'attempts'/(safe_id(case['case_id'])+'.json'))}
 
 
@@ -45,6 +46,9 @@ def judge_manifest():
     rng = random.Random(design['evaluation']['seed']); requests = []
     for case in design['cases']:
         artifacts = source_pair(case); episodes = {c:verified(r) for c,r in artifacts.items()}
+        if not SEARCH_ENABLED:
+            for episode in episodes.values():
+                audit_no_search(episode)
         order = ['control','luna']; rng.shuffle(order)
         for index, sequence in enumerate((order, list(reversed(order)))):
             request = make_judge_case(case, episodes, sequence, index)
@@ -134,19 +138,25 @@ def report():
     from .repair1_eval import record_metrics
     from .measurement import a1_planning
     from .pilot import cases as pilot_cases
+    conditions = ('control1','control2','control3','luna') if SEARCH_ENABLED else ('control1','luna')
     for case in design['cases']:
-        for condition in ('control1','control2','control3','luna'):
+        for condition in conditions:
             if condition == 'luna':
                 artifact = ref(case_dir(case)/'attempts'/(safe_id(case['case_id'])+'.json'))
                 scores = read_json(case_dir(case)/'quality_scores'/(safe_id(case['case_id'])+'.json'))
             else:
-                saved = case['controls'][condition[-1]]
+                saved = control_artifacts(case, condition[-1])
                 artifact = saved['episode']; scores = verified(saved['scores'])
             episode = verified(artifact); episodes[condition].append(episode)
+            if not SEARCH_ENABLED:
+                audit_no_search(episode)
             row = {'case_id':case['case_id'], 'cohort':case['cohort'], 'condition':condition,
                 'artifact':artifact, 'completion':episode['completion'],
                 'Q_delta':scores['final']['mean']-scores['original']['mean'],
                 'delegations':delegation_audit(episode), 'record_metrics':None, 'scope_coverage':None}
+            if not SEARCH_ENABLED:
+                row.update(deferred_tasks=episode.get('deferred_search_tasks', []),
+                           writer_notes=episode.get('writer_notes', []))
             if case['cohort'] == 'agent_dev10':
                 row['record_metrics'] = record_metrics(case, {
                     'initial':episode['initial_token_document'], 'final':episode['final_token_document'],
@@ -167,6 +177,12 @@ def report():
             'mean_delegations':operations[condition]['mean_model_delegations'],
             'worker_rejections':sum(not a['valid'] for e in values for role in ('revision','korean') for a in e['actions'][role]),
             'orchestrator_ending':operations[condition]['orchestrator_endings']}
+        if not SEARCH_ENABLED:
+            metrics[condition].update(
+                deferred_tasks=sum(e.get('deferred_task_count', 0) for e in values),
+                essays_with_deferred_tasks=sum(bool(e.get('deferred_task_count')) for e in values),
+                search_attempts=sum(a['action']=='SEARCH' for e in values for acts in e['actions'].values() for a in acts),
+                successful_searches=0, retrieved_passages=0)
         by_op = defaultdict(list)
         for r in selected:
             if r['record_metrics'] and r['record_metrics']['final']['status']=='exact':
@@ -229,18 +245,36 @@ def report():
         'evaluator_code':ref(Path(__file__)), 'order_check':order_check, 'accounting':accounting(),
         'scope_is_not_correct_diagnosis':True, 'limits':design['limits']}
     write_json(ROOT/'metrics.json', result)
-    lines = ['# V5_ORCHESTRATOR1 — 총괄만 Luna로 교체', '',
+    if SEARCH_ENABLED:
+        intro = ['# V5_ORCHESTRATOR1 — 총괄만 Luna로 교체', '',
         '기존 COOPERATE1과 같은 smoke20 + agent_dev10이다. Revision epoch1 / Korean epoch2, '
         '프롬프트·관찰·검색·행동 예산을 유지하고 총괄의 생성 모델을 gpt-6-luna로 바꿨다. '
         'API는 Chat Completions와 JSON 객체 형식을 사용했다. '
         'Luna reasoning none / temperature0, 작업자 temperature0 / top_p1 / seed47. 새 학습과 test cohort 사용 없음.', '',
         '대조군 run1을 주 비교로 고정하고 run2/3은 실행 변동 범위로 보존했다. 새 조건은 30편 1회이다. '
-        '기존 Kanana 토큰 기준 입력 제한은 유지하고 API 토큰 사용량은 별도로 기록했다.', '',
+        '기존 Kanana 토큰 기준 입력 제한은 유지하고 API 토큰 사용량은 별도로 기록했다.', '']
+    else:
+        intro = ['# V5_ORCHESTRATOR1_NO_SEARCH — 검색 없는 총괄 비교', '',
+            '사용자 지적에 따라 검색 조건을 바로잡았다. 같은 smoke20 + agent_dev10에서 기존 총괄과 '
+            'Luna 총괄을 모두 SEARCH 없이 새로 실행했다(30편 × 2조건). 검색을 켰던 이전 결과는 이 비교의 대조군이 아니다.', '',
+            'Revision epoch1 / Korean epoch2, 원래 system prompt·문맥·수정 예산·한국어 최종 점검 순서는 같다. '
+            '검색이 필요한 항목은 실행 전 작성자 메모로 보류하고, 총괄과 작업자 관찰에 검색 불가를 표시한다. '
+            '검색 백엔드·인덱스 점검·실제 검색 모두 비활성화했다. '
+            '보류한 항목은 완료 작업으로 세지 않는다.', '',
+            'Luna는 Chat Completions JSON 객체 형식, reasoning none / temperature0이다. '
+            '로컬 모델은 temperature0 / top_p1 / seed47. 학습과 test cohort 사용 없음.', '']
+    lines = intro + [
         '| 조건 | 정상 종료 /30 | 모든 단계 done /30 | 작업자 거절 | 위임/편 | 평균 ΔQ |',
         '|---|---:|---:|---:|---:|---:|']
     for condition, m in metrics.items():
         lines.append(f'| {condition} | {m["no_protocol_error"]} | {m["all_stages_STOP_done"]} | '
             f'{m["worker_rejections"]} | {m["mean_delegations"]:.2f} | {m["mean_Q_delta"]:.4f} |')
+    if not SEARCH_ENABLED:
+        lines += ['', '## 검색 차단 확인', '',
+            '| 조건 | 검색 시도 | 실제 검색 | 검색 근거 | 보류 항목 | 보류 있는 글 |',
+            '|---|---:|---:|---:|---:|---:|']
+        for condition, m in metrics.items():
+            lines.append(f'| {condition} | {m["search_attempts"]} | 0 | 0 | {m["deferred_tasks"]} | {m["essays_with_deferred_tasks"]} |')
     lines += ['', '## 글 전체 블라인드 평가', '',
         '원문과 두 최종본, 각 조건이 실제로 검색한 근거를 제시했다. 모델·행동·점수는 숨겼다. '
         '기존 RECOVERY1 전체 글 평가 프롬프트를 그대로 사용했다. 첫 무작위 순서가 주 집계이며 역순은 민감도 확인이다. '
@@ -269,10 +303,13 @@ def report():
         '## 비용·제약', '', 'API 비용: `'+dumps(accounting())+'`', '',
         '작은 재사용 진단 표본이며 새 조건 1회다. 같은 설정의 로컬 추론도 변동할 수 있다. '
         '모델 평가는 사람 정답이 아니며 최종 일반화 성능을 뜻하지 않는다.', '',
-        'Responses의 첫 실행은 여러 메시지의 행동 JSON이 연결되는 오류로 중단했다. '
+        ('Responses의 첫 실행은 여러 메시지의 행동 JSON이 연결되는 오류로 중단했다. '
         'JSON 모드 확인 요청 2건도 복수 메시지를 반환했다. '
         '그 출력·실패·소스는 별도 보존했고 비용은 위 총액에 포함했다. '
-        '따라서 이 결과는 Luna + Chat Completions/JSON 설정의 결과다. 원래 응답에서 일부 행동만 뽑아 성공으로 처리하지 않았다.', '',
+        '따라서 이 결과는 Luna + Chat Completions/JSON 설정의 결과다. 원래 응답에서 일부 행동만 뽑아 성공으로 처리하지 않았다.'
+        if SEARCH_ENABLED else '이전 검색 포함 실험·형식 확인 비용과 미확정 예약금도 합산하여 기존 $3 상한 안에서 실행했다. '
+        '검색 차단이 EDIT/INSERT로 새 사실을 만들어 내는 오류까지 막는 것은 아니다. '
+        '이번 비교만으로 총괄 또는 작업자가 유일한 병목이라고 단정하지 않는다.'), '',
         f'자료: `{ROOT}`. 기본 실행 모델과 기존 결과는 바꾸지 않았다.']
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text('\n'.join(lines)+'\n')
