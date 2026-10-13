@@ -195,3 +195,35 @@ python -m verak.v5.check_conn
 
 `check_conn`은 CPU에서 저장한 전수 형태 검토 주석과 입력 해시를 검증해 보고서를 쓴다.
 개별 단계는 완료 marker와 원시 결과를 보존한다. 결과·원문·CSV·모델은 로컬 전용이다.
+
+## V5_REPAIR1 수리 제어 진단
+
+저장된 CHECK의 smoke20 + agent_dev10 Revision 결과를 공통 입력으로 사용한다. 새 학습,
+Revision 생성, Orchestrator 계획이나 test 코호트 사용은 없다. 한국어 epoch2를 고정하고
+전체 목록 처리, 문장별 큐/반복 차단, 큐/수정 필요성 판단의 세 조건을 비교한다.
+
+```bash
+python -m verak.v5.repair1 prepare
+# 로컬 SEARCH 의존성이 설치된 inference Python; GPU0 정책 / GPU1 기준 채점기
+python -m verak.v5.repair1 gpu
+python -m verak.v5.repair1 judge
+python -m verak.v5.repair1 report
+```
+
+`prepare`는 입력·코드·모델·판단 프롬프트 해시와 설계를 고정한다. `gpu`는 기존 v4.6
+환경을 변경하지 않고 별도 wrapper로 실행한다. 한국어 행동 요청은 조건마다 최대 14회다.
+큐 조건은 문장별 최대 3회, 같은 상태에서 같은 거절 행동이 반복되면 해당 항목만 미해결로
+남긴다. 전체 글 점검에는 최소 4회를 남긴다. 판단 조건은 동일한 로컬 한국어 모델로
+repair/keep/uncertain 판단 1회를 추가하며 이 비용은 행동 요청과 따로 보고한다.
+
+모델의 근거 있는 STOP(blocked), controller 강제 건너뛰기, 미처리·판단 불가 항목을
+구분한다. 강제 건너뛰기를 정상 종료나 수리 성공으로 집계하지 않는다. baseline과 큐의
+차이는 작업 분할·범위 제한·반복 제어를 함께 시험하므로 반복 차단 단독 효과가 아니다.
+판단은 목표 작업 배정에만 적용하고 마지막 전체 글 점검은 모든 조건에 남긴다.
+
+유료 평가는 승인된 기존 Claude 한도의 잔액 이내 별도 장부에서만 실행한다. C의 검증된
+전체 문맥 프롬프트를 유지하고 조건명·정답·점수를 숨긴 링크 판정으로 수정 전후를 비교한다.
+모든 조건의 수정 문장과 다음 문장, 고정 추출한 후보 문장을 공통 집합으로 평가한다.
+같은 스냅샷은 같은 판정을 사용한다. 누락·uncertain은 정상 링크로 간주하지 않는다.
+GPU 점수, dev10 복원·R_over, 프로토콜과 미해결 작업 수를 따로 보고하며 결과와 보고서는
+`verak/v5/outputs/repair1/`, `reports/V5_REPAIR1.md`에 로컬 저장한다.
