@@ -113,25 +113,33 @@ class Backend:
 
 
 class ReferenceScores:
-    def __init__(self):
+    def __init__(self, *, root=None, fallback=None):
         self.scorer = None
+        self.root = root if root is not None else ROOT
+        self.fallback = fallback
 
     def __call__(self, question, text):
-        path = ROOT/'scores'/(sha_text(json.dumps([question, text], ensure_ascii=False))+'.json')
-        if path.exists():
-            value = read_json(path)
-            if value['question'] != question or value['text'] != text:
-                raise ValueError('Score cache mismatch')
-            return value['result']
+        name = sha_text(json.dumps([question, text], ensure_ascii=False))+'.json'
+        path = self.root/'scores'/name
+        for cached in [path]+([self.fallback/'scores'/name] if self.fallback else []):
+            if cached.exists():
+                value = read_json(cached)
+                if value['question'] != question or value['text'] != text:
+                    raise ValueError('Score cache mismatch')
+                if self.fallback:
+                    prior = read_json(REPO/'verak/v4/outputs/train44/smoke/scorer_identity.json')
+                    if value['fingerprint'] != prior['fingerprint']:
+                        raise ValueError('Cached GPU reference scorer fingerprint differs')
+                return value['result']
         if self.scorer is None:
             from verak.v3.score.kanana import KananaScorer
             config = load_config(); config['scorer']['gpu'] = 0
-            config['paths']['output'] = ROOT/'scorer'
+            config['paths']['output'] = self.root/'scorer'
             self.scorer = KananaScorer(config, cache_enabled=False)
             prior = read_json(REPO/'verak/v4/outputs/train44/smoke/scorer_identity.json')
             if self.scorer.fingerprint != prior['fingerprint']:
                 raise ValueError('GPU reference scorer fingerprint differs')
-            write_json(ROOT/'scorer_identity.json', {'physical_gpu': 1, 'fingerprint': self.scorer.fingerprint,
+            write_json(self.root/'scorer_identity.json', {'physical_gpu': 1, 'fingerprint': self.scorer.fingerprint,
                 'settings': config['scorer'], 'GPU_reference_only': True})
         result = self.scorer.score(question, text, use_cache=False).to_dict()
         atomic_new(path, {'question': question, 'text': text, 'result': result,

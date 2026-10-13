@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import json
 import math
 import os
+from pathlib import Path
 import sqlite3
 import time
 
@@ -21,9 +22,10 @@ def credentials():
 
 class PaidAPI:
     """One ledger for both providers. Unknown sent outcomes keep their reservation."""
-    def __init__(self,kind):
+    def __init__(self,kind,*,root=None):
         if kind not in {'luna','claude'}:raise ValueError('Unknown provider')
-        self.kind=kind;self.contract=read_json(ROOT/'api_contract.json')
+        root=Path(root) if root is not None else ROOT
+        self.kind=kind;self.contract=read_json(root/'api_contract.json')
         if self.contract.get('user_approved') is not True:raise PermissionError('No V5 API budget authorization')
         self.spec=self.contract[kind];self.model=self.spec['model']
         for cap in (self.contract['total_cap_usd'],self.spec['cap_usd']):
@@ -31,7 +33,7 @@ class PaidAPI:
                 raise ValueError('Positive finite budget caps required')
         if self.spec['input_per_million']<=0 or self.spec['output_per_million']<=0:
             raise ValueError('Known rates required before a paid call')
-        self.directory=ROOT/'api';self.directory.mkdir(parents=True,exist_ok=True)
+        self.directory=root/'api';self.directory.mkdir(parents=True,exist_ok=True)
         import httpx
         self.client=httpx.Client(timeout=600)
         with self.db() as db:
