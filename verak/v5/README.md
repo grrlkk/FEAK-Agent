@@ -74,6 +74,27 @@ whole-essay preference, rubric scores, and source support remain separate. The
 global rubric is an uncalibrated diagnostic and the new run is not a held-out
 quality benchmark.
 
+`orchestrator1` isolates the Orchestrator model on the same COOPERATE1 C30.
+Only Orchestrator generation uses `gpt-6-luna` (reasoning none, temperature 0)
+through Chat Completions with JSON-object mode for the single-action protocol.
+Revision epoch1 and Korean epoch2 remain local, with unchanged prompts, public
+observations, SEARCH, action budgets and context admission. Provider token counts
+are recorded separately from the frozen Kanana tokenizer; worker template audits
+stay strict. The first Orchestrator input must equal the saved control input.
+
+Run `python -m verak.v5.orchestrator1 prepare`, then `gpu`, `judge`, and `report`
+with the existing SEARCH interpreter. The new contract records the user's
+approval of this experiment and an agent-set $3 ceiling ($1 Luna, $2 Claude),
+separate from earlier experiments. The unconstrained format probe is preserved
+under `orchestrator1`, and the Responses JSON probe under `orchestrator1_json`.
+The full comparison uses `orchestrator1_chat` and deducts all confirmed and
+reserved probe costs from the same ceiling. `gpu` owns and stops its local server.
+`judge` compares complete anonymous final essays against saved COOPERATE1 run1, providing
+the actual retrieved source passages. A reversed-order judgment measures order
+sensitivity; it is not a second independent judge. Runs2/3 remain descriptive
+controls. The report separates completion, delegation traces, dev10 recovery,
+scorer changes and final-text quality. This experiment does not change defaults.
+
 Tests:
 
 ```sh

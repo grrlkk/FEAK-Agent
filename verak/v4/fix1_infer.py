@@ -137,10 +137,12 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score,
         try:
             value = backend.generate(messages, role)
             total = len(tok.apply_chat_template(messages+[{'role': 'assistant', 'content': value['raw']}], tokenize=True))
-            audit = prompt_token_audit(len(prefix), value.get('usage'))
+            audit_method = getattr(backend, 'audit_prompt_tokens', None)
+            audit = (audit_method(role, len(prefix), value) if audit_method is not None
+                     else prompt_token_audit(len(prefix), value.get('usage')))
             value.update(role=role, prefix=ref(prefix_path), prompt_tokens=len(prefix), full_tokens=total, template_audit=audit)
             atomic_new(directory/f'{sequence:04d}_{role}.raw.json', value)
-            if audit['status'] != 'match':
+            if audit['status'] not in {'match', 'different_tokenizer'}:
                 event = {'role': role, 'reason': 'chat_template_prompt_tokens_'+audit['status'],
                          'dispatched': True, 'prefix': ref(prefix_path)}
                 result['execution_failures'].append(event)
@@ -300,6 +302,7 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score,
                  and all(not s['failure'] for s in result['stages']) and not result['controller_events']
                  and all(s['status'] == 'completed' for s in result['score_tools']))
     result['completion'] = completion(result)
+    result['new_paid_calls'] = sum(bool(c.get('new_paid_call')) for c in result['calls'])
     if capture_states:
         result['lineage'] = deepcopy(env.lineage)
     result['complete'] = result['completion']['no_protocol_error']
