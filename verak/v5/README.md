@@ -35,6 +35,32 @@ exports or enforce the saved episode exclusions. No retraining is launched here.
 Experiment reports, source texts, outputs, annotations, and model artifacts stay
 local under the configured repository artifact root and are not committed.
 
+For the corrected Luna Orchestrator comparison, use
+`python -m verak.v5.orchestrator1 --no-search prepare`, followed by
+`--no-search gpu`, `--no-search judge` and `--no-search report` with the configured
+inference interpreter. This writes only to `outputs/orchestrator1_no_search`
+and `reports/V5_ORCHESTRATOR1_NO_SEARCH.md`. Both the local Orchestrator control
+and Luna condition run anew on the same C30 (60 episodes). Search-enabled
+COOPERATE1/ORCHESTRATOR1 texts are historical references, not this control.
+
+The controller defers `needs_search=yes` items to attributed writer notes
+before worker dispatch. Mixed delegations retain their other tasks; entirely
+deferred delegations create no worker stage or fabricated STOP. Search
+availability is explicit in both Orchestrator and worker observations, the
+backend is disabled, and no index preflight or retrieval runs. Saved episodes
+from the opposite SEARCH setting cannot be reused. Every new episode is audited
+for empty retrieved evidence and no search-dependent worker tasks before judging.
+The actual FINISH stays in `finish_report`; top-level `writer_notes` also contains
+controller deferrals, including after failures. Deferred work is unperformed,
+even if all executed worker stages report done. Search removal does not validate
+the semantics of unsourced EDIT/INSERT actions.
+
+Worker adapters, system prompts, budgets and the final Korean pass are preserved.
+Only the Orchestrator provider differs within this no-search pair. The same blind
+whole-essay judge and reversed-order sensitivity check are used; no training or
+test-cohort expansion. Prior confirmed and unknown API costs count toward the
+existing combined $3 ceiling; this correction does not create a fresh $3 budget.
+
 `recovery1` is a separate bounded Korean continuation pilot using the cleaned
 SFT training split. Its initial 384 teacher-snapshot probes produced few actual
 errors, so the scheduler was paused before training. `recovery1_rollout` adds

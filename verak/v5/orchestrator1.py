@@ -22,15 +22,44 @@ from verak.v4.fix1_infer import run_case, SETTINGS
 
 PROBE_ROOT = REPO/'verak/v5/outputs/orchestrator1'
 JSON_PROBE_ROOT = REPO/'verak/v5/outputs/orchestrator1_json'
-ROOT = REPO/'verak/v5/outputs/orchestrator1_chat'
+CHAT_ROOT = REPO/'verak/v5/outputs/orchestrator1_chat'
+ROOT = CHAT_ROOT
 CONTROL = REPO/'verak/v5/outputs/cooperate1'
 REPORT = REPO/'reports/V5_ORCHESTRATOR1.md'
 SETTING = SETTINGS[0]
 MODEL = 'gpt-6-luna'
+SEARCH_ENABLED = True
+
+
+def configure_no_search():
+    global ROOT, REPORT, SEARCH_ENABLED
+    ROOT = REPO/'verak/v5/outputs/orchestrator1_no_search'
+    REPORT = REPO/'reports/V5_ORCHESTRATOR1_NO_SEARCH.md'
+    SEARCH_ENABLED = False
 
 
 def case_dir(case):
     return ROOT/'evaluation/run1'/case['cohort']
+
+
+def control_dir(case):
+    return ROOT/'control/run1'/case['cohort']
+
+
+def control_artifacts(case, run='1'):
+    if SEARCH_ENABLED:
+        return case['controls'][run]
+    if run != '1':
+        raise ValueError('Only one new no-search control run is planned')
+    receipt = ROOT/'control_complete.json'
+    if receipt.exists():
+        return read_json(receipt)['artifacts'][case['case_id']]
+    return {kind:ref(control_dir(case)/folder/(safe_id(case['case_id'])+'.json'))
+            for kind,folder in (('episode','attempts'), ('scores','quality_scores'))}
+
+
+def prior_roots():
+    return (PROBE_ROOT, JSON_PROBE_ROOT) + (() if SEARCH_ENABLED else (CHAT_ROOT,))
 
 
 def prepare():
@@ -59,7 +88,7 @@ def prepare():
     if Counter(c['cohort'] for c in cases) != {'smoke20':20, 'agent_dev10':10}:
         raise ValueError('Expected the same 20+10 diagnostic cases')
     old = read_json(PIPE_ROOT/'api_contract.json')
-    prior = {p.name:ledger_accounting(p) for p in (PROBE_ROOT, JSON_PROBE_ROOT)}
+    prior = {p.name:ledger_accounting(p) for p in prior_roots()}
     spent = sum(p['confirmed_usd']+p['reserved_usd'] for p in prior.values())
     # Fresh authorization: do not inherit any previous experiment's approval.
     contract = {'user_approved':True,
@@ -76,10 +105,25 @@ def prepare():
     contract['luna'].update(model=MODEL, cap_usd=1.-spent, reasoning_effort='none', temperature=0,
                             text_format={'type':'json_object'}, endpoint='chat_completions')
     contract['claude']['cap_usd'] = 2.
+    if not SEARCH_ENABLED:
+        contract.update(
+            authorization='User approved the Luna-only Orchestrator comparison, then corrected its SEARCH condition: '
+                '그럼 어떻게 해야하는거야 그리고 검색은 껐어야하는데. Rerun both Orchestrators on the same C30 without SEARCH.',
+            scope='Corrected ORCHESTRATOR1 no-search C30 paired comparison; no training.',
+            prior_experiments=prior)
+        luna_spent = sum(p.get('providers', {}).get('luna', {}).get('confirmed_usd', 0) +
+                         p.get('providers', {}).get('luna', {}).get('reserved_usd', 0) for p in prior.values())
+        contract['luna']['cap_usd'] = min(1.-luna_spent, 3.-spent)
+        # Reallocate unused total budget to the same blinded evaluation. All
+        # prior confirmed/unknown costs still count toward the original $3 cap.
+        contract['claude']['cap_usd'] = 3.-spent
+    if min(contract['total_cap_usd'], contract['luna']['cap_usd'], contract['claude']['cap_usd']) <= 0:
+        raise BudgetStop('No budget remains under the combined $3 ceiling')
     for spec in (contract['luna'], contract['claude']):
         spec.pop('expected_usd', None)
     freeze(ROOT/'api_contract.json', contract)
-    code = [Path(__file__), WORKTREE/'verak/v5/api.py', WORKTREE/'verak/v5/common.py',
+    code = [Path(__file__), WORKTREE/'verak/v5/orchestrator1_eval.py',
+        WORKTREE/'verak/v5/api.py', WORKTREE/'verak/v5/common.py',
         WORKTREE/'verak/v5/run.py', WORKTREE/'verak/v5/cooperate.py',
         WORKTREE/'verak/v5/cooperate_env.py', WORKTREE/'verak/v4/fix1_infer.py',
         WORKTREE/'verak/v4/orchestrator_v44.py', WORKTREE/'verak/v4/maps_v45.py',
@@ -112,12 +156,26 @@ def prepare():
                   'Prompt and observation control does not equate different model tokenizers or sampling implementations.',
                   'Luna additionally uses API JSON-object syntax control; this is not an unconstrained model-only swap.',
                   'LLM judge is not human gold; protocol completion is not writing quality.']}
+    if not SEARCH_ENABLED:
+        design.update(experiment='ORCHESTRATOR1_NO_SEARCH', search_enabled=False,
+            intervention='Both conditions disable SEARCH, expose availability to Orchestrator and workers, '
+                'and defer needs_search=yes tasks to attributed writer notes. Same frozen prompts, workers, '
+                'budgets and Korean scheduling. Only Orchestrator generation differs between the two conditions.',
+            primary_control='New local Orchestrator C30, seed47, SEARCH disabled. Historical search-enabled '
+                'controls are retained as references only and never substituted for the new control.',
+            new_episodes=60, inference_order=['control','luna'],
+            completion_rule='Controller-deferred tasks are unperformed; STOP/done is not verified task completion.',
+            search_rule='No index preflight/load or retrieval. Backend is disabled. Empty source evidence is audited.',
+            limits=['Reused diagnostic C30, one new run per condition; not a new held-out cohort.',
+                    *design['limits'][1:]])
     freeze(ROOT/'design.json', design)
     return design
 
 
 def verify_design():
     design = read_json(ROOT/'design.json')
+    if design.get('search_enabled', True) != SEARCH_ENABLED:
+        raise ValueError('Frozen SEARCH setting differs')
     artifacts = list(design['code'].values())+list(design['adapters'].values())
     artifacts += [design[k] for k in ('worker_prompts','orchestrator_prompt','api_contract')]
     for artifact in artifacts:
@@ -181,34 +239,65 @@ def infer():
     scorer = ReferenceScores(root=ROOT, fallback=PIPE_ROOT)
     api = PaidAPI('luna', root=ROOT); local = RepeatedBackend(SETTING)
     try:
+        if not SEARCH_ENABLED:
+            for i, case in enumerate(design['cases'], 1):
+                row = public_row(verified(case['row']))
+                result = run_case(row, case_id=case['case_id'], output=control_dir(case),
+                    backend=local, tok=tok, analysis=analysis, score=scorer,
+                    cooperation=True, capture_states=True, search_enabled=False)
+                audit_no_search(result)
+                freeze(control_dir(case)/'quality_scores'/(safe_id(case['case_id'])+'.json'), {
+                    'original':scorer(row['question'], row['text']),
+                    'final':scorer(row['question'], result['final']['text']), 'reference_GPU_only':True})
+                write_json(ROOT/'progress.json', {'condition':'control', 'completed':i, 'planned':30,
+                    'case_id':case['case_id'], 'protocol_complete':result['complete'], 'at':time.time()})
+                print(f'NO_SEARCH control {i}/30 {case["case_id"]} protocol={result["complete"]}', flush=True)
+            freeze(ROOT/'control_complete.json', {'episodes':30,
+                'artifacts':{case['case_id']:control_artifacts(case) for case in design['cases']}})
+            probe()
         for i, case in enumerate(design['cases'], 1):
             row = public_row(verified(case['row']))
-            control = verified(case['controls']['1']['episode'])
+            control = verified(control_artifacts(case)['episode'])
             first = next(c for c in control['calls'] if c['role']=='orchestrator')
             expected = verified(first['prefix'])['messages']
             backend = HybridBackend(local, api, case['case_id'], expected_first_messages=expected)
             result = run_case(row, case_id=case['case_id'], output=case_dir(case),
                 backend=backend, tok=tok, analysis=analysis, score=scorer,
-                cooperation=True, capture_states=True)
+                cooperation=True, capture_states=True, search_enabled=SEARCH_ENABLED)
+            if not SEARCH_ENABLED:
+                audit_no_search(result)
             freeze(case_dir(case)/'quality_scores'/(safe_id(case['case_id'])+'.json'), {
                 'original':scorer(row['question'], row['text']),
                 'final':scorer(row['question'], result['final']['text']), 'reference_GPU_only':True})
-            write_json(ROOT/'progress.json', {'completed':i, 'planned':30, 'case_id':case['case_id'],
+            write_json(ROOT/'progress.json', {'condition':'luna', 'completed':i, 'planned':30, 'case_id':case['case_id'],
                 'protocol_complete':result['complete'], 'at':time.time()})
             print(f'ORCHESTRATOR1 {i}/30 {case["case_id"]} protocol={result["complete"]}', flush=True)
             if backend.budget_stop:
                 freeze(ROOT/'budget_stop.json', {'case_id':case['case_id'], 'at':time.time()})
                 raise BudgetStop('Luna budget exhausted; unstarted essays retained as pending')
-        freeze(ROOT/'inference_complete.json', {'episodes':30, 'wall_seconds':time.monotonic()-started,
+        freeze(ROOT/'inference_complete.json', {'episodes':30 if SEARCH_ENABLED else 60,
+            'search_enabled':SEARCH_ENABLED, 'wall_seconds':time.monotonic()-started,
             'training':False, 'orchestrator_model':MODEL, 'worker_models_unchanged':True})
     finally:
         api.close(); local.close(); scorer.close()
 
 
+def audit_no_search(episode):
+    if episode.get('search_enabled') is not False:
+        raise ValueError('SEARCH setting missing from no-search episode')
+    if any(episode['source_citations'].get(key) for key in ('search_history','source_citations')):
+        raise ValueError('No-search episode contains retrieved evidence')
+    if any(a['valid'] and a['action']=='SEARCH' for actions in episode['actions'].values() for a in actions):
+        raise ValueError('SEARCH executed in a disabled condition')
+    if any(t.get('needs_search')=='yes' for s in episode['stages'] for t in s.get('assigned_tasks', [])):
+        raise ValueError('Search-dependent task was dispatched')
+    return True
+
+
 def probe():
     """Validate the first real request before allocating GPUs; replay it later."""
     design = verify_design(); case = design['cases'][0]
-    control = verified(case['controls']['1']['episode'])
+    control = verified(control_artifacts(case)['episode'])
     first = next(c for c in control['calls'] if c['role']=='orchestrator')
     messages = verified(first['prefix'])['messages']
     api = PaidAPI('luna', root=ROOT)
@@ -232,9 +321,11 @@ def gpu():
     verify_design()
     if not all(credentials().values()):
         raise RuntimeError('A required API credential is unavailable; no model request sent')
-    probe()
+    if SEARCH_ENABLED:
+        probe()
     hardware = idle((0,1))
-    runtime = check_runtime()
+    runtime = check_runtime() if SEARCH_ENABLED else {
+        'search_enabled':False, 'index_loaded':False, 'retrieval_calls':0, 'new_API_calls':0}
     write_json(ROOT/'search_runtime_latest.json', runtime)
     if not (ROOT/'search_runtime.json').exists():
         freeze(ROOT/'search_runtime.json', runtime)
@@ -259,7 +350,10 @@ def gpu():
                 except httpx.HTTPError: pass
                 time.sleep(2)
             else: raise RuntimeError('vLLM readiness timeout')
-            completed = subprocess.run([str(INFERENCE_PYTHON), '-u', '-m', 'verak.v5.orchestrator1', 'infer'],
+            command = [str(INFERENCE_PYTHON), '-u', '-m', 'verak.v5.orchestrator1']
+            if not SEARCH_ENABLED:
+                command.append('--no-search')
+            completed = subprocess.run([*command, 'infer'],
                 cwd=WORKTREE, env={**environment, 'CUDA_VISIBLE_DEVICES':'1'})
             if completed.returncode: raise RuntimeError('Inference incomplete; saved outputs preserved')
     finally:
@@ -283,7 +377,7 @@ def ledger_accounting(root):
 
 
 def accounting():
-    runs = {root.name:ledger_accounting(root) for root in (PROBE_ROOT, JSON_PROBE_ROOT, ROOT)}
+    runs = {root.name:ledger_accounting(root) for root in (*prior_roots(), ROOT)}
     return {'calls':sum(r['calls'] for r in runs.values()),
         'confirmed_usd':sum(r['confirmed_usd'] for r in runs.values()),
         'reserved_usd':sum(r['reserved_usd'] for r in runs.values()), 'runs':runs}
@@ -292,9 +386,14 @@ def accounting():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('part', choices=['prepare','probe','gpu','infer','judge','report'])
-    part = parser.parse_args().part
+    parser.add_argument('--no-search', action='store_true', help='Rerun both Orchestrators on C30 with SEARCH disabled')
+    args = parser.parse_args(); part = args.part
+    # Use the canonical module so evaluation imports see the same configuration.
+    from . import orchestrator1 as runner
+    if args.no_search:
+        runner.configure_no_search()
     if part in {'judge','report'}:
         from . import orchestrator1_eval
         getattr(orchestrator1_eval, part)()
     else:
-        globals()[part]()
+        getattr(runner, part)()
