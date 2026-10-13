@@ -97,17 +97,27 @@ def sync_map(env):
             role['key_sentence'] = None
 
 
-def run_case(row, *, case_id, output, backend, tok, analysis, score):
+def run_case(row, *, case_id, output, backend, tok, analysis, score,
+             cooperation=False, capture_states=False):
     path = output/'attempts'/(safe_id(case_id)+'.json')
     if path.exists():
         return read_json(path)
-    env = V46Environment(row, analysis)
+    if cooperation:
+        from verak.v5.cooperate_env import (CooperationEnvironment, snapshot,
+                                            worker_report, orchestrator_observation, VERSION)
+        env = CooperationEnvironment(row, analysis)
+    else:
+        env = V46Environment(row, analysis)
     result = {'case_id': case_id, 'source_id': row['source_id'], 'genre': row['genre'],
         'status': 'running', 'calls': [], 'stages': [], 'orchestrator_actions': [],
         'context_limits': [], 'execution_failures': [], 'controller_events': [], 'score_tools': [],
         'initial': document_state(env), 'quality_results': False, 'new_paid_calls': 0,
         'privileged_plan_at_inference': False, 'records_at_inference': False,
         'environment_version': 'v4.6', 'worker_prompts': 'v4.3', 'orchestrator_prompt': 'v4.4'}
+    if cooperation:
+        result['environment_version'] = VERSION
+    if capture_states:
+        result['initial_token_document'] = save_document(env.document)
     directory = output/'requests'/safe_id(case_id)
     sequence = 0
     def request(role, messages):
@@ -156,6 +166,11 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
             env.start_korean(items)
         entry = {'role': role, 'delegation': number, 'automatic': automatic, 'steps': 0,
                  'ending': None, 'stop_status': None, 'failure': False}
+        if capture_states:
+            entry['initial_token_document'] = save_document(env.document)
+        if cooperation:
+            entry.update(assigned_tasks=deepcopy(items), initial_snapshot=snapshot(env))
+        start_actions = len(env.actions[role])
         result['stages'].append(entry)
         while env.remaining and not env.closed:
             try:
@@ -182,17 +197,28 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
                 break
         if entry['ending'] is None:
             entry.update(ending='step_limit', failure=True)
+        if capture_states:
+            entry['final_token_document'] = save_document(env.document)
+        if cooperation:
+            entry.update(final_snapshot=snapshot(env), changed_sids=sorted({sid
+                for a in env.actions[role][start_actions:] if a['valid']
+                for sid in a.get('changed_sids', [])}))
+            env.worker_reports.append(worker_report(entry))
         write_json(output/'partial'/(safe_id(case_id)+'.json'), result)
         return entry
 
     scores = None; history = []; reports = []
     phase = 'score'; counts = Counter(); rejected = 0; korean_current = False
+    final_review_pending = False
     try:
         for turn in range(1, 21):
             messages = orch.messages(row['question'], paragraphs(env), phase=phase,
                 scores=scores, essay_map=env.shared_map, history=history, reports=reports,
                 last_result={k: v for k, v in result['orchestrator_actions'][-1].items() if k != 'value'}
                     if result['orchestrator_actions'] else None)
+            if cooperation:
+                messages = orchestrator_observation(messages, env, reports,
+                                                     final_review_pending=final_review_pending)
             response, error = request('orchestrator', messages)
             if error:
                 result['orchestrator_ending'] = error['reason']; break
@@ -223,14 +249,25 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
                     # Only student-produced public items enter worker delegation.
                     report = stage(action['to'], action['items'])
                     korean_current = action['to'] == 'korean'
-                    reports.append({k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
+                    reports.append(worker_report(report) if cooperation else
+                        {k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
+                    final_review_pending = False
                 else:
+                    ran_final_pass = False
                     if not korean_current:
                         report = stage('korean', [], automatic=True)
-                        reports.append({k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
+                        reports.append(worker_report(report) if cooperation else
+                            {k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
                         korean_current = True
-                    result['finish_report'] = action
-                    result['orchestrator_ending'] = 'FINISH'
+                        ran_final_pass = True
+                    if cooperation and ran_final_pass:
+                        final_review_pending = True
+                        record['finish_deferred_for_worker_report'] = True
+                    else:
+                        result['finish_report'] = action
+                        result['orchestrator_ending'] = 'FINISH'
+                        if cooperation:
+                            result['finish_snapshot'] = snapshot(env)
                 record['valid'] = True
                 # MAP is already present in the current snapshot; history keeps
                 # the fact of the call without repeating its complete payload.
@@ -263,6 +300,8 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
                  and all(not s['failure'] for s in result['stages']) and not result['controller_events']
                  and all(s['status'] == 'completed' for s in result['score_tools']))
     result['completion'] = completion(result)
+    if capture_states:
+        result['lineage'] = deepcopy(env.lineage)
     result['complete'] = result['completion']['no_protocol_error']
     atomic_new(path, result)
     return result
