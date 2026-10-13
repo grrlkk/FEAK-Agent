@@ -15,6 +15,7 @@ def test_judge_is_full_context_blinded_and_identical_repeats_are_deduplicated(tm
     monkeypatch.setattr(module,'ROOT',tmp_path/'experiment')
     monkeypatch.setattr(module,'REPO',tmp_path/'repo')
     write_json(module.ROOT/'inference_complete.json',{})
+    write_json(module.ROOT/'api_contract.json',{'user_approved':True,'total_cap_usd':5})
     write_json(module.REPO/'verak/v5/outputs/check/validation/final.json',
                {'continue':True,'validated_setting':'full'})
     row=module.ROOT/'row.json';write_json(row,{'question':'설명하시오.'})

@@ -94,6 +94,7 @@ def judging_manifest():
     random.Random(713031).shuffle(order)
     value = {'cases':cases,'requests':[requests[h] for h in order], 'context':'full',
         'prompt_sha256':sha_text(JUDGE_PROMPT),'validated_gate':ref(gate_path),
+        'evaluation_code':ref(Path(__file__)), 'api_contract':ref(ROOT/'api_contract.json'),
         'condition_names_in_API':False,'gold_or_scores_in_API':False,
         'same_saved_text_and_sites_share_judgment':True,
         'global_quality':'Each final output is revised and its identical V1. Exact C judge; all failure outputs included.',
@@ -202,10 +203,16 @@ def measure():
                 'text_changes':changes,'record_metrics':records,
                 'onepass_alignment_failed':condition=='onepass' and jc['onepass_alignment_failed'],
                 'artifact':paths[condition]})
-    for name,values in attempts.items(): operations[name]=summarize(values,len(values))
+    def operation_summary(values):
+        out=summarize(values,len(values))
+        out['valid_action_counts']={role:dict(Counter(c['action']['action'] for a in values
+            for c in a['calls'] if c['role']==role and c['action']['valid']))
+            for role in ('orchestrator','revision','korean')}
+        return out
+    for name,values in attempts.items(): operations[name]=operation_summary(values)
     for condition in CONDITIONS[:6]:
         values=[v for name,items in attempts.items() if name.endswith('/'+condition) for v in items]
-        operations['all/'+condition]=summarize(values,len(values))
+        operations['all/'+condition]=operation_summary(values)
     aggregates={}
     for cohort in ('all','smoke20','agent_dev10'):
         for condition in CONDITIONS:
@@ -273,6 +280,10 @@ def report():
         '| Condition | Role | 거절 유형별 수 |','|---|---|---|']
     for c,roles in m['rejection_taxonomy'].items():
         for r,types in roles.items():lines.append(f'| {c} | {r} | '+str({k:v['count'] for k,v in types.items()})+' |')
+    lines+=['','| Condition | Role | Accepted actions |','|---|---|---|']
+    for c in CONDITIONS[:6]:
+        for role,counts in m['operations']['all/'+c]['valid_action_counts'].items():
+            lines.append(f'| {c} | {role} | {counts} |')
     lines+=['','## 품질 — 실행 성공과 별도','',
         '검증된 full-context C Claude 프롬프트를 그대로 사용했다. 모델·조건명·정답 레코드·채점 점수는 감췄다. '
         '원문 및 최종 글 전체를 제공하고 동일 텍스트/위치 판정은 공유했다. 실패 실행도 포함한다. '
@@ -308,6 +319,19 @@ def report():
                 for rec in r['record_metrics']['final']['records']:ops[rec['op']].append(rec['main'])
         for op,values in sorted(ops.items()):
             lines.append(f'| {c} | {op} | {sum(x==1 for x in values)}/{len(values)} | {statistics.mean(values):.4f} |')
+    lines+=['','| Condition | Exact record projections / 10 | Mean R_over (exact) | Aligned essays / 30 | Changed source sentences | Deleted source sentences |',
+            '|---|---:|---:|---:|---:|---:|']
+    for c in CONDITIONS:
+        group=[r for r in m['rows'] if r['condition']==c]
+        exact=[r['record_metrics']['final'] for r in group if r['record_metrics'] and r['record_metrics']['final']['status']=='exact']
+        aligned=[r['text_changes'] for r in group if not r['onepass_alignment_failed']]
+        over=statistics.mean(v['R_over']['value'] for v in exact) if exact else None
+        source_n=sum(v['source_sentences'] for v in aligned)
+        lines.append(f'| {c} | {len(exact)}/10 | {over} | {len(aligned)}/30 | '
+            f'{sum(v["changed_source_sentences"] for v in aligned)}/{source_n} | '
+            f'{sum(v["deleted_source_sentences"] for v in aligned)} |')
+    lines+=['','문장 변경/삭제는 ID 정렬 가능 글만 집계한다. one-pass 정렬 실패 글의 전체 글 판정과 ΔQ는 그대로 포함한다. '
+              '복원·R_over는 정확히 투영된 결과만이며 미투영은 0으로 채우지 않는다.']
     cleanup=read_json(ROOT/'lconn_cleanup/complete.json')
     lines+=['','## Stage 3 이전 L_CONN 정리','',
         '저장 텍스트를 Codex가 점검했다. 사람 gold가 아니며 불확실한 형태는 유지했다. '
