@@ -26,12 +26,12 @@ def distributed_action_loss(model, inputs, num_items_in_batch=None, *, world_siz
     return loss, outputs
 
 
-def train(role, *, resume=False):
+def train(role, *, resume=False, experiment=None):
     if role not in ROLES:
         raise ValueError('Unknown full-training role')
-    root = ROOT
+    root = Path(experiment['root']) if experiment else ROOT
     epochs = 1
-    phase = 'v4_fix1_continued_SFT'
+    phase = experiment['phase'] if experiment else 'v4_fix1_continued_SFT'
     os.environ.update(HF_HUB_OFFLINE='1', TOKENIZERS_PARALLELISM='false', WANDB_DISABLED='true',
                       PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True')
     sys.path.insert(0, str(REPO / 'verak/v3/outputs/phase7_sft/python_deps'))
@@ -49,7 +49,7 @@ def train(role, *, resume=False):
     torch.set_num_threads(8)
     torch.backends.cuda.matmul.allow_tf32 = True
     manifest_path = root / 'data/manifest.json'
-    manifest = verify()
+    manifest = experiment['verify']() if experiment else verify()
     output = root / 'adapters' / role
     output.mkdir(parents=True, exist_ok=True)
     if (output / 'complete.json').exists():
@@ -64,7 +64,7 @@ def train(role, *, resume=False):
         samples[part] = load_samples(metadata['path'])
     if not samples['train']:
         raise ValueError('Empty training set')
-    learning_rate = 5e-5
+    learning_rate = experiment['learning_rate'] if experiment else 5e-5
     initial_epoch = 2 if role == 'korean' else 1
     initial = TRAIN / 'adapters' / role / f'epoch_{initial_epoch}'
     parent = read_json(initial / 'provenance.json')
@@ -85,6 +85,9 @@ def train(role, *, resume=False):
         'code_sha256': file_sha(Path(__file__)), 'gpu': torch.cuda.get_device_name(local_rank),
         'versions': {name: importlib.metadata.version(name) for name in
             ('torch', 'transformers', 'peft', 'accelerate', 'bitsandbytes', 'datasets', 'trl')}}
+    if experiment:
+        recipe['experiment'] = {k:v for k,v in experiment.items() if k != 'verify'}
+        recipe['validation_matches_parent'] = False
     recipe_path = output / 'recipe.json'
     if rank == 0:
         if recipe_path.exists():
@@ -200,11 +203,14 @@ def train(role, *, resume=False):
     started = time.monotonic()
     if not (output / 'initial_validation.json').exists():
         initial_metrics = trainer.evaluate()
-        expected_nll = [x['eval_loss'] for x in parent['log_history'] if 'eval_loss' in x][-1]
-        initial_metrics['source_checkpoint_validation_loss'] = expected_nll
-        initial_metrics['absolute_replay_delta'] = abs(initial_metrics['eval_loss']-expected_nll)
-        if initial_metrics['absolute_replay_delta'] > .001:
-            raise ValueError('Continued adapter does not reproduce its unchanged validation loss within .001')
+        if experiment:
+            initial_metrics['validation_note'] = 'Filtered validation differs from parent export; compare this same subset before/after.'
+        else:
+            expected_nll = [x['eval_loss'] for x in parent['log_history'] if 'eval_loss' in x][-1]
+            initial_metrics['source_checkpoint_validation_loss'] = expected_nll
+            initial_metrics['absolute_replay_delta'] = abs(initial_metrics['eval_loss']-expected_nll)
+            if initial_metrics['absolute_replay_delta'] > .001:
+                raise ValueError('Continued adapter does not reproduce its unchanged validation loss within .001')
         if rank == 0:
             write_json(output / 'initial_validation.json', initial_metrics)
         dist.barrier()

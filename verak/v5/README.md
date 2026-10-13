@@ -35,6 +35,45 @@ exports or enforce the saved episode exclusions. No retraining is launched here.
 Experiment reports, source texts, outputs, annotations, and model artifacts stay
 local under the configured repository artifact root and are not committed.
 
+`recovery1` is a separate bounded Korean continuation pilot using the cleaned
+SFT training split. Its initial 384 teacher-snapshot probes produced few actual
+errors, so the scheduler was paused before training. `recovery1_rollout` adds
+48 multi-step Korean stages and 16 full three-agent runs on training sources.
+The latter use the student's actual Revision-to-Korean handoffs. Diagnostic,
+validation and test sources never enter these collections.
+
+An inherited teacher action is used only on the same document/tasks; conflicting
+targets are excluded. Unmatched states require explicit saved Codex annotations
+and successful action execution in the replayed real stage. This includes real
+UNDO history, and never treats unavailable prior UNDO history as a model failure.
+Saved student prefixes, not reconstructed rendering bytes, become training
+inputs. This is corrective SFT with student-visited states, not rejection-sampling
+RFT. Manual judgments are model annotations, not human gold.
+
+`python -m verak.v5.recovery1_run start` starts a detached, resumable local job:
+384 bounded collection seeds, 768 mixed corrective/replay rows, one Korean-only
+continuation epoch, and one new run of the same 30 diagnostics. It preserves
+the original adapters, all other roles, and COOPERATE1 runtime settings. It
+refuses to train with fewer than 16 unique corrective states. The extended data
+builder also requires at least eight failure observations. Its correction half
+uses 288 failure slots and 96 independently matched student STOP states where
+available; the replay half adjusts STOP sampling to retain about 30% STOP overall.
+Use `start_rollouts` / `start_full_rollouts` with the owned collection server,
+then `validate_reviews`, `build_rollout_data`, and `resume` after all collectors
+have exited. The scheduler's `pause` leaves its collection children running.
+The filtered
+validation subset is evaluated before and after; its loss is not compared to
+the different original export as though the inputs were identical.
+
+`recovery1_eval prepare_evaluation` writes an unapproved proposal. Actual calls
+require the separately approved `recovery1/api_contract.json`; the previous
+experiment's budget cannot authorize them. `follow_start` waits on file events
+for all 30 results, then grades anonymous complete essays under the new $3 cap.
+Only original/final essays and source evidence reach the judge. Operations,
+whole-essay preference, rubric scores, and source support remain separate. The
+global rubric is an uncalibrated diagnostic and the new run is not a held-out
+quality benchmark.
+
 Tests:
 
 ```sh
