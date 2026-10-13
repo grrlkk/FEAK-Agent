@@ -19,6 +19,9 @@ scores both the new and saved comparisons. It does not regenerate controls.
 budget. `report` separates protocol completion from scorer/judge quality. These
 commands do not authorize a new budget: this experiment's contract reflects the
 user's specific $5 approval and must not be reused for an unrelated experiment.
+`python -m verak.v5.cooperate_eval` waits for the inference completion file using
+Linux file notifications, then runs judging and reporting. It does not poll the
+GPUs or progress logs, and refuses to judge an incomplete GPU run.
 
 `clean_conn` consumes an explicit, hash-bound linguistic annotation file. It
 creates separate source corpora and filtered SFT exports; it never edits saved

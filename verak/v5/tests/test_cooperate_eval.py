@@ -1,4 +1,6 @@
 import json
+import threading
+import pytest
 
 from verak.v3.corrupt.document import Document, Paragraph, Unit
 from verak.v4.scale2_projection import save_document
@@ -55,3 +57,13 @@ def test_alignment_failure_excludes_onepass_from_link_site_sampling_only():
     assert module.selected_sites('x',{'original':a,'onepass':b},True) == []
     assert module.selected_sites('x',{'original':a,'onepass':b},False) == ['S2']
     assert module.text_changes(a,b)['changed_source_sentences'] == 1
+
+
+def test_completion_wait_uses_file_events_and_stops_on_incomplete_gpu_exit(tmp_path):
+    timer=threading.Timer(.05,lambda:write_json(tmp_path/'inference_complete.json',{}))
+    timer.start()
+    try: module.wait_for_inference(tmp_path)
+    finally: timer.join()
+    other=tmp_path/'failed';other.mkdir();write_json(other/'server_stopped.json',{})
+    with pytest.raises(RuntimeError,match='no judge requests'):
+        module.wait_for_inference(other)

@@ -24,6 +24,28 @@ CONDITIONS = tuple(['old_run'+str(i) for i in range(1,4)]+
                    ['new_run'+str(i) for i in range(1,4)]+['onepass','luna'])
 
 
+def wait_for_inference(root=ROOT):
+    """Linux file notification: wait without polling the GPU or progress files."""
+    import ctypes
+    import os
+    import select
+    root = Path(root)
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_CLOEXEC)
+    if fd < 0: raise OSError(ctypes.get_errno(), 'inotify_init1')
+    try:
+        if libc.inotify_add_watch(fd, os.fsencode(root), 0x00000008 | 0x00000080) < 0:
+            raise OSError(ctypes.get_errno(), 'inotify_add_watch')
+        # Register before checking to cover a completion racing with startup.
+        while True:
+            if (root/'inference_complete.json').exists(): return
+            if (root/'server_stopped.json').exists():
+                raise RuntimeError('GPU job exited without complete inference; no judge requests dispatched')
+            select.select([fd], [], [])
+            os.read(fd, 65536)
+    finally: os.close(fd)
+
+
 def results(case):
     values = {label: verified(r) for label,r in case['C_outputs'].items()}
     paths = {label: r for label,r in case['C_outputs'].items()}
@@ -363,3 +385,10 @@ def report():
     REPORT.write_text('\n'.join(lines))
     freeze(ROOT/'report_complete.json',{'report':ref(REPORT),'wall_seconds':time.monotonic()-start})
     return m
+
+
+if __name__ == '__main__':
+    wait_for_inference()
+    judge()
+    report()
+    print('Cooperation diagnostic report written; no training started.',flush=True)
