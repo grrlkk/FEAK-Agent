@@ -66,6 +66,55 @@ def test_budget_prevents_dispatch_and_unknown_outcome_cannot_retry(tmp_path,monk
     finally:client.close()
 
 
+@pytest.mark.parametrize('text_format', [None, {'type':'json_object'}])
+def test_luna_json_mode_is_opt_in_and_preserves_input(tmp_path,monkeypatch,text_format):
+    client=setup_api(tmp_path,monkeypatch);sent=[]
+    if text_format is not None:client.spec['text_format']=text_format
+    def serve(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200,json={'model':'unit-model','id':'one','status':'completed',
+            'usage':{'input_tokens':100,'output_tokens':20},
+            'output':[{'content':[{'type':'output_text','text':'{"action":"SCORE"}'}]}]})
+    client.client.close();client.client=httpx.Client(transport=httpx.MockTransport(serve))
+    messages=[{'role':'system','content':'One action JSON.'},{'role':'user','content':'unchanged'}]
+    try:
+        client.request(messages,item_id='format',max_output=4096)
+        assert sent[0]['input']==messages
+        assert sent[0]['max_output_tokens']==4096
+        if text_format is None:assert 'text' not in sent[0]
+        else:assert sent[0]['text']=={'format':text_format}
+    finally:client.close()
+
+
+@pytest.mark.parametrize('finish,choices', [('stop',1),('length',1),('stop',2)])
+def test_single_chat_response_usage_and_terminal_failures(tmp_path,monkeypatch,finish,choices):
+    client=setup_api(tmp_path,monkeypatch);sent=[]
+    client.spec.update(endpoint='chat_completions',text_format={'type':'json_object'})
+    def serve(request):
+        sent.append(request)
+        return httpx.Response(200,json={'model':'unit-model','id':'one',
+            'usage':{'prompt_tokens':100,'completion_tokens':20,'prompt_tokens_details':{'cached_tokens':10}},
+            'choices':[{'message':{'role':'assistant','content':'{"action":"SCORE"}'},
+                        'finish_reason':finish}]*choices})
+    client.client.close();client.client=httpx.Client(transport=httpx.MockTransport(serve))
+    messages=[{'role':'system','content':'One action JSON.'},{'role':'user','content':'same'}]
+    try:
+        if finish=='stop' and choices==1:
+            result=client.request(messages,item_id='chat')
+            assert result['raw']=='{"action":"SCORE"}'
+            assert result['usage']['input_tokens']==100 and result['usage']['output_tokens']==20
+            assert result['provider_usage']['prompt_tokens']==100
+            assert result['confirmed_usd']==pytest.approx(.00014)
+        else:
+            with pytest.raises(RuntimeError,match='terminal outcome'):client.request(messages,item_id='chat')
+            with pytest.raises(RuntimeError,match='Prior terminal'):client.request(messages,item_id='chat')
+        assert len(sent)==1 and sent[0].url.path=='/v1/chat/completions'
+        body=json.loads(sent[0].content)
+        assert body['messages']==messages and body['n']==1
+        assert body['response_format']=={'type':'json_object'}
+    finally:client.close()
+
+
 class Reply:
     def __init__(self,value):self.value=value;self.messages=[]
     def request(self,messages,**kw):self.messages.append(messages);return {'raw':dumps(self.value)}

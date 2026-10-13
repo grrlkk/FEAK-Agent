@@ -28,6 +28,8 @@ class PaidAPI:
         self.kind=kind;self.contract=read_json(root/'api_contract.json')
         if self.contract.get('user_approved') is not True:raise PermissionError('No V5 API budget authorization')
         self.spec=self.contract[kind];self.model=self.spec['model']
+        if kind=='luna' and self.spec.get('endpoint','responses') not in {'responses','chat_completions'}:
+            raise ValueError('Unsupported Luna endpoint')
         for cap in (self.contract['total_cap_usd'],self.spec['cap_usd']):
             if not isinstance(cap,(int,float)) or not math.isfinite(cap) or cap<=0:
                 raise ValueError('Positive finite budget caps required')
@@ -74,10 +76,18 @@ class PaidAPI:
         started=time.monotonic();value={'fingerprint':digest,'request':request,'status':'error','reserved_usd':bound}
         try:
             if self.kind=='luna':
-                body={'model':self.model,'input':messages,'reasoning':{'effort':self.spec['reasoning_effort']},
-                      'max_output_tokens':max_output,'truncation':'disabled','store':False}
+                if self.spec.get('endpoint')=='chat_completions':
+                    endpoint='chat/completions'
+                    body={'model':self.model,'messages':messages,'reasoning_effort':self.spec['reasoning_effort'],
+                          'max_completion_tokens':max_output,'store':False,'n':1}
+                    if self.spec.get('text_format') is not None:body['response_format']=self.spec['text_format']
+                else:
+                    endpoint='responses'
+                    body={'model':self.model,'input':messages,'reasoning':{'effort':self.spec['reasoning_effort']},
+                          'max_output_tokens':max_output,'truncation':'disabled','store':False}
+                    if self.spec.get('text_format') is not None:body['text']={'format':self.spec['text_format']}
                 if self.spec.get('temperature') is not None:body['temperature']=self.spec['temperature']
-                response=self.client.post('https://api.openai.com/v1/responses',headers={'Authorization':'Bearer '+key},json=body)
+                response=self.client.post('https://api.openai.com/v1/'+endpoint,headers={'Authorization':'Bearer '+key},json=body)
             else:
                 system='\n'.join(m['content'] for m in messages if m['role']=='system')
                 body={'model':self.model,'system':system,'messages':[m for m in messages if m['role']!='system'],
@@ -93,8 +103,19 @@ class PaidAPI:
             else:
                 data=response.json();usage=data.get('usage',{})
                 if self.kind=='luna':
-                    text=''.join(c.get('text','') for x in data.get('output',[]) for c in x.get('content',[]) if c.get('type')=='output_text')
-                    completed=data.get('status')=='completed';stop=data.get('status')
+                    if self.spec.get('endpoint')=='chat_completions':
+                        value['provider_usage']=usage
+                        choices=data.get('choices',[])
+                        if len(choices)!=1:raise ValueError('Exactly one completion choice required')
+                        choice=choices[0];text=choice['message'].get('content') or ''
+                        stop=choice.get('finish_reason');completed=stop=='stop'
+                        usage={**usage,'input_tokens':usage.get('prompt_tokens'),
+                            'output_tokens':usage.get('completion_tokens'),
+                            'input_tokens_details':usage.get('prompt_tokens_details',{})}
+                    else:
+                        value['provider_output']=data.get('output',[])
+                        text=''.join(c.get('text','') for x in data.get('output',[]) for c in x.get('content',[]) if c.get('type')=='output_text')
+                        completed=data.get('status')=='completed';stop=data.get('status')
                     inp=usage.get('input_tokens',0);out=usage.get('output_tokens',0)
                     cached=(usage.get('input_tokens_details') or {}).get('cached_tokens',0)
                     written=(usage.get('input_tokens_details') or {}).get('cache_write_tokens',0)
