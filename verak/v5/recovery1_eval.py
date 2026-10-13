@@ -127,6 +127,27 @@ def evidence_only(value):
     return {'citations':citations,'retrieved_passages':list(passages.values())}
 
 
+def first_delegation_variation(control, new):
+    """The first delegation is generated before any Korean intervention.
+
+    Calls are saved after delegated stages return, so list order alone is not
+    generation order. Locate the Orchestrator action explicitly.
+    """
+    first=[]
+    for episode in (control,new):
+        call=next((c for c in episode['calls'] if c['role']=='orchestrator'
+                   and (c.get('action') or {}).get('action')=='DELEGATE'),None)
+        if call is None: return {'comparable':False}
+        first.append(call)
+    a,b=first
+    same_input=verified(a['prefix'])['messages']==verified(b['prefix'])['messages']
+    same_settings=a['generation']==b['generation']
+    return {'comparable':True,'same_input':same_input,'same_settings':same_settings,
+        'different_action':a['action'].get('value')!=b['action'].get('value'),
+        'same_input_settings_different_action':same_input and same_settings
+            and a['action'].get('value')!=b['action'].get('value')}
+
+
 def judge():
     if (ROOT/'judge_complete.json').exists(): return
     manifest=judge_manifest(); started=time.monotonic()
@@ -158,13 +179,16 @@ def judge():
 
 def report():
     if not (ROOT/'inference_complete.json').exists(): raise RuntimeError('Evaluation incomplete')
-    design=prepare(); rows=[]
+    design=prepare(); rows=[]; initial_variation=[]
     for case in design['cases']:
         for condition in ('control1','control2','control3','new'):
             root=ROOT if condition=='new' else REPO/'verak/v5/outputs/cooperate1'
             run=1 if condition=='new' else int(condition[-1])
             base=root/'evaluation'/f'run{run}'/case['cohort']
             episode=read_json(base/'attempts'/(safe_id(case['case_id'])+'.json'))
+            if condition=='new':
+                initial_variation.append({'case_id':case['case_id'],
+                    **first_delegation_variation(verified(case['cooperate_baselines']['1']),episode)})
             scores=read_json(base/'quality_scores'/(safe_id(case['case_id'])+'.json'))
             actions=episode['actions']['korean']
             rows.append({'case_id':case['case_id'],'cohort':case['cohort'],'condition':condition,
@@ -213,6 +237,7 @@ def report():
         'target_tokens':initial['eval_target_tokens'],'training_elapsed_s':training['elapsed_s']}
     result={'operations':aggregate,'preferences':dict(preferences),'judgments':judgments,
             'quality':quality,'accounting':accounting,'validation':validation,
+            'first_delegation_variation':initial_variation,
             'rows':rows,'data':read_json(ROOT/'data/manifest.json')}
     write_json(ROOT/'metrics.json',result)
     lines=['# V5_RECOVERY1 — 한국어 작업자 오류 복구 소규모 실험','',
@@ -234,6 +259,10 @@ def report():
                 f'{v["new_specific_claims"].get("unknown",0)} | {v["mean_scores"]["overall"]:.3f} |')
     lines+=['', '30편 진단 자료 재사용, 새 조건 1회다. 실행 지표는 글 품질을 증명하지 않는다. '
         '새 전체 글 루브릭은 사람 평가로 보정하지 않았다. 기존 3회는 변동 범위를 보이는 자료이며 90개의 독립 글이 아니다.',
+        '', '한국어 개입 전 첫 총괄 위임에서 동일 입력·생성 설정인데 행동이 달랐던 글: '
+        +str(sum(v.get('same_input_settings_different_action',False) for v in initial_variation))
+        +'/'+str(sum(v['comparable'] for v in initial_variation))
+        +'. 동일 설정의 실행 변동이 있어, 작은 차이를 한국어 추가 학습의 인과 효과로 단정할 수 없다.',
         '', '자료: '+dumps({k:result['data'][k] for k in ('unique_corrective_states','sampled_corrective_rows',
             'sampled_replay_rows','train_sources','actions','audit')}), '',
         '같은 검증 분할의 학습 전후 NLL: '+dumps(validation), '',

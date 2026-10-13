@@ -39,3 +39,19 @@ def test_only_source_evidence_reaches_quality_judge():
     assert '실제 근거' in encoded and '본문' in encoded
     for key in ('delegation','item_id','query','bm25_score','internal_plan','successful_sourced_inserts'):
         assert key not in encoded
+
+
+def test_initial_variation_handles_worker_calls_saved_before_their_delegation(monkeypatch):
+    from verak.v5 import recovery1_eval as module
+    monkeypatch.setattr(module,'verified',lambda reference:reference)
+    def episode(instruction):
+        return {'calls':[
+            {'role':'korean','action':{'action':'STOP'}},
+            {'role':'orchestrator','action':{'action':'DELEGATE','value':{'instruction':instruction}},
+             'prefix':{'messages':[{'role':'user','content':'same original observation'}]},
+             'generation':{'temperature':0,'seed':47}}]}
+    result=module.first_delegation_variation(episode('first plan'),episode('different plan'))
+    assert result['same_input_settings_different_action'] is True
+    changed=episode('different plan')
+    changed['calls'][1]['prefix']['messages'][0]['content']='changed observation'
+    assert module.first_delegation_variation(episode('first plan'),changed)['same_input_settings_different_action'] is False
