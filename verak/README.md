@@ -150,3 +150,48 @@ VERAK_LIVE_SPELL=1 python -m pytest -q -s verak/tests/test_spellcheck_live.py
 
 일반 테스트는 실제 서비스 검사를 skip한다. T1의 실제 태그 검사를 먼저 실행한 뒤 사전을 확장한다.
 명세에서 제외한 반복 루프·재수정·누적 점검·rollback·RAG·기준선은 구현하지 않았다.
+
+## V5_CHECK 판정기 검증 (별도 실험)
+
+V5_PIPE1의 저장된 dev100/C 결과로 판정기부터 검증한다. 학습이나 test 코호트 사용은 없다.
+아래 명령은 저장된 원문, 형태소, 판정 결과를 보존하며 별도 `verak/v5/outputs/check/`에 기록한다.
+
+```bash
+python -m verak.v5.check_judge prepare
+python -m verak.v5.check_judge run
+# JSON/schema 실패만 있는 경우 동일 입력으로 한 번만: retry-formats
+python -m verak.v5.check_judge finalize
+python -m verak.v5.check_judge report
+```
+
+`prepare`는 유료 호출 없이 연산자별 손상 15건/대조 15건과 C 알림 검토용 CSV를 고정한다.
+`run`은 C의 프롬프트를 그대로 사용해 대상+선행 문장과 전체 문맥을 비교한다. 전체 문맥
+재현율이 0.8 이상이면 이를 유지하고, 국소 문맥만 통과하면 그 설정을 사용한다. 둘 다
+미달하거나 양성 60건의 판정이 누락되면 후속 실험을 시작하지 않는다. 대조군 누락은
+미판정으로 보존하고 FPR 분모와 상·하한에 반영한다. `uncertain`은 탐지로 세지 않는다.
+유료 호출은 사용자 승인된 별도 예산 장부를 사용하며 V5_PIPE1 장부를 변경하지 않는다.
+이 명령 자체는 GPU 실험이나 후속 단계를 자동 실행하지 않는다. 보고서는 `reports/V5_CHECK.md`이다.
+
+검증 통과 후에는 저장된 두 observation-test real30 arm, C Luna, a1 dev100을 재판정한다.
+`check_local`은 같은 C30/첫 Orchestrator 계획/고정 Revision으로 알림 유무만 비교한다.
+`check_a4`는 a1 루프의 한국어 stage에 전달하는 항목만 공개 규칙 후보로 교체하며 단계 수,
+예산, 전체 글 점검 권한과 구조 수정 경로는 유지한다. 규칙은 판정이나 자동 수정이 아니다.
+바른 띄어쓰기 후보는 로컬 `AnalyzeSyntax`의 refinement에서 문자 내용이 동일한 제안만
+사용한다. 기존 profile의 분석 설정은 바꾸지 않는다. GPU 점수 캐시는 같은 fingerprint의
+PIPE1 값을 읽을 수 있지만 새 점수는 CHECK의 별도 경로에 저장한다.
+
+```bash
+python -m verak.v5.check_outputs prepare
+python -m verak.v5.check_outputs run
+python -m verak.v5.check_local prepare
+# gpu는 로컬 SEARCH 의존성이 설치된 inference Python으로 실행한다.
+python -m verak.v5.check_local gpu
+python -m verak.v5.check_outputs step2-judge
+python -m verak.v5.check_a4 prepare
+python -m verak.v5.check_a4 gpu
+python -m verak.v5.check_a4 report
+python -m verak.v5.check_conn
+```
+
+`check_conn`은 CPU에서 저장한 전수 형태 검토 주석과 입력 해시를 검증해 보고서를 쓴다.
+개별 단계는 완료 marker와 원시 결과를 보존한다. 결과·원문·CSV·모델은 로컬 전용이다.
