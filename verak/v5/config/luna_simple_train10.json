@@ -1,0 +1,108 @@
+{
+  "experiment": "luna_simple_train10_v1",
+  "source_ids": [
+    "train:41378",
+    "train:25214",
+    "train:9168",
+    "train:40272",
+    "train:47713",
+    "train:41891",
+    "train:32440",
+    "train:38914",
+    "train:34369",
+    "train:32890"
+  ],
+  "scope": "repeated preparation essays; not a held-out estimate",
+  "generation": {
+    "model": "gpt-6-luna",
+    "reasoning_effort": "none",
+    "temperature": 0,
+    "arms": {
+      "one_pass": [
+        "one_pass"
+      ],
+      "three_agent": [
+        "plan",
+        "revision",
+        "korean"
+      ]
+    },
+    "rewrite_scope": "whole essay in one call",
+    "candidates": 1,
+    "retries": 0,
+    "notices": false,
+    "quality_gates": false,
+    "score_acceptance": false,
+    "environment_analysis": false,
+    "search": false,
+    "feedback_input": false,
+    "format_validation_only": true,
+    "writer_notes_to_revision": false
+  },
+  "judge": {
+    "model": "claude-sonnet-5-5",
+    "temperature": "omitted as approved",
+    "comparisons": [
+      [
+        "one_pass",
+        "three_agent"
+      ],
+      [
+        "revision",
+        "three_agent"
+      ]
+    ],
+    "orders": "both",
+    "blinded": true,
+    "feedback_input": false,
+    "primary_safe_improvement": "both order judgments: improved AND meaning_preserved AND empty new_content"
+  },
+  "max_workers": 4,
+  "shared_total_cap_usd": 5,
+  "training": false,
+  "eval50_authorized": false,
+  "test_opened": false,
+  "prompts_sha256": "fab0c9c7e7272a510f8d1e9e2c609626e030564cfc872bf3b560ad6f446a36f7",
+  "inputs": {
+    "train:41378": {
+      "original_sha256": "db71127d4e6eccbd64905e6d15d3d49c58c360a7769b5e041f7661209c1a12eb",
+      "question_sha256": "0f4658779c99c1a1520b383406eeaa19ada202f6462b230da3157530ee359703"
+    },
+    "train:25214": {
+      "original_sha256": "e7071d0cf9d6c80bf0c838e3aa173656a6f4c3ce52085d01540977a8b558653f",
+      "question_sha256": "593c0890ae01de0d913da968d29f77aff87276ec1e466526c59412ecf38ee0f9"
+    },
+    "train:9168": {
+      "original_sha256": "6be3b1a6ccf3ef078e88079203357edca0cd505915382a282d64f507f50ce049",
+      "question_sha256": "95c1f56552929e92519c9748ce8176c99c9809564c6d11a3f386a88f5e6b699b"
+    },
+    "train:40272": {
+      "original_sha256": "35adc7e201026dc3d0a819a59af8cafd9802dd21a213afb64360df785db22cfb",
+      "question_sha256": "9ddf1ac54ca55ae8e650374273948cf412e8c68ff9abc905c373d80940c4858f"
+    },
+    "train:47713": {
+      "original_sha256": "1717a6777417bd044d8710742832d371eb0bc5a1682d3e1cc64e3d1bc57d8bf9",
+      "question_sha256": "a024ed716c4b406b369fd466e0fee0a9affd7c7e6a6e39c9cbdcefe0b395b25c"
+    },
+    "train:41891": {
+      "original_sha256": "97ec592806f27747062f803b247a9fe40dd988e8ab7d048389cd44029954b28e",
+      "question_sha256": "7c677b040eb98247d1f5c337277ad4aab732f3d64fcde7c8fe3fb7d9b9f301b2"
+    },
+    "train:32440": {
+      "original_sha256": "d56f7b9bb314bfacc688984d770d735f125035fc91be995ee4851208bd37e86c",
+      "question_sha256": "d7b8dd01ab7b6cc649a569f6127adcf7667f2adb51ec25ee338b3242c142c646"
+    },
+    "train:38914": {
+      "original_sha256": "31c1f5904a150d028d1ede387af526e5f2d7e4c83bd27f1fdc8340a50d04549c",
+      "question_sha256": "820596b3d59395d85e6c391af25ddff6b7d578081899f8e4a5036d9fbe03cb81"
+    },
+    "train:34369": {
+      "original_sha256": "827f85bb3e907e6ea99e3d342c2e4ec5fddb5764bf32260b100d12ef57329702",
+      "question_sha256": "672f5d22baeb977db74b56f0f6a28601d264d1b1b78af16f61ea3e7c88e166da"
+    },
+    "train:32890": {
+      "original_sha256": "d3ad9ee38d451647ebd8183cf7da1112d8ef70f9d91fb9b22d0a738e2e01af1a",
+      "question_sha256": "abd2a0b88ddb0afce94997e49e47a253888c433f14c56c8ca526d002f0f0fd76"
+    }
+  }
+}
