@@ -26,7 +26,7 @@ EDIT 형식: {"action":"EDIT","sentence":"S2","old":"해당 문장에서 정확�
 수정은 배열 순서대로 적용한다. 최대 14개다. 고칠 것이 없으면 actions=[]로 보고한다.'''
 
 
-def edit_list(row,api,analysis,directory,*,scores=None,initial_document=None,self_check=False):
+def edit_list(row,api,analysis,directory,*,scores=None,initial_document=None,self_check=False,request_item_id=None):
     path=directory/'edit_list.json'
     if path.exists():return read_json(path)
     started=time.monotonic();env=V46Environment(row,analysis)
@@ -42,7 +42,7 @@ def edit_list(row,api,analysis,directory,*,scores=None,initial_document=None,sel
     result={'source_id':row['source_id'],'initial':original,'messages':messages,'actions':[],
             'no_protocol_error':False,'error':None,'self_check_without_notices':self_check}
     try:
-        response=api.request(messages,item_id=str(directory.relative_to(ROOT)),max_output=4096)
+        response=api.request(messages,item_id=request_item_id if request_item_id is not None else str(directory.relative_to(ROOT)),max_output=4096)
         result['response']=response
         parsed=parse_json(response['raw'])
         if not isinstance(parsed,dict) or set(parsed)!={'actions','summary'} or not isinstance(parsed['actions'],list) or not isinstance(parsed['summary'],str):
