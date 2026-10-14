@@ -242,7 +242,8 @@ def _build_repair_prompt(text: str, deleted_span: str, start: int, next_sentence
 def _request_generated_text(
     cfg: Mapping[str, Any], *, system: str, user: str, max_len: int
 ) -> str:
-    payload = request_json(
+    json_client = cfg.get("request_json", request_json)
+    payload = json_client(
         system=system,
         user=user,
         model=str(cfg.get("model", "gpt-4o-mini")),
@@ -250,7 +251,9 @@ def _request_generated_text(
         env_file=cfg.get("env_file"),
         timeout=float(cfg["timeout"]) if cfg.get("timeout") is not None else None,
     )
-    after = str(payload.get("after") or "").strip()
+    if not isinstance(payload.get("after"), str):
+        raise LLMResponseError("Patch `after` must be a string.")
+    after = payload["after"].strip()
     if not after:
         raise LLMResponseError("Patch `after` cannot be empty.")
     if len(after) > max_len:

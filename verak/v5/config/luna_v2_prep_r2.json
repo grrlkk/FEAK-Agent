@@ -1,0 +1,73 @@
+{
+  "version": "human_review_r2",
+  "N": 1,
+  "k": 1,
+  "max_targets": 3,
+  "enforce_repair_scope": true,
+  "delta": 0.1885421324537451,
+  "delta_sample_count": 10,
+  "modification_limit": 0.4492517210416043,
+  "modification_unit": "Levenshtein/max(original,candidate) Unicode characters including whitespace",
+  "modification_calibration_samples": 17,
+  "structure_delete_limit": 0.3,
+  "evaluation_50_authorized": false,
+  "training": false,
+  "same_prep10": true,
+  "prompts_sha256": "8cda6e2cdf8356dcfc234a84fb1e31a7d1f20505341d8aee93e7f9c22ebd64f5",
+  "zero_phi_policy": "Report zeros; never invent notices on directly rewritten sentences to satisfy coverage.",
+  "seed": 20261014,
+  "budget_total_usd": 5,
+  "source_manifest_sha256": "09d9e3dfe2b4549f4a5a54b89b3be052b7cc1387902f428584e36ac39cdcf335",
+  "prep_sources": [
+    {
+      "source_id": "train:41378",
+      "genre": "explanatory",
+      "normalized_source_hash": "ab4db8cd448116a8ba6658a200e8a5b8429239aa0c8602f4c2e3230b665b92df"
+    },
+    {
+      "source_id": "train:25214",
+      "genre": "explanatory",
+      "normalized_source_hash": "56bfcb17f921dc29edf7782f5381ce62d65b1e31c39314ca8ec3ab480ec2ec64"
+    },
+    {
+      "source_id": "train:9168",
+      "genre": "explanatory",
+      "normalized_source_hash": "bcb1ce5abfef4e83320f9a2b069dec02e537f0ce780fc4d622255c23f65e95d1"
+    },
+    {
+      "source_id": "train:40272",
+      "genre": "explanatory",
+      "normalized_source_hash": "f0d5b1df43aba8f3a5942412e7d7941cf58b5b349c81790fc9bd43689c38bece"
+    },
+    {
+      "source_id": "train:47713",
+      "genre": "argumentative",
+      "normalized_source_hash": "da8b7addd4a15d27647a5a657a3987d00f1681640b84834a28802ea8b1e5acae"
+    },
+    {
+      "source_id": "train:41891",
+      "genre": "argumentative",
+      "normalized_source_hash": "682c5978751e8c8c29c89894ddc71ab2779cf9faeed009cd830614475957f13d"
+    },
+    {
+      "source_id": "train:32440",
+      "genre": "argumentative",
+      "normalized_source_hash": "30f7f8b3d020d912b67e0f47b00ebef1c902f8baba32b824fed533c3e71aa5ef"
+    },
+    {
+      "source_id": "train:38914",
+      "genre": "emotional",
+      "normalized_source_hash": "433759d1e359c76dd1c499cd751dd72982da1fb3c1b33455a0519c837f0f56af"
+    },
+    {
+      "source_id": "train:34369",
+      "genre": "emotional",
+      "normalized_source_hash": "8313f058b0ecbafdadaea44e10a4255aa9dd9eac4512e449119902a450fc7c8a"
+    },
+    {
+      "source_id": "train:32890",
+      "genre": "emotional",
+      "normalized_source_hash": "9b4f28a2efd713d37f9b9fca19b7ea129f5b1a3f010737e1118dc2b6277c583c"
+    }
+  ]
+}

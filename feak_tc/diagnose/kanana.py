@@ -134,6 +134,7 @@ class KananaDiagnoser:
 
     def _extract_features(self, text: str) -> dict[str, float]:
         _ensure_package_importable(self.package_path)
+        import essay_scoring_llm
 
         script = """
 import json
@@ -154,13 +155,12 @@ print("__FEAK_FEATURES_JSON__" + json.dumps(features, ensure_ascii=False))
         feature_cuda = os.getenv("FEAK_FEATURE_CUDA_VISIBLE_DEVICES")
         if feature_cuda is not None:
             env["CUDA_VISIBLE_DEVICES"] = feature_cuda
-        if self.package_path:
-            package_path = str(Path(self.package_path).expanduser())
-            env["PYTHONPATH"] = (
-                package_path
-                if not env.get("PYTHONPATH")
-                else package_path + os.pathsep + env["PYTHONPATH"]
-            )
+        # Forward the resolved package to the fresh feature worker (ported from Web).
+        package_path = str(Path(essay_scoring_llm.__file__).resolve().parent.parent)
+        env["PYTHONPATH"] = (
+            package_path if not env.get("PYTHONPATH")
+            else package_path + os.pathsep + env["PYTHONPATH"]
+        )
 
         completed = None
         with _feature_extraction_lock():

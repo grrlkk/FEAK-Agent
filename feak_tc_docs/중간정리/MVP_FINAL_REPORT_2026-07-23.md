@@ -411,7 +411,8 @@ MVP는 다음 상태로 종료한다.
 
 ## 9. 근거 문서
 
-- [`PROJECT_CONTEXT.md`](../docs/PROJECT_CONTEXT.md): 연구 배경과 확정 설계
+- `PROJECT_CONTEXT.md`: 연구 배경과 확정 설계. 2026-09-08 정리로 제거했으며
+  현재 기준은 [최종 방법론](../paper_docs/FEAK_TC_METHOD_FINAL.md)이다
 - [`IMPLEMENTATION_MVP.md`](../docs/IMPLEMENTATION_MVP.md): MVP 최초 구현 범위
 - [`DIAGNOSER_INTEGRATION.md`](../../docs/DIAGNOSER_INTEGRATION.md): 실제 채점기 연결
 - [`SCORER_NOISE_M_SWEEP.md`](SCORER_NOISE_M_SWEEP.md): 채점기 노이즈 측정

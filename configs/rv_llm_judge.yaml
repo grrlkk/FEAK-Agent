@@ -1,0 +1,27 @@
+# Independent blind review of the two LLM-generated RV pilot candidate types.
+version: rv-llm-judge-v1
+seed: 20260901
+sample_states: 50
+
+input:
+  dataset: experiments/results/rv_data_pilot_50.jsonl
+
+output:
+  prefix: experiments/results/rv_data_pilot_50_three_llm_judge
+
+models:
+  - name: gpt5
+    id: gpt-5-2025-08-07
+    reasoning_effort: low
+    verbosity: low
+  - name: gpt5_mini
+    id: gpt-5-mini-2025-08-07
+    reasoning_effort: low
+    verbosity: low
+  - name: gpt41
+    id: gpt-4.1-2025-04-14
+
+request:
+  workers: 3
+  max_attempts: 3
+  timeout: 180

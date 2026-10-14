@@ -1,0 +1,61 @@
+# No new training, remote API, dataset generation or model download.
+local_llm:
+  model: kakaocorp/kanana-1.5-8b-instruct-2505
+  device: cuda:2
+  load_in_4bit: true
+  max_input_tokens: 8192
+  max_new_tokens: 1024
+  max_calls: 40
+  temperature: 0.3
+  seed: 42
+kanana:
+  device_id: 1
+  m: 3                  # execution smoke; use 10 for measured runs
+  chunk_m: 1
+  load_in_4bit: true
+  generate_feedback: false
+weak_rubric_top_n: 3
+diagnosis_timeout_s: 600
+controller:
+  max_steps: 3
+  candidates_per_step: 2
+  no_progress_patience: 2
+  max_rollbacks: 2
+  schema_retries: 1
+  memory_steps: 4
+  rv_target_labels: [pass]
+  rv_preservation_labels: [pass]
+  quality_drop_max: 0.25
+  noop_margin: 0.0
+  guard_quality_drop_max: 0.3
+  guard_require_pass: true
+# Provisional controller defaults, not calibrated quality guarantees.
+rubric_score_range: 8
+hard_constraints:
+  target_gain_min: null
+  non_target_drop_max: 1.0
+  edit_ratio_max: 0.5
+  goal_preservation_min: 0.0  # RV/guard judge meaning; similarity remains a logged signal
+  evidence_match_min: 0.3
+weights:
+  target_gain: 2.0
+  target_gap_reduction: 1.0
+  evidence_match: 0.5
+  goal_preservation: 0.5
+  non_target_drop: -2.0
+  edit_ratio: -0.5
+validity:
+  enabled: true
+  min_after_chars: 5
+  replace_min_ratio: 0.3
+  essay_min_ratio: 0.6
+  require_sentence_ending: true
+  reject_new_numbers: true
+  reject_new_claim_markers: true
+  near_dup_overlap: 0.6
+  near_dup_jaccard: 0.35
+retrieval:
+  path: null             # optional curated train-only JSONL, never eval essays
+  top_k: 2
+  min_score: 7.0
+  exclude_similarity: 0.8

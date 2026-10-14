@@ -1,0 +1,261 @@
+version: verak-v3-phase7-teacher-comparison
+paths:
+  repo: /home/chanwoo/FEAK-Agent
+  valid: data/data_jsonl/valid.jsonl
+  metadata: verak/v3/data
+  output: verak/v3/outputs/phase1
+  phase2_output: verak/v3/outputs/phase2
+  phase2b_output: verak/v3/outputs/phase2b
+  phase2c_output: verak/v3/outputs/phase2c
+  phase3_output: verak/v3/outputs/phase3
+  phase3b_output: verak/v3/outputs/phase3b
+  phase3b_full_output: verak/v3/outputs/phase3b/full
+  phase4_output: verak/v3/outputs/phase4
+  phase5_output: verak/v3/outputs/phase5
+  phase6_output: verak/v3/outputs/phase6
+  phase7_pilot_output: verak/v3/outputs/phase7_pilot
+  phase7_pilot2_output: verak/v3/outputs/phase7_pilot2
+  phase7_teacher_output: verak/v3/outputs/phase7_teacher
+  previous_corrupt: verak/v3/data/corrupt_recoverable
+  active_corrupt: verak/v3/data/corrupt_scope_v3
+  scorer_package: /home/chanwoo/essay_scoring_llm
+  scorer_adapter: /home/chanwoo/essay_scoring_llm/assets/adapter
+  policy_base: /home/chanwoo/FEAK-Agent/.hf_cache/kanana-1.5-8b-instruct-2505
+split: {seed: 13, train_fraction: 0.8}
+view_token_budget: 3000
+view:
+  format: compact
+  full_view_debug_only: true
+  overflow: exclude_essay
+bareun: {host: 127.0.0.1, port: 5656, api_key_env: BAREUN_API_KEY, timeout_s: 30}
+scorer:
+  mode: expected
+  max_input_tokens: 3072
+  max_new_tokens: 32
+  gpu: 1
+  load_in_4bit: true
+  seed: 42
+  cache: true
+  average_k: 1
+  average_seed: 13
+teacher:
+  # Historical Phase 1 reproduction only. New trajectories use role_teacher below.
+  model: gpt-5-mini
+  reasoning_effort: low
+  phase_api_ceiling: 700
+  max_output_tokens: 4096
+  timeout_s: 90
+ec_judge:
+  model: gpt-6.1-sol  # Confirmed by the account's GET /v1/models on 2026-10-05.
+  reasoning_effort: high
+  phase_api_ceiling: 220
+  max_output_tokens: 8192
+  timeout_s: 180
+  sample_seed: 23
+  sample_size: 100
+  pilot_size: 10
+  input_usd_per_million: 2.0
+  output_usd_per_million: 10.0
+  projected_cost_limit_usd: 20.0
+structure_judge:
+  model: gpt-6.1-sol
+  reasoning_effort: high
+  phase_api_ceiling: 560
+  max_output_tokens: 4096
+  timeout_s: 180
+  sample_seed: 29
+  pilot_per_check: 5
+  input_usd_per_million: 2.0
+  output_usd_per_million: 10.0
+  projected_cost_limit_usd: 15.0
+phase2c_judge:
+  model: gpt-6.1-sol
+  reasoning_effort: high
+  phase_api_ceiling: 470
+  max_output_tokens: 4096
+  timeout_s: 180
+  sample_seed: 31
+  pilot_per_check: 5
+  input_usd_per_million: 2.0
+  output_usd_per_million: 10.0
+  projected_cost_limit_usd: 10.0
+structure_policy:
+  mode: structural_dependency
+  level_weights: {WORD: 1, SENTENCE: 1, TEXT: 1}
+  ec_relations: UNAMBIGUOUS_coarse_only
+  ec_swap: different_coarse_classes_only
+  dependent_edges: DEP_only
+  antecedent_identity: debug_only
+  conjunctions: closed_coarse_set_only
+  style: last_unquoted_clause_final_EF
+  dependency_recovery_from_phase: 4
+  dependency_recovery: predecessor_restored_or_explicit_subject
+  exclude_multi_unit_corruption_targets: true
+  phase3_gate_required: false  # User accepted omission as a positional hint; gate corruption data.
+  dependency_signal: positional_hint
+  coupled_signal_weights: {CONJ: 1.0, DEP: 0.5}
+corruption:
+  disabled_operators: [L_TRANSLATIONESE, G_VAGUE, G_DELETE_SUPPORT, L_CONJ_DROP]
+  seed: 13
+  per_essay: 2
+  qc_seed: 37
+  qc_essays: 60
+  phase_api_ceiling: 100
+  vague_model: gpt-5-mini
+  vague_reasoning_effort: low
+  vague_generation_limit: 24
+  judge_model: gpt-6.1-sol
+  judge_reasoning_effort: high
+  qc_threshold: 0.8
+  local_level_weights: {WORD: 1, SENTENCE: 1, TEXT: 1}
+  vague_input_usd_per_million: 0.25
+  vague_output_usd_per_million: 2.0
+  judge_input_usd_per_million: 2.0
+  judge_output_usd_per_million: 10.0
+corruption_pilot:
+  filtering: instance_all_records_pass
+  seed: 13
+  per_essay: 3
+  sample_seed: 41
+  sample_size: 100
+  phase_api_ceiling: 100
+  judge_model: gpt-6.1-sol
+  judge_reasoning_effort: high
+  removed_operators: [L_TRANSLATIONESE, G_VAGUE]
+  local_level_weights: {WORD: 1, SENTENCE: 1, TEXT: 1}
+  score_corrupted: false
+  full_filter_requires_approval: true
+corruption_finalize:
+  judge_model: gpt-6.1-sol
+  judge_reasoning_effort: high
+  cumulative_api_ceiling: 7797
+  cumulative_cost_cap_usd: 50.0
+  cost_policy: confirmed_usage_plus_timeout_reservations_5xx_without_usage_zero
+  max_concurrency: 4
+  max_retries: 3
+  retry_delays_s: [10, 40, 120]
+  transport_timeout_s: 600
+  error_window: 50
+  error_5xx_pause_threshold: 0.20
+  error_pause_s: 600
+  reuse_pilot: true
+  balance_seed: 41
+  local_share_min: 0.28
+  local_share_max: 0.38
+  remove_text_heavy_first: true
+  score_corrupted: true
+  scorer_average_k: 1
+reward:
+  overedit_formula: "0.5 * morpheme_distance + 0.5 * order_distance"
+  w_rec: 1.0
+  w_q: 0.3
+  w_over: 0.5
+  w_step: 0.01
+  w_coh: 1.0
+  dependents_weight: 0.3
+  role_recovery: record_mean_plus_global_coupled_for_korean
+  quality:
+    enabled_from_phase: 4
+    scorer_method: score
+    average_k_key: scorer.average_k
+    noise_floor: 0.5294307612337095
+    noise_floor_by_genre:
+      설명: 0.71466138
+      논증: 0.21266690
+      정서: 0.52354468
+    noise_floor_file: verak/v3/data/scorer_noise_averaged.json
+    noise_floor_scope: genre_paraphrase_k1_with_overall_fallback
+    dead_zone: true
+    divisor: 2.0
+    clip: false
+    formula: "sign(delta_q) * max(0, abs(delta_q) - noise_floor_by_genre.get(genre, noise_floor)) / 2"
+check:
+  enabled_from_phase: 5
+  quality_source: score
+  average_k_key: scorer.average_k
+  show_noise_floor: true
+  noise_floor_key: reward.quality.noise_floor
+  noise_floor_by_genre_key: reward.quality.noise_floor_by_genre
+env:
+  mode: two_stage
+  enable_check: false  # Main method: scorer only for terminal rewards/evaluation.
+  max_consecutive_errors: 3
+  single: {max_steps: 24, max_checks: 4}
+  global: {max_steps: 14, max_checks: 2}
+  korean: {max_steps: 14, max_checks: 2}
+  verifier: false
+cheap_model:
+  model: gpt-6-luna
+  reasoning_effort: low
+role_teacher:
+  model: gpt-6.1-sol
+  reasoning_effort: low
+similarity:
+  model: BAAI/bge-m3
+  tau: 0.6084223985671997
+  margin: 0.05
+  calibration: verak/v3/outputs/phase4/similarity_metrics.json
+reconstruction:
+  n: 200
+  seed: 43
+  phase_api_ceiling: 650
+  judge_model: gpt-6.1-sol
+  judge_reasoning_effort: high
+  local_temperature: 0.7
+  local_gpu: 0
+  local_max_new_tokens: 384
+runtime:
+  phase_api_ceiling: 1600
+  max_output_tokens: 2048
+  max_cost_usd: 10.0
+  sample_seed: 47
+policy:
+  context_limit: 8192
+  generation_reserve: 1024
+  base_url: http://127.0.0.1:8030/v1
+  model: kanana-policy
+  base_revision: c963a5f4f6496c749f94064a20b33028b0db9f19
+  conda_env: verak_vllm
+  vllm_version: 0.8.5
+  enable_lora: true
+  max_loras: 2
+  adapters: {}
+phase6:
+  phase_api_ceiling: 12000
+  filter_api_ceiling: 260
+  max_cost_usd: 35.0
+  max_concurrent_requests: 4
+  paired_seed: 53
+  check_seed: 54
+  real_seed: 57
+  local_seed: 59
+  bootstrap_seed: 61
+  bootstrap_samples: 10000
+  sentence_alignment_threshold: 0.35
+phase7_pilot:
+  seed: 71
+  size: 100
+  per_level: 25
+  phase_api_ceiling: 6000
+  max_cost_usd: 15.0
+  max_concurrent_requests: 4
+  selection_percentile: 60
+  sft_max_len: 8192
+phase7_pilot2:
+  seed: 73
+  phase_api_ceiling: 7000
+  max_cost_usd: 20.0
+  max_concurrent_requests: 4
+  train_candidates: 300
+  dev_candidates: 80
+  new_pilot_essays: 20
+  removed_operators: [G_DELETE_SUPPORT]
+  new_operator: L_CONJ_DROP
+phase7_teacher:
+  model: gpt-6-luna
+  efforts: [low, medium]
+  phase_api_ceiling: 8000
+  max_cost_usd: 5.0
+  max_concurrent_requests: 4
+  absolute_global_threshold: 0.80
+  absolute_korean_threshold: 0.80
