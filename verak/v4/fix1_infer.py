@@ -97,17 +97,34 @@ def sync_map(env):
             role['key_sentence'] = None
 
 
-def run_case(row, *, case_id, output, backend, tok, analysis, score):
+def run_case(row, *, case_id, output, backend, tok, analysis, score,
+             cooperation=False, capture_states=False, search_enabled=True):
+    if not search_enabled and not cooperation:
+        raise ValueError('Disabling SEARCH requires the cooperation controller')
     path = output/'attempts'/(safe_id(case_id)+'.json')
     if path.exists():
-        return read_json(path)
-    env = V46Environment(row, analysis)
+        saved = read_json(path)
+        if saved.get('search_enabled', True) != search_enabled:
+            raise ValueError('Saved SEARCH setting differs; use a separate output directory')
+        return saved
+    if cooperation:
+        from verak.v5.cooperate_env import (CooperationEnvironment, snapshot,
+                                            worker_report, orchestrator_observation, VERSION)
+        env = CooperationEnvironment(row, analysis, search_enabled=search_enabled)
+    else:
+        env = V46Environment(row, analysis)
     result = {'case_id': case_id, 'source_id': row['source_id'], 'genre': row['genre'],
         'status': 'running', 'calls': [], 'stages': [], 'orchestrator_actions': [],
         'context_limits': [], 'execution_failures': [], 'controller_events': [], 'score_tools': [],
         'initial': document_state(env), 'quality_results': False, 'new_paid_calls': 0,
         'privileged_plan_at_inference': False, 'records_at_inference': False,
         'environment_version': 'v4.6', 'worker_prompts': 'v4.3', 'orchestrator_prompt': 'v4.4'}
+    if cooperation:
+        result['environment_version'] = VERSION
+    if not search_enabled:
+        result['search_enabled'] = False
+    if capture_states:
+        result['initial_token_document'] = save_document(env.document)
     directory = output/'requests'/safe_id(case_id)
     sequence = 0
     def request(role, messages):
@@ -127,10 +144,12 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
         try:
             value = backend.generate(messages, role)
             total = len(tok.apply_chat_template(messages+[{'role': 'assistant', 'content': value['raw']}], tokenize=True))
-            audit = prompt_token_audit(len(prefix), value.get('usage'))
+            audit_method = getattr(backend, 'audit_prompt_tokens', None)
+            audit = (audit_method(role, len(prefix), value) if audit_method is not None
+                     else prompt_token_audit(len(prefix), value.get('usage')))
             value.update(role=role, prefix=ref(prefix_path), prompt_tokens=len(prefix), full_tokens=total, template_audit=audit)
             atomic_new(directory/f'{sequence:04d}_{role}.raw.json', value)
-            if audit['status'] != 'match':
+            if audit['status'] not in {'match', 'different_tokenizer'}:
                 event = {'role': role, 'reason': 'chat_template_prompt_tokens_'+audit['status'],
                          'dispatched': True, 'prefix': ref(prefix_path)}
                 result['execution_failures'].append(event)
@@ -156,6 +175,11 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
             env.start_korean(items)
         entry = {'role': role, 'delegation': number, 'automatic': automatic, 'steps': 0,
                  'ending': None, 'stop_status': None, 'failure': False}
+        if capture_states:
+            entry['initial_token_document'] = save_document(env.document)
+        if cooperation:
+            entry.update(assigned_tasks=deepcopy(items), initial_snapshot=snapshot(env))
+        start_actions = len(env.actions[role])
         result['stages'].append(entry)
         while env.remaining and not env.closed:
             try:
@@ -182,17 +206,28 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
                 break
         if entry['ending'] is None:
             entry.update(ending='step_limit', failure=True)
+        if capture_states:
+            entry['final_token_document'] = save_document(env.document)
+        if cooperation:
+            entry.update(final_snapshot=snapshot(env), changed_sids=sorted({sid
+                for a in env.actions[role][start_actions:] if a['valid']
+                for sid in a.get('changed_sids', [])}))
+            env.worker_reports.append(worker_report(entry))
         write_json(output/'partial'/(safe_id(case_id)+'.json'), result)
         return entry
 
     scores = None; history = []; reports = []
     phase = 'score'; counts = Counter(); rejected = 0; korean_current = False
+    final_review_pending = False
     try:
         for turn in range(1, 21):
             messages = orch.messages(row['question'], paragraphs(env), phase=phase,
                 scores=scores, essay_map=env.shared_map, history=history, reports=reports,
                 last_result={k: v for k, v in result['orchestrator_actions'][-1].items() if k != 'value'}
                     if result['orchestrator_actions'] else None)
+            if cooperation:
+                messages = orchestrator_observation(messages, env, reports,
+                                                     final_review_pending=final_review_pending)
             response, error = request('orchestrator', messages)
             if error:
                 result['orchestrator_ending'] = error['reason']; break
@@ -221,16 +256,36 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
                     phase = 'plan'
                 elif name == 'DELEGATE':
                     # Only student-produced public items enter worker delegation.
-                    report = stage(action['to'], action['items'])
-                    korean_current = action['to'] == 'korean'
-                    reports.append({k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
+                    items = action['items']
+                    if not search_enabled and action['to'] == 'revision':
+                        items, deferred = env.route_revision_items(items)
+                        record.update(executed_items=deepcopy(items),
+                                      deferred_to_writer_notes=deepcopy(deferred),
+                                      worker_dispatched=bool(items))
+                        result['deferred_search_tasks'] = deepcopy(env.deferred_search_tasks)
+                        result['writer_notes'] = env.writer_notes()
+                    if items or action['to'] == 'korean':
+                        report = stage(action['to'], items)
+                        korean_current = action['to'] == 'korean'
+                        reports.append(worker_report(report) if cooperation else
+                            {k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
+                        final_review_pending = False
                 else:
+                    ran_final_pass = False
                     if not korean_current:
                         report = stage('korean', [], automatic=True)
-                        reports.append({k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
+                        reports.append(worker_report(report) if cooperation else
+                            {k: report.get(k) for k in ('role', 'delegation', 'ending', 'stop_status', 'steps')})
                         korean_current = True
-                    result['finish_report'] = action
-                    result['orchestrator_ending'] = 'FINISH'
+                        ran_final_pass = True
+                    if cooperation and ran_final_pass:
+                        final_review_pending = True
+                        record['finish_deferred_for_worker_report'] = True
+                    else:
+                        result['finish_report'] = action
+                        result['orchestrator_ending'] = 'FINISH'
+                        if cooperation:
+                            result['finish_snapshot'] = snapshot(env)
                 record['valid'] = True
                 # MAP is already present in the current snapshot; history keeps
                 # the fact of the call without repeating its complete payload.
@@ -263,6 +318,16 @@ def run_case(row, *, case_id, output, backend, tok, analysis, score):
                  and all(not s['failure'] for s in result['stages']) and not result['controller_events']
                  and all(s['status'] == 'completed' for s in result['score_tools']))
     result['completion'] = completion(result)
+    result['new_paid_calls'] = sum(bool(c.get('new_paid_call')) for c in result['calls'])
+    if not search_enabled:
+        model_notes = result.get('finish_report', {}).get('writer_notes', [])
+        result['deferred_search_tasks'] = deepcopy(env.deferred_search_tasks)
+        result['writer_notes'] = env.writer_notes(model_notes)
+        # Keep the actual model FINISH in calls/finish_report; deferred work
+        # is separately attributed to the controller, never claimed as done.
+        result['deferred_task_count'] = len(env.deferred_search_tasks)
+    if capture_states:
+        result['lineage'] = deepcopy(env.lineage)
     result['complete'] = result['completion']['no_protocol_error']
     atomic_new(path, result)
     return result
