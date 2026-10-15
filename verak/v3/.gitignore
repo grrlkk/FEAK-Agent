@@ -1,0 +1,3 @@
+# Local corpus metadata, score caches, API responses and experimental results.
+data/*
+outputs/

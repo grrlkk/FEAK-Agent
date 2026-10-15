@@ -34,3 +34,15 @@ venv/
 dist/
 build/
 *.egg-info/
+
+# 로컬 보관 — 논문 원고와 최종 문서
+feak_tc_docs/paper_docs/
+docs/*.pdf
+
+# 정리 백업
+.cleanup_archive/
+
+# VERAK private inputs, fixed pairs, model outputs and API caches.
+verak/data/
+verak/outputs/
+verak/config.local.yaml

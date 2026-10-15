@@ -1,0 +1,1264 @@
+{
+  "synthetic": true,
+  "text": "실천은 중요하다. 우리는 물을 아낄 수밖에 없다. 따라서 물을 모은다.\n자원은 한정되어 있다. 물을 낭비하면 문제가 생긴다. 비를 기다리지 않을 수 없다.\n변화는 가능하다. 그래서 행동해야 한다. 매일 함께 노력한다.",
+  "profile": {
+    "sentences": [
+      {
+        "id": "1.1",
+        "paragraph": 1,
+        "start": 0,
+        "end": 9,
+        "text": "실천은 중요하다.",
+        "tokens": [
+          {
+            "form": "실천",
+            "tag": "NNG",
+            "start": 0,
+            "end": 2
+          },
+          {
+            "form": "은",
+            "tag": "JX",
+            "start": 2,
+            "end": 3
+          },
+          {
+            "form": "중요하",
+            "tag": "VA",
+            "start": 4,
+            "end": 7
+          },
+          {
+            "form": "다",
+            "tag": "EF",
+            "start": 7,
+            "end": 8
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 8,
+            "end": 9
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [],
+        "subjects": [
+          {
+            "sentence_id": "1.1",
+            "span": [
+              0,
+              3
+            ],
+            "text": "실천은",
+            "marker": "은",
+            "kind": "topic_candidate"
+          }
+        ],
+        "antecedent_candidates": [],
+        "uncertain": [
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      },
+      {
+        "id": "1.2",
+        "paragraph": 1,
+        "start": 10,
+        "end": 27,
+        "text": "우리는 물을 아낄 수밖에 없다.",
+        "tokens": [
+          {
+            "form": "우리",
+            "tag": "NP",
+            "start": 10,
+            "end": 12
+          },
+          {
+            "form": "는",
+            "tag": "JX",
+            "start": 12,
+            "end": 13
+          },
+          {
+            "form": "물",
+            "tag": "NNG",
+            "start": 14,
+            "end": 15
+          },
+          {
+            "form": "을",
+            "tag": "JKO",
+            "start": 15,
+            "end": 16
+          },
+          {
+            "form": "아끼",
+            "tag": "VV",
+            "start": 17,
+            "end": 19
+          },
+          {
+            "form": "ㄹ",
+            "tag": "ETM",
+            "start": 18,
+            "end": 19
+          },
+          {
+            "form": "수",
+            "tag": "NNB",
+            "start": 20,
+            "end": 21
+          },
+          {
+            "form": "밖에",
+            "tag": "JX",
+            "start": 21,
+            "end": 23
+          },
+          {
+            "form": "없",
+            "tag": "VA",
+            "start": 24,
+            "end": 25
+          },
+          {
+            "form": "다",
+            "tag": "EF",
+            "start": 25,
+            "end": 26
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 26,
+            "end": 27
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [],
+        "subjects": [
+          {
+            "sentence_id": "1.2",
+            "span": [
+              10,
+              13
+            ],
+            "text": "우리는",
+            "marker": "는",
+            "kind": "topic_candidate"
+          }
+        ],
+        "antecedent_candidates": [
+          {
+            "sentence_id": "1.1",
+            "span": [
+              0,
+              3
+            ],
+            "text": "실천은",
+            "marker": "은",
+            "kind": "topic_candidate"
+          }
+        ],
+        "uncertain": [
+          "restored_morpheme_form_differs_from_surface",
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      },
+      {
+        "id": "1.3",
+        "paragraph": 1,
+        "start": 28,
+        "end": 39,
+        "text": "따라서 물을 모은다.",
+        "tokens": [
+          {
+            "form": "따라서",
+            "tag": "MAJ",
+            "start": 28,
+            "end": 31
+          },
+          {
+            "form": "물",
+            "tag": "NNG",
+            "start": 32,
+            "end": 33
+          },
+          {
+            "form": "을",
+            "tag": "JKO",
+            "start": 33,
+            "end": 34
+          },
+          {
+            "form": "모으",
+            "tag": "VV",
+            "start": 35,
+            "end": 37
+          },
+          {
+            "form": "ㄴ다",
+            "tag": "EF",
+            "start": 36,
+            "end": 38
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 38,
+            "end": 39
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [],
+        "subjects": [],
+        "antecedent_candidates": [
+          {
+            "sentence_id": "1.1",
+            "span": [
+              0,
+              3
+            ],
+            "text": "실천은",
+            "marker": "은",
+            "kind": "topic_candidate"
+          },
+          {
+            "sentence_id": "1.2",
+            "span": [
+              10,
+              13
+            ],
+            "text": "우리는",
+            "marker": "는",
+            "kind": "topic_candidate"
+          }
+        ],
+        "uncertain": [
+          "restored_morpheme_form_differs_from_surface",
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      },
+      {
+        "id": "2.1",
+        "paragraph": 2,
+        "start": 40,
+        "end": 52,
+        "text": "자원은 한정되어 있다.",
+        "tokens": [
+          {
+            "form": "자원",
+            "tag": "NNG",
+            "start": 40,
+            "end": 42
+          },
+          {
+            "form": "은",
+            "tag": "JX",
+            "start": 42,
+            "end": 43
+          },
+          {
+            "form": "한정되",
+            "tag": "VV",
+            "start": 44,
+            "end": 47
+          },
+          {
+            "form": "어",
+            "tag": "EC",
+            "start": 47,
+            "end": 48
+          },
+          {
+            "form": "있",
+            "tag": "VX",
+            "start": 49,
+            "end": 50
+          },
+          {
+            "form": "다",
+            "tag": "EF",
+            "start": 50,
+            "end": 51
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 51,
+            "end": 52
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [
+          {
+            "form": "어",
+            "span": [
+              47,
+              48
+            ],
+            "candidates": []
+          }
+        ],
+        "subjects": [
+          {
+            "sentence_id": "2.1",
+            "span": [
+              40,
+              43
+            ],
+            "text": "자원은",
+            "marker": "은",
+            "kind": "topic_candidate"
+          }
+        ],
+        "antecedent_candidates": [
+          {
+            "sentence_id": "1.2",
+            "span": [
+              10,
+              13
+            ],
+            "text": "우리는",
+            "marker": "는",
+            "kind": "topic_candidate"
+          }
+        ],
+        "uncertain": [
+          "connective_reading_unresolved",
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      },
+      {
+        "id": "2.2",
+        "paragraph": 2,
+        "start": 53,
+        "end": 69,
+        "text": "물을 낭비하면 문제가 생긴다.",
+        "tokens": [
+          {
+            "form": "물",
+            "tag": "NNG",
+            "start": 53,
+            "end": 54
+          },
+          {
+            "form": "을",
+            "tag": "JKO",
+            "start": 54,
+            "end": 55
+          },
+          {
+            "form": "낭비하",
+            "tag": "VV",
+            "start": 56,
+            "end": 59
+          },
+          {
+            "form": "면",
+            "tag": "EC",
+            "start": 59,
+            "end": 60
+          },
+          {
+            "form": "문제",
+            "tag": "NNG",
+            "start": 61,
+            "end": 63
+          },
+          {
+            "form": "가",
+            "tag": "JKS",
+            "start": 63,
+            "end": 64
+          },
+          {
+            "form": "생기",
+            "tag": "VV",
+            "start": 65,
+            "end": 67
+          },
+          {
+            "form": "ㄴ다",
+            "tag": "EF",
+            "start": 66,
+            "end": 68
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 68,
+            "end": 69
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [
+          {
+            "form": "면",
+            "span": [
+              59,
+              60
+            ],
+            "candidates": [
+              "조건"
+            ]
+          }
+        ],
+        "subjects": [
+          {
+            "sentence_id": "2.2",
+            "span": [
+              61,
+              64
+            ],
+            "text": "문제가",
+            "marker": "가",
+            "kind": "subject_candidate"
+          }
+        ],
+        "antecedent_candidates": [],
+        "uncertain": [
+          "restored_morpheme_form_differs_from_surface"
+        ]
+      },
+      {
+        "id": "2.3",
+        "paragraph": 2,
+        "start": 70,
+        "end": 86,
+        "text": "비를 기다리지 않을 수 없다.",
+        "tokens": [
+          {
+            "form": "비",
+            "tag": "NNG",
+            "start": 70,
+            "end": 71
+          },
+          {
+            "form": "를",
+            "tag": "JKO",
+            "start": 71,
+            "end": 72
+          },
+          {
+            "form": "기다리",
+            "tag": "VV",
+            "start": 73,
+            "end": 76
+          },
+          {
+            "form": "지",
+            "tag": "EC",
+            "start": 76,
+            "end": 77
+          },
+          {
+            "form": "않",
+            "tag": "VX",
+            "start": 78,
+            "end": 79
+          },
+          {
+            "form": "을",
+            "tag": "ETM",
+            "start": 79,
+            "end": 80
+          },
+          {
+            "form": "수",
+            "tag": "NNB",
+            "start": 81,
+            "end": 82
+          },
+          {
+            "form": "없",
+            "tag": "VA",
+            "start": 83,
+            "end": 84
+          },
+          {
+            "form": "다",
+            "tag": "EF",
+            "start": 84,
+            "end": 85
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 85,
+            "end": 86
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [
+          {
+            "form": "지",
+            "span": [
+              76,
+              77
+            ],
+            "candidates": []
+          }
+        ],
+        "subjects": [],
+        "antecedent_candidates": [
+          {
+            "sentence_id": "2.1",
+            "span": [
+              40,
+              43
+            ],
+            "text": "자원은",
+            "marker": "은",
+            "kind": "topic_candidate"
+          },
+          {
+            "sentence_id": "2.2",
+            "span": [
+              61,
+              64
+            ],
+            "text": "문제가",
+            "marker": "가",
+            "kind": "subject_candidate"
+          }
+        ],
+        "uncertain": [
+          "connective_reading_unresolved",
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      },
+      {
+        "id": "3.1",
+        "paragraph": 3,
+        "start": 87,
+        "end": 96,
+        "text": "변화는 가능하다.",
+        "tokens": [
+          {
+            "form": "변화",
+            "tag": "NNG",
+            "start": 87,
+            "end": 89
+          },
+          {
+            "form": "는",
+            "tag": "JX",
+            "start": 89,
+            "end": 90
+          },
+          {
+            "form": "가능하",
+            "tag": "VA",
+            "start": 91,
+            "end": 94
+          },
+          {
+            "form": "다",
+            "tag": "EF",
+            "start": 94,
+            "end": 95
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 95,
+            "end": 96
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [],
+        "subjects": [
+          {
+            "sentence_id": "3.1",
+            "span": [
+              87,
+              90
+            ],
+            "text": "변화는",
+            "marker": "는",
+            "kind": "topic_candidate"
+          }
+        ],
+        "antecedent_candidates": [
+          {
+            "sentence_id": "2.2",
+            "span": [
+              61,
+              64
+            ],
+            "text": "문제가",
+            "marker": "가",
+            "kind": "subject_candidate"
+          }
+        ],
+        "uncertain": [
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      },
+      {
+        "id": "3.2",
+        "paragraph": 3,
+        "start": 97,
+        "end": 109,
+        "text": "그래서 행동해야 한다.",
+        "tokens": [
+          {
+            "form": "그래서",
+            "tag": "MAJ",
+            "start": 97,
+            "end": 100
+          },
+          {
+            "form": "행동하",
+            "tag": "VV",
+            "start": 101,
+            "end": 104
+          },
+          {
+            "form": "아야",
+            "tag": "EC",
+            "start": 103,
+            "end": 105
+          },
+          {
+            "form": "하",
+            "tag": "VX",
+            "start": 106,
+            "end": 107
+          },
+          {
+            "form": "ㄴ다",
+            "tag": "EF",
+            "start": 106,
+            "end": 108
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 108,
+            "end": 109
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [
+          {
+            "form": "아야",
+            "span": [
+              103,
+              105
+            ],
+            "candidates": []
+          }
+        ],
+        "subjects": [],
+        "antecedent_candidates": [
+          {
+            "sentence_id": "3.1",
+            "span": [
+              87,
+              90
+            ],
+            "text": "변화는",
+            "marker": "는",
+            "kind": "topic_candidate"
+          }
+        ],
+        "uncertain": [
+          "restored_morpheme_form_differs_from_surface",
+          "connective_reading_unresolved",
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      },
+      {
+        "id": "3.3",
+        "paragraph": 3,
+        "start": 110,
+        "end": 121,
+        "text": "매일 함께 노력한다.",
+        "tokens": [
+          {
+            "form": "매일",
+            "tag": "MAG",
+            "start": 110,
+            "end": 112
+          },
+          {
+            "form": "함께",
+            "tag": "MAG",
+            "start": 113,
+            "end": 115
+          },
+          {
+            "form": "노력하",
+            "tag": "VV",
+            "start": 116,
+            "end": 119
+          },
+          {
+            "form": "ㄴ다",
+            "tag": "EF",
+            "start": 118,
+            "end": 120
+          },
+          {
+            "form": ".",
+            "tag": "SF",
+            "start": 120,
+            "end": 121
+          }
+        ],
+        "style_candidates": [
+          "해라체"
+        ],
+        "connectives": [],
+        "subjects": [],
+        "antecedent_candidates": [
+          {
+            "sentence_id": "3.1",
+            "span": [
+              87,
+              90
+            ],
+            "text": "변화는",
+            "marker": "는",
+            "kind": "topic_candidate"
+          }
+        ],
+        "uncertain": [
+          "restored_morpheme_form_differs_from_surface",
+          "no_subject_marker_does_not_prove_ellipsis"
+        ]
+      }
+    ],
+    "dominant_style": [
+      "해라체"
+    ],
+    "analyzer": "bareun",
+    "analyzer_version": "1.7.2",
+    "uncertain": [
+      "style_and_relations_are_candidates_not_constraints"
+    ]
+  },
+  "proposals": {
+    "L_POLARITY": {
+      "op": "L_POLARITY",
+      "sids": [
+        "S2"
+      ],
+      "params": {
+        "old": "수밖에 없다",
+        "new": "수밖에 있다"
+      },
+      "span": [
+        10,
+        16
+      ],
+      "replacement": "수밖에 있다"
+    },
+    "G_DELETE_SUPPORT": {
+      "op": "G_DELETE_SUPPORT",
+      "sids": [
+        "S2"
+      ],
+      "params": {
+        "paragraph": 0,
+        "position": 1,
+        "support_status": "noninitial_candidate_semantics_checked_by_QC",
+        "next_sentence_id": "S3",
+        "next_back_reference": "따라서",
+        "next_cross_paragraph": false
+      },
+      "span": null,
+      "replacement": null
+    }
+  },
+  "tokens": {
+    "실천은 중요하다.": [
+      {
+        "form": "실천",
+        "tag": "NNG",
+        "start": 0,
+        "end": 2
+      },
+      {
+        "form": "은",
+        "tag": "JX",
+        "start": 2,
+        "end": 3
+      },
+      {
+        "form": "중요하",
+        "tag": "VA",
+        "start": 4,
+        "end": 7
+      },
+      {
+        "form": "다",
+        "tag": "EF",
+        "start": 7,
+        "end": 8
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 8,
+        "end": 9
+      }
+    ],
+    "우리는 물을 아낄 수밖에 없다.": [
+      {
+        "form": "우리",
+        "tag": "NP",
+        "start": 0,
+        "end": 2
+      },
+      {
+        "form": "는",
+        "tag": "JX",
+        "start": 2,
+        "end": 3
+      },
+      {
+        "form": "물",
+        "tag": "NNG",
+        "start": 4,
+        "end": 5
+      },
+      {
+        "form": "을",
+        "tag": "JKO",
+        "start": 5,
+        "end": 6
+      },
+      {
+        "form": "아끼",
+        "tag": "VV",
+        "start": 7,
+        "end": 9
+      },
+      {
+        "form": "ㄹ",
+        "tag": "ETM",
+        "start": 8,
+        "end": 9
+      },
+      {
+        "form": "수",
+        "tag": "NNB",
+        "start": 10,
+        "end": 11
+      },
+      {
+        "form": "밖에",
+        "tag": "JX",
+        "start": 11,
+        "end": 13
+      },
+      {
+        "form": "없",
+        "tag": "VA",
+        "start": 14,
+        "end": 15
+      },
+      {
+        "form": "다",
+        "tag": "EF",
+        "start": 15,
+        "end": 16
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 16,
+        "end": 17
+      }
+    ],
+    "따라서 물을 모은다.": [
+      {
+        "form": "따라서",
+        "tag": "MAJ",
+        "start": 0,
+        "end": 3
+      },
+      {
+        "form": "물",
+        "tag": "NNG",
+        "start": 4,
+        "end": 5
+      },
+      {
+        "form": "을",
+        "tag": "JKO",
+        "start": 5,
+        "end": 6
+      },
+      {
+        "form": "모으",
+        "tag": "VV",
+        "start": 7,
+        "end": 9
+      },
+      {
+        "form": "ㄴ다",
+        "tag": "EF",
+        "start": 8,
+        "end": 10
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 10,
+        "end": 11
+      }
+    ],
+    "자원은 한정되어 있다.": [
+      {
+        "form": "자원",
+        "tag": "NNG",
+        "start": 0,
+        "end": 2
+      },
+      {
+        "form": "은",
+        "tag": "JX",
+        "start": 2,
+        "end": 3
+      },
+      {
+        "form": "한정되",
+        "tag": "VV",
+        "start": 4,
+        "end": 7
+      },
+      {
+        "form": "어",
+        "tag": "EC",
+        "start": 7,
+        "end": 8
+      },
+      {
+        "form": "있",
+        "tag": "VX",
+        "start": 9,
+        "end": 10
+      },
+      {
+        "form": "다",
+        "tag": "EF",
+        "start": 10,
+        "end": 11
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 11,
+        "end": 12
+      }
+    ],
+    "물을 낭비하면 문제가 생긴다.": [
+      {
+        "form": "물",
+        "tag": "NNG",
+        "start": 0,
+        "end": 1
+      },
+      {
+        "form": "을",
+        "tag": "JKO",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "form": "낭비하",
+        "tag": "VV",
+        "start": 3,
+        "end": 6
+      },
+      {
+        "form": "면",
+        "tag": "EC",
+        "start": 6,
+        "end": 7
+      },
+      {
+        "form": "문제",
+        "tag": "NNG",
+        "start": 8,
+        "end": 10
+      },
+      {
+        "form": "가",
+        "tag": "JKS",
+        "start": 10,
+        "end": 11
+      },
+      {
+        "form": "생기",
+        "tag": "VV",
+        "start": 12,
+        "end": 14
+      },
+      {
+        "form": "ㄴ다",
+        "tag": "EF",
+        "start": 13,
+        "end": 15
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 15,
+        "end": 16
+      }
+    ],
+    "비를 기다리지 않을 수 없다.": [
+      {
+        "form": "비",
+        "tag": "NNG",
+        "start": 0,
+        "end": 1
+      },
+      {
+        "form": "를",
+        "tag": "JKO",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "form": "기다리",
+        "tag": "VV",
+        "start": 3,
+        "end": 6
+      },
+      {
+        "form": "지",
+        "tag": "EC",
+        "start": 6,
+        "end": 7
+      },
+      {
+        "form": "않",
+        "tag": "VX",
+        "start": 8,
+        "end": 9
+      },
+      {
+        "form": "을",
+        "tag": "ETM",
+        "start": 9,
+        "end": 10
+      },
+      {
+        "form": "수",
+        "tag": "NNB",
+        "start": 11,
+        "end": 12
+      },
+      {
+        "form": "없",
+        "tag": "VA",
+        "start": 13,
+        "end": 14
+      },
+      {
+        "form": "다",
+        "tag": "EF",
+        "start": 14,
+        "end": 15
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 15,
+        "end": 16
+      }
+    ],
+    "변화는 가능하다.": [
+      {
+        "form": "변화",
+        "tag": "NNG",
+        "start": 0,
+        "end": 2
+      },
+      {
+        "form": "는",
+        "tag": "JX",
+        "start": 2,
+        "end": 3
+      },
+      {
+        "form": "가능하",
+        "tag": "VA",
+        "start": 4,
+        "end": 7
+      },
+      {
+        "form": "다",
+        "tag": "EF",
+        "start": 7,
+        "end": 8
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 8,
+        "end": 9
+      }
+    ],
+    "그래서 행동해야 한다.": [
+      {
+        "form": "그래서",
+        "tag": "MAJ",
+        "start": 0,
+        "end": 3
+      },
+      {
+        "form": "행동하",
+        "tag": "VV",
+        "start": 4,
+        "end": 7
+      },
+      {
+        "form": "아야",
+        "tag": "EC",
+        "start": 6,
+        "end": 8
+      },
+      {
+        "form": "하",
+        "tag": "VX",
+        "start": 9,
+        "end": 10
+      },
+      {
+        "form": "ㄴ다",
+        "tag": "EF",
+        "start": 9,
+        "end": 11
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 11,
+        "end": 12
+      }
+    ],
+    "매일 함께 노력한다.": [
+      {
+        "form": "매일",
+        "tag": "MAG",
+        "start": 0,
+        "end": 2
+      },
+      {
+        "form": "함께",
+        "tag": "MAG",
+        "start": 3,
+        "end": 5
+      },
+      {
+        "form": "노력하",
+        "tag": "VV",
+        "start": 6,
+        "end": 9
+      },
+      {
+        "form": "ㄴ다",
+        "tag": "EF",
+        "start": 8,
+        "end": 10
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 10,
+        "end": 11
+      }
+    ],
+    "우리는 물을 아낄 수밖에 있다.": [
+      {
+        "form": "우리",
+        "tag": "NP",
+        "start": 0,
+        "end": 2
+      },
+      {
+        "form": "는",
+        "tag": "JX",
+        "start": 2,
+        "end": 3
+      },
+      {
+        "form": "물",
+        "tag": "NNG",
+        "start": 4,
+        "end": 5
+      },
+      {
+        "form": "을",
+        "tag": "JKO",
+        "start": 5,
+        "end": 6
+      },
+      {
+        "form": "아끼",
+        "tag": "VV",
+        "start": 7,
+        "end": 9
+      },
+      {
+        "form": "ㄹ",
+        "tag": "ETM",
+        "start": 8,
+        "end": 9
+      },
+      {
+        "form": "수",
+        "tag": "NNB",
+        "start": 10,
+        "end": 11
+      },
+      {
+        "form": "밖에",
+        "tag": "JX",
+        "start": 11,
+        "end": 13
+      },
+      {
+        "form": "있",
+        "tag": "VA",
+        "start": 14,
+        "end": 15
+      },
+      {
+        "form": "다",
+        "tag": "EF",
+        "start": 15,
+        "end": 16
+      },
+      {
+        "form": ".",
+        "tag": "SF",
+        "start": 16,
+        "end": 17
+      }
+    ]
+  }
+}

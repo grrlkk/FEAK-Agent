@@ -35,7 +35,7 @@ TVM 학습, corruption 데이터, drift/rollback, DB는 **이번 범위 밖**이
 
 ```python
 # 채점기: kanana-8B + LoRA (학습 완료, 어댑터A), 글 -> rubric 점수
-# 주의: 채점기에 자질을 입력하지 않는다 (확정 결정 — PROJECT_CONTEXT.md 참조)
+# 주의: 채점기에 자질을 입력하지 않는다 (확정 결정 — 최종 방법론 참조)
 rubric_scores = score_rubrics(text: str) -> dict[str, float]
 # 예: {"task_1": 4.0, "content_1": 3.5, ..., "expression_2": 2.0}  (8개 rubric)
 
