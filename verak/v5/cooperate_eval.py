@@ -63,6 +63,13 @@ def documents(values):
         for label,value in values.items()}}
 
 
+def alignment_failed(value):
+    flag = value['alignment']['alignment_failed']
+    if not isinstance(flag, bool):
+        raise ValueError('Expected the saved boolean alignment_failed flag')
+    return flag
+
+
 def selected_sites(case_id, docs, alignment_failed):
     """A bounded public-text diagnostic, independent of gold or judge decisions."""
     original = paragraphs(docs['original']); old = {s['id']:s for s in flat(original)}
@@ -92,7 +99,7 @@ def judging_manifest():
     cases = []; requests = {}
     for case in verify_design()['cases']:
         values, paths = results(case); docs = documents(values)
-        failed = values['onepass'].get('alignment',{}).get('failed',False)
+        failed = alignment_failed(values['onepass'])
         sites = selected_sites(case['case_id'],docs,failed)
         orig = paragraphs(docs['original']); old = positions(orig)
         row = verified(case['row']); aliases = {}; maps = {}
@@ -178,6 +185,8 @@ def verdict(jcase,condition):
     labels = {n['id']:n['broken_after_revision'] for n in raw.get('notices',[])}
     sites = {sid:labels.get(nid,'unjudged') for nid,sid in jcase['sid_maps'][condition].items()}
     quality = raw.get('variants',[{}])[0]
+    if condition == 'onepass' and jcase.get('onepass_alignment_failed'):
+        return quality, {sid:'unavailable' for sid in jcase['selected_original_sites']}
     return quality, {sid:sites.get(sid,'unavailable') for sid in jcase['selected_original_sites']}
 
 
@@ -197,7 +206,9 @@ def measure():
     manifest = judging_manifest(); jcases={c['case_id']:c for c in manifest['cases']}
     rows=[]; operations={}; rejections=[]; attempts=defaultdict(list)
     for case in read_json(ROOT/'design.json')['cases']:
-        values,paths=results(case); docs=documents(values); jc=jcases[case['case_id']]
+        values,paths=results(case); docs=documents(values)
+        # Source schema is authoritative even if an older manifest misread it.
+        jc=dict(jcases[case['case_id']],onepass_alignment_failed=alignment_failed(values['onepass']))
         before_q=read_json(output_dir(RUNS[0],case)/'quality_scores'/(safe_id(case['case_id'])+'.json'))['original']['mean']
         previous_scores=read_json(ROOT/'comparison_scores'/(safe_id(case['case_id'])+'.json'))
         original_quality, original_labels=verdict(jc,'original')
@@ -310,7 +321,7 @@ def report():
         '검증된 full-context C Claude 프롬프트를 그대로 사용했다. 모델·조건명·정답 레코드·채점 점수는 감췄다. '
         '원문 및 최종 글 전체를 제공하고 동일 텍스트/위치 판정은 공유했다. 실패 실행도 포함한다. '
         'Claude 링크 분류 검증이 전체 글 선호·사실성 판단까지 검증한 것은 아니다. LLM 평가이며 사람 평가가 아니다.','',
-        '| Cohort | Condition | ΔQ (GPU) | Better yes/no/uncertain/unjudged | Meaning yes | Fabrication yes | Safe improvement |',
+        '| Cohort | Condition | ΔQ (GPU) | Better yes/no/uncertain/unjudged | Meaning yes | Fabrication flag yes | Strict C composite |',
         '|---|---|---:|---|---:|---:|---:|']
     for name,a in m['quality'].items():
         cohort,c=name.split('/');g=a['global_quality']; b=g['better_than_original']
@@ -318,9 +329,12 @@ def report():
         lines.append(f'| {cohort} | {c} | {a["mean_Q_delta"]:+.4f} | {counts} | '
             f'{g["meaning_preserved"].get("yes",0)}/{a["n"]} | {g["fabrication"].get("yes",0)}/{a["n"]} | '
             f'{a["safe_improvement"]}/{a["n"]} |')
-    lines+=['','Safe improvement = better=yes, meaning=yes, fabrication=no. 불확실/미판정은 성공으로 세지 않았다. '
+    lines+=['','Strict C composite = better=yes, meaning=yes, fabrication=no (JSON의 historical key는 safe_improvement). 불확실/미판정은 성공으로 세지 않았다. '
         'ΔQ는 동일 GPU reference scorer만 사용하며 비교 기준은 동일한 입력 글이다. '
-        'agent_dev10의 기준 글은 훼손 입력이며 비공개 pristine 원문이 아니다.','',
+        'agent_dev10의 기준 글은 훼손 입력이며 비공개 pristine 원문이 아니다. '
+        '**검색 passage·출처 기록은 고정 C 판정 입력에 없었다. 따라서 fabrication flag 및 이를 사용하는 composite는 '
+        '검색으로 근거가 있는 추가 내용을 오탐할 수 있으며, 출처 검증된 사실성이나 채택 기준으로 해석하지 않는다.** '
+        '글 전체 선호 판단도 이 정보 누락의 영향을 받을 수 있다.','',
         '| Condition (all30) | 판정 가능 paired sites | Broken before | Fixed | New broken | Broken after | Uncertain/missing pairs |',
         '|---|---:|---:|---:|---:|---:|---:|']
     for c in CONDITIONS:
@@ -354,6 +368,12 @@ def report():
             f'{sum(v["deleted_source_sentences"] for v in aligned)} |')
     lines+=['','문장 변경/삭제는 ID 정렬 가능 글만 집계한다. one-pass 정렬 실패 글의 전체 글 판정과 ΔQ는 그대로 포함한다. '
               '복원·R_over는 정확히 투영된 결과만이며 미투영은 0으로 채우지 않는다.']
+    if (ROOT/'measurement_amendment.json').exists():
+        lines+=['','집계 정정: one-pass의 실제 `alignment_failed` 필드를 읽어 4편의 문장 단위 판정을 unavailable로 바꿨다. '
+            '최초 후보 합집합에는 그 4편의 불확실한 one-pass 정렬도 포함되었던 정책 이탈을 기록한다. '
+            '다른 조건은 실제로 뽑힌 동일 위치를 유지하며 판정 후 재추출하지 않았다. '
+            '이전 코드·집계와 모든 판정 입력/출력은 보존했고 추가 API 호출은 하지 않았다. '
+            '`measurement_amendment.json`에 변경 근거와 원본 hash를 남겼다.']
     cleanup=read_json(ROOT/'lconn_cleanup/complete.json')
     lines+=['','## Stage 3 이전 L_CONN 정리','',
         '저장 텍스트를 Codex가 점검했다. 사람 gold가 아니며 불확실한 형태는 유지했다. '

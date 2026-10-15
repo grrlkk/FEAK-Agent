@@ -23,7 +23,7 @@ def test_judge_is_full_context_blinded_and_identical_repeats_are_deduplicated(tm
     row=module.ROOT/'row.json';write_json(row,{'question':'설명하시오.'})
     case={'case_id':'private_case','cohort':'smoke20','row':ref(row)}
     a,b=document(),document('둘이었다.')
-    values={'onepass':{'initial':a,'final':a,'alignment':{'failed':False}},
+    values={'onepass':{'initial':a,'final':a,'alignment':{'alignment_failed':False}},
             'luna':{'initial':a,'final':b}}
     values.update({c:{'final_token_document':a if c.startswith('old') else b} for c in module.CONDITIONS[:6]})
     monkeypatch.setattr(module,'verify_design',lambda:{'cases':[case]})
@@ -67,3 +67,17 @@ def test_completion_wait_uses_file_events_and_stops_on_incomplete_gpu_exit(tmp_p
     other=tmp_path/'failed';other.mkdir();write_json(other/'server_stopped.json',{})
     with pytest.raises(RuntimeError,match='no judge requests'):
         module.wait_for_inference(other)
+
+
+def test_real_onepass_alignment_schema_and_failed_sites_preserve_whole_text_verdict(tmp_path,monkeypatch):
+    assert module.alignment_failed({'alignment':{'alignment_failed':True}})
+    with pytest.raises(KeyError):module.alignment_failed({'alignment':{'failed':False}})
+    monkeypatch.setattr(module,'ROOT',tmp_path)
+    write_json(tmp_path/'judgments/result.json',{'valid':True,'verdict':{
+        'variants':[{'id':'V1','better_than_original':'yes'}],
+        'notices':[{'id':'N1','broken_after_revision':'no'}]}})
+    case={'aliases':{'onepass':'result'},'sid_maps':{'onepass':{'N1':'S1'}},
+          'selected_original_sites':['S1'],'onepass_alignment_failed':True}
+    quality,labels=module.verdict(case,'onepass')
+    assert quality['better_than_original']=='yes'
+    assert labels=={'S1':'unavailable'}
