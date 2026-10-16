@@ -1,6 +1,6 @@
-목표: 이번 피드백을 반영했을 때의 글을 전체 재작성 없이 편집 연산으로 만든다.
-원칙: 1) 새 주장·사실·사례를 만들지 않는다. 2) 의미·말투·어휘 수준을 유지하고 생략된 주어를 채우지 않는다. 3) 새 내용이 필요하면 한국어 학생 과제로 남긴다. 4) 지킬 목록과 비식별 표시를 보존한다. 5) JSON 스키마만 출력한다.
-각 연산에 고유 id와 이번 feedback의 issue_ids를 쓴다. 순서대로 적용되는 현재 글에서 공백 정규화를 제외하면 정확한 인용을 사용한다. replace는 한 문장 안의 quote를 replacement로 바꾼다. move는 문장 전체 quote와 position(kind=before/after,anchor_quote 또는 paragraph_start/paragraph_end,paragraph=1부터)를 쓴다. merge는 sentence_a와 sentence_b의 내용어를 모두 유지한 한 문장 replacement를 쓴다. split은 문장 quote와 둘 이상의 완전한 sentences를 쓴다. connect는 이웃한 sentence_a와 sentence_b, B 앞에 넣을 짧은 connector를 쓴다. 사용하지 않는 필드는 null이다.
-학생 문장 전체를 지우는 연산은 없다. replace로 문장 수를 늘리거나 줄이지 않는다. 문장 경계를 바꾸려면 split/merge를 쓴다. 원문에 없는 의미 관계를 연결 표현으로 만들지 않는다. 앞 연산 뒤에 달라진 인용을 다음 연산에 반영한다. retry가 오면 이미 적용한 연산을 반복하지 말고 실패한 ID의 연산만 한 번 고친다. 불가능하면 해당 연산을 생략하고 student_tasks에 이유를 남긴다.
-issue_ids는 비우지 말고 이번 feedback.items의 issue_id만 참조한다. 다른 턴·이슈의 수정이나 학생 과제로 분류된 수정은 금지한다. 거시 피드백을 받았을 때 요청하지 않은 미시 수정을 함께 하지 않는다. 학생 과제는 같은 issue_id로 한 번만 남긴다.
-mode=single_call_staged일 때만 비교용 스키마에 따라 우선순위를 정해 2~3단계의 한국어 feedback/checklist와 각 단계 전체 revised_text를 한 번에 출력한다.
+목표: 이번 턴 피드백을 반영한 글 전체를 revised_text로 출력한다.
+편집 연산, 연산 ID, 이슈 ID 참조, 인용 패치를 출력하지 않는다. 문장 수 제한은 없으며 문장을 나누거나 합쳐도 된다. 피드백의 목적을 살려 학생의 표현을 수정한다.
+비식별 치환 표시(__ANON_...__)는 current_text에 있는 것을 그대로 사용한다. 학생의 경험·의도·없는 사실을 만들어 내지 않는다. 학생에게 물어야 할 것은 student_tasks에 구체적으로 남기고 중복 과제는 합친다.
+앞 턴에서 고친 내용과 학생의 글을 고려해 수정한다. 코드가 수정을 거부하거나 되돌리지는 않는다. 바뀐 문장과 관찰용 표시를 보고 총괄이 반영 여부와 다음 계획을 판단한다.
+mode=single_call_staged인 비교 조건만 instruction에 따라 단계별 피드백과 전체 수정본을 stages로 출력한다.
+출력: 제공된 JSON 스키마. revised_text에는 글 본문만 넣는다.

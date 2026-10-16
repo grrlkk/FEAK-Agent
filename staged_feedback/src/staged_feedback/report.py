@@ -80,6 +80,8 @@ def essay_metrics(directory):
             "deferred_micro_feedback": result.get("deferred_micro_feedback", []),
             "macro_gate_blockers": result.get("macro_gate_blockers", []),
             "route": result["route"], "stop_reason": result["route_reason"],
+            "review_method": result.get("review_method", "legacy_tests"),
+            "observational_flags": dict(Counter(f["kind"] for t in result["turns"] for f in t.get("observational_flags", []))),
         }
     return metrics
 
@@ -101,7 +103,7 @@ def compare_runs(directory, current):
             "delta": {key: after[key] - before[key] for key in ("turns", "api_calls", "plan_changes", "student_task_count")}
                 if before is not None and after is not None else None})
     comparison = {"baseline_run": reference["baseline_run"], "essays": rows,
-        "notes": ["기존 실행은 원문 사전 테스트를 수행하지 않았습니다. 해당 제외 이슈는 미측정입니다.",
+        "notes": ["원문 테스트 수행 여부는 실행별 original_tests_run을 따릅니다. 새 전체 글 수정 방식에는 코드 테스트·연산 거부가 없습니다.",
                   "이전 계획 변경의 원인 분류는 저장 사건에서 추론했으며 원래 이유를 함께 보존했습니다.",
                   "해결 사건 전의 빈 턴 배정을 해결로 잘못 분류한 기록은 사건 순서로 정정하며 원래 분류와 이유도 보존합니다.",
                   "계획 변경 한 건에 여러 원인이 있을 수 있습니다. 최초 계획 생성은 세지 않으며, 초기 변경은 원문 검사·과제 분리·관문 종료, 턴 중 변경은 수정 진행 중의 조정입니다."]}
@@ -127,7 +129,8 @@ def render(directory):
         "plan_changes": sum(m["plan_changes"] for m in metrics.values()),
         "operation_rejection_reasons": dict(Counter(r["reason_code"] for r in rejected)),
         "preserve_violation_attempts": sum(bool(r.get("preserve_violation_attempt")) for r in rejected),
-        "test_trajectories": {r["essay_id"]: [t.get("test_summary") for t in r["turns"]] for r in results}}
+        "test_trajectories": {r["essay_id"]: [t.get("test_summary") for t in r["turns"]] for r in results if "baseline_tests" in r},
+        "observational_flags": dict(Counter(f["kind"] for r in results for t in r["turns"] for f in t.get("observational_flags", [])))}
     summary["essay_metrics"] = metrics
     continuation = directory / "continuation.json"
     if continuation.exists():
@@ -208,6 +211,12 @@ def render(directory):
         if metric["initial_plan_rejections"]:
             parts.extend(["<h3>초기 진단 검증 오류와 재시도</h3>", json_block(metric["initial_plan_rejections"])])
         for turn in result["turns"]:
+            if result.get("revision_mode") == "full_text":
+                parts.extend([f"<h3>{turn['turn']}턴 · 전체 글 수정</h3>", "<h4>피드백</h4>", json_block(turn.get("feedback")),
+                    "<h4>바뀐 문장</h4>", json_block(turn.get("changed_sentences", [])),
+                    "<h4>관찰용 표시 (거부·되돌리기 없음)</h4>", json_block(turn.get("observational_flags", [])),
+                    "<h4>총괄의 직접 검토</h4>", json_block(turn.get("review"))])
+                continue
             parts.extend([f"<h3>{turn['turn']}턴</h3>", "<h4>피드백과 체크리스트</h4>",
                 json_block(turn.get("feedback")), json_block(turn.get("checklist", [])),
                 "<h4>편집 연산</h4><ul>"])

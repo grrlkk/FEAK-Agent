@@ -9,10 +9,8 @@ temperature: 0
 max_output_tokens: 8192
 timeout_s: 180
 max_turns: 4
-feedback_per_turn: 2
-operation_retries: 1
 score_n: 32
-budget_usd: 5
+budget_usd: 3
 max_api_calls: 150
 max_input_chars: 100000
 seed: 161042

@@ -1,6 +1,6 @@
-목표: 이번 턴 계획과 수정 가능한 이슈 안에서 현재 글에 필요한 피드백을 고른다.
-원칙: 1) 새 주장·사실·사례·경험을 만들지 않는다. 2) 의미·말투·어휘 수준을 유지하고 생략된 주어를 채우지 않는다. 3) 새 내용·경험·의도 확인이 필요하면 같은 issue_id의 student_tasks로 넘긴다. 4) 현재 원문과 실제 측정 자질만 근거로 쓴다. 5) JSON 스키마만 출력한다.
-turn_direction과 strategy를 따르고 candidates 안에서 최대 max_feedback개만 고른다. 문제가 없으면 items를 비운다. needs_student_content=true인 이슈와 학생에게 의도를 물어야 하는 항목은 items에 넣지 않는다. 학생 과제는 이슈당 하나로 묶는다. 거시 학생 과제는 수정 에이전트에 넘기지 않고 종료될 수 있다.
-items에는 issue_id, target_quote, what, how, student_explanation, test, feature_evidence를 쓴다. target_quote는 current_text에서 연속해서 한 번 나오는 구간 하나를 복사한다. 떨어진 문장을 합치지 말고 다른 근거는 test.target_quotes에 따로 쓴다. writing_prompt는 인용 대상이 아니다.
-feature_evidence는 실제 쓴 current_features의 source=feature, key, value 그대로와 해석이다. 관련 자질이 없으면 빈 목록이다. 자질 숫자만으로 없는 오류를 만들지 않는다. Kanana를 다시 채점하지 않는다.
-test는 기존 이슈의 수준과 판정 기준을 유지한다. 미시는 absent(expression)/count_at_most(expression,limit)/span_replaced(source_quote,expected)/sentence_contains(sentence_quote,expression)이며 괄호 안 필드는 필수다. expected는 구체적 수정 표현이며 null/빈 문자열이 아니다. macro는 현재 글 내용만으로 답하는 question과 target_quotes다. ‘보완/추가했는가’처럼 수정 수행을 전제하지 않는다. 학생 의도는 단정하지 말고 과제로 넘긴다. checklist는 한국어로 쓰고 앞 턴 확정 문장은 다시 고치지 않는다.
+목표: 이번 턴 계획의 이슈를 학생이 실행할 수 있는 피드백으로 설명한다.
+turn_direction의 issue_ids와 feedback_count에 따라 항목을 정한다. 고정된 개수 상한은 없다. single_pass에서는 candidates의 모든 수정 가능 이슈에 한 항목씩 피드백한다.
+각 항목은 issue_id, target_quote(대상 부분), what(무엇이 문제인지), how(기존 글의 내용으로 어떻게 고칠지), student_explanation을 쓴다. 문장 전체를 반드시 인용할 필요는 없다. current_features와 KB는 설명의 근거로만 사용한다. 원문에서 이미 충분한 것을 새 문제처럼 요구하지 않는다.
+새 경험·사실·학생 의도가 필요하면 수정 방법을 만들어 내지 말고 student_tasks로 넘긴다. 같은 뜻의 과제는 합친다. 피드백은 구체적으로 쓰되 학생의 의도를 단정하거나 없는 내용의 보완을 강요하지 않는다.
+수정 테스트나 편집 연산을 만들지 않는다. 수정한 글은 총괄이 직접 읽고 반영 여부를 판단한다. 비식별 치환 표시는 그대로 인용한다.
+출력: 제공된 JSON 스키마.

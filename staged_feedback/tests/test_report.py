@@ -22,17 +22,17 @@ def test_shared_budget_report_distinguishes_attempt_and_session(tmp_path):
     assert summary["budget"]["spent_upper_usd"] == 0.02
 
 
-def test_comparison_reports_zero_turn_gate_and_old_unmeasured_tests(tmp_path, executor):
+def test_comparison_reports_zero_turn_gate_and_old_unmeasured_tests(tmp_path, observer):
     from test_engine import execute
     from test_student_gates import Intake
     from staged_feedback.report import essay_metrics
 
     old, new = tmp_path / "old", tmp_path / "new"
-    old_result, _, _, _ = execute(old / "essays/synthetic", executor)
-    old_result.pop("baseline_tests")
-    old_result.pop("excluded_initial_issues")
+    old_result, _, _, _ = execute(old / "essays/synthetic", observer)
+    old_result.pop("baseline_tests", None)
+    old_result.pop("excluded_initial_issues", None)
     save_json(old / "essays/synthetic/result.json", old_result)
-    execute(new / "essays/synthetic", executor, llm=Intake())
+    execute(new / "essays/synthetic", observer, llm=Intake())
     save_json(new / "selection.json", {"essays": [{"essay_id": "synthetic", "stratum": "low",
         "human_original_total": 30, "cohort": "repeated", "genre": "정서"}]})
     save_json(new / "comparison_reference.json", {"baseline_run": str(old), "repeated_ids": ["synthetic"]})
@@ -41,7 +41,7 @@ def test_comparison_reports_zero_turn_gate_and_old_unmeasured_tests(tmp_path, ex
     assert comparison["delta"]["turns"] == -1
     assert comparison["before"]["original_tests_run"] is False
     assert comparison["before"]["excluded_initial_issues"] is None
-    assert comparison["after"]["original_tests_run"] is True
+    assert comparison["after"]["original_tests_run"] is False
     assert comparison["after"]["plan_change_reasons"]["student_task_transfer"] == 2
     assert comparison["after"]["plan_changes_initial"] == 2
     assert comparison["after"]["plan_changes_during_turns"] == 0
@@ -64,11 +64,11 @@ def test_continuation_costs_count_reused_calls_once(tmp_path):
     assert abs(summary["all_attempts_confirmed_cost_usd"] - .019) < 1e-10
 
 
-def test_report_does_not_count_a_resolution_before_any_resolved_event(tmp_path, executor):
+def test_report_does_not_count_a_resolution_before_any_resolved_event(tmp_path, observer):
     from test_engine import execute
     from staged_feedback.report import essay_metrics
     directory = tmp_path / "essays/synthetic"
-    execute(directory, executor)
+    execute(directory, observer)
     path = directory / "events.jsonl"
     events = [json.loads(line) for line in path.read_text().splitlines()]
     initial = next(e for e in events if e["kind"] == "plan_changed")
