@@ -30,9 +30,16 @@ def render(directory):
         "preserve_violation_attempts": sum(bool(r.get("preserve_violation_attempt")) for r in rejected),
         "test_trajectories": {r["essay_id"]: [t.get("test_summary") for t in r["turns"]] for r in results}}
     budget_path = directory / "budget.json"
+    reference = directory / "budget_reference.json"
+    if reference.exists():
+        summary["budget_reference"] = json.loads(reference.read_text())
+        budget_path = Path(summary["budget_reference"]["ledger"])
     if budget_path.exists():
         summary["budget"] = json.loads(budget_path.read_text())
     errors = [json.loads(p.read_text(encoding="utf-8")) for p in directory.glob("**/*.error.json")]
+    preflight_path = directory / "preflight.json"
+    if preflight_path.exists() and json.loads(preflight_path.read_text()).get("cuda_available"):
+        errors = [{**e, "resolved": True} if e.get("component") == "native_kanana_gpu" else e for e in errors]
     summary["anomalies"] = [e for e in errors if not e.get("resolved")]
     summary["resolved_anomalies"] = [e for e in errors if e.get("resolved")]
     summary["essay_costs"] = {r["essay_id"]: {

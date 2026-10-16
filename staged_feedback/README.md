@@ -64,9 +64,18 @@ PYTHONPATH=src python -m staged_feedback report --run-dir runs/live3_new
 
 `prepare`는 API를 호출하지 않습니다. 기존 방법론에 명시된 개발용 5편과 평가 제외 목록을 ID·공백 제거 해시로 제외하고, 기존 held-out 로더로 학습 중복·사람 점수 출처를 확인합니다. 사람 점수 합의 삼분위에서 낮음·중간·높음 각 한 편을 뽑습니다. 사람 점수는 표본 선정·로컬 기록에만 사용하며 에이전트 입력에서 제외합니다. 새 3편의 제외 명세는 새 실행 폴더에 저장합니다.
 
+선정한 문항의 장르 캐시는 기존 `merge_heading_evidence`와 `HEADING_SETS` 규칙으로 확인해 새 실행 폴더 `scorer_metadata/`에만 만듭니다. 기존 원본 장르와 허용 라벨은 바꾸지 않으며, 루브릭 이름만 확인합니다. 사람 점수·참고 피드백 내용은 에이전트 입력에 들어가지 않습니다.
+
 표본·설정·프롬프트는 준비 시 저장됩니다. 실제 실행은 저장된 프롬프트를 사용하며 설정 변경과 기존 API 기록 덮어쓰기를 거부합니다. 실행 전 CUDA를 확인하고 GPU가 없으면 원인과 API 0건을 기록한 뒤 종료합니다. 이후 같은 준비 폴더를 GPU 터미널에서 실행할 수 있습니다.
 
 API 호출은 입력·스키마·원시 출력·사용량·비용을 `calls.jsonl`에 기록합니다. 모든 역할·3편은 동일한 **$5 원장**을 공유합니다. 요청 전 최대 비용을 예약하고, 응답 사용량을 모르면 예약액을 유지합니다. SDK 자동 재시도와 모델 대체는 없습니다.
+
+구현 오류를 고쳐 같은 표본을 다시 확인할 때는 기존 시도를 덮어쓰지 않고 다음처럼 준비합니다. `--from-run`은 원문·제외 명세를 그대로 복사하고 **이전 비용 원장을 공유**합니다. 새 설정·프롬프트·결과·호출은 새 폴더에 저장합니다.
+
+```bash
+PYTHONPATH=src python -m staged_feedback prepare --from-run runs/live3_new --run-dir runs/live3_retry
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m staged_feedback live --run-dir runs/live3_retry
+```
 
 ## 결과
 

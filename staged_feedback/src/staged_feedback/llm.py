@@ -10,7 +10,7 @@ from .events import jsonable
 
 
 class LiveLLM:
-    def __init__(self, cfg, directory, project_root):
+    def __init__(self, cfg, directory, project_root, *, budget_ledger=None):
         root = bootstrap(cfg.legacy_root)
         from para_agent.config import ModelConfig, load_config
         from para_agent.llm.openai_transport import OpenAITransport
@@ -28,7 +28,7 @@ class LiveLLM:
                 reasoning_effort=effort, max_output_tokens=cfg.max_output_tokens, timeout_s=cfg.timeout_s)
             transport = OpenAITransport(model, Path(legacy.llm.env_file), max_calls=cfg.max_api_calls)
             self.transports[effort] = ReservedFailureBudgetTransport(transport, self.rates, cfg.budget_usd,
-                ledger_path=self.directory / "budget.json")
+                ledger_path=Path(budget_ledger) if budget_ledger else self.directory / "budget.json")
 
     def request(self, role, payload, schema, *, context):
         from para_agent.eval.costs import token_cost

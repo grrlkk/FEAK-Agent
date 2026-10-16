@@ -97,3 +97,41 @@ def test_max_calls_is_shared_across_roles(monkeypatch, tmp_path):
     client.request("reviser", {}, Revision, context=context)
     with pytest.raises(RuntimeError, match="상한"):
         client.request("coordinator_review", {}, Revision, context=context)
+
+
+def test_retry_attempt_can_share_original_budget_ledger(monkeypatch, tmp_path):
+    _, budgets = install_transports(monkeypatch, tmp_path)
+    shared = tmp_path / "original_run/budget.json"
+    LiveLLM(Settings(), tmp_path / "retry_run", tmp_path, budget_ledger=shared)
+    assert all(b.ledger_path == shared for b in budgets)
+
+
+def test_prepare_from_run_preserves_selection_and_budget(monkeypatch, tmp_path):
+    from staged_feedback import cli, metadata
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    selection = {"essays": [dict(essay_id="synthetic", prompt="일상", text="읽는다.",
+                                stratum="middle", human_original_total=40)]}
+    (old / "selection.json").write_text(json.dumps(selection))
+    (old / "evaluation_exclusions.json").write_text('{"exclude_essay_ids":["synthetic"]}')
+    called = []
+    monkeypatch.setattr(metadata, "prepare_metadata", lambda cfg, directory: called.append(directory))
+    assert cli.main(["prepare", "--from-run", str(old), "--run-dir", str(new)]) == 0
+    assert json.loads((new / "selection.json").read_text()) == selection
+    assert json.loads((new / "budget_reference.json").read_text())["ledger"] == str(old / "budget.json")
+    assert (new / "prompts/feedback.txt").exists()
+    assert called == [new]
+
+
+def test_local_metadata_overrides_legacy_path_only_in_new_config(monkeypatch, tmp_path):
+    from staged_feedback import adapters
+    root = tmp_path / "legacy"
+    run = tmp_path / "new_run"
+    (run / "scorer_metadata").mkdir(parents=True)
+    (run / "scorer_metadata/genres.json").write_text("{}")
+    monkeypatch.setattr(adapters, "bootstrap", lambda _: root)
+    model = SimpleNamespace(internal_kanana_n=None, scorer=SimpleNamespace(cache_dir="old", metadata_dir="old"))
+    monkeypatch.setitem(sys.modules, "para_agent.config", SimpleNamespace(load_config=lambda _: model))
+    value = adapters.legacy_config(Settings(), run)
+    assert value.scorer.metadata_dir == str(run / "scorer_metadata")
+    assert value.scorer.cache_dir == str(run / "cache/scorer")

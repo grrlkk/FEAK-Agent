@@ -18,6 +18,7 @@ def main(argv=None):
     parser.add_argument("command", choices=["prepare", "live", "report"])
     parser.add_argument("--config", type=Path, default=PROJECT / "configs/staged_feedback/default.yaml")
     parser.add_argument("--run-dir", type=Path)
+    parser.add_argument("--from-run", type=Path, help="같은 표본으로 새 시도를 준비하고 기존 $5 원장을 공유합니다.")
     args = parser.parse_args(argv)
     cfg = load_settings(args.config)
     directory = args.run_dir or PROJECT / "runs" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -30,8 +31,20 @@ def main(argv=None):
     if args.command == "prepare":
         if (directory / "selection.json").exists():
             raise ValueError("Selection already exists; use a fresh directory")
-        from .selection import select_three
-        essays = select_three(cfg, directory)
+        if args.from_run:
+            parent = args.from_run.resolve()
+            selection = json.loads((parent / "selection.json").read_text())
+            save_json(directory / "selection.json", selection)
+            essays = selection["essays"]
+            shutil.copy2(parent / "evaluation_exclusions.json", directory / "evaluation_exclusions.json")
+            reference = parent / "budget_reference.json"
+            ledger = json.loads(reference.read_text())["ledger"] if reference.exists() else str(parent / "budget.json")
+            save_json(directory / "budget_reference.json", {"ledger": ledger, "parent_run": str(parent)})
+        else:
+            from .selection import select_three
+            essays = select_three(cfg, directory)
+        from .metadata import prepare_metadata
+        prepare_metadata(cfg, directory)
         save_json(directory / "settings.json", cfg)
         shutil.copytree(PROJECT / cfg.prompts, directory / "prompts")
         print(json.dumps({"run_dir": str(directory), "selected": [
@@ -73,7 +86,9 @@ def main(argv=None):
         diagnostic = NativeDiagnostic(cfg, directory)
         executor = native_executor(cfg)
         # Prompts are frozen at prepare time, together with settings and essays.
-        llm = LiveLLM(cfg.model_copy(update={"prompts": "prompts"}), directory, directory)
+        reference = directory / "budget_reference.json"
+        ledger = Path(json.loads(reference.read_text())["ledger"]) if reference.exists() else None
+        llm = LiveLLM(cfg.model_copy(update={"prompts": "prompts"}), directory, directory, budget_ledger=ledger)
         for essay in selection["essays"]:
             item = {key: essay[key] for key in ("essay_id", "prompt", "text")}
             destination = directory / "essays" / essay["essay_id"]

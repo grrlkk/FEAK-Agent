@@ -27,7 +27,9 @@ def legacy_config(cfg, run_dir):
     value = load_config(root / cfg.legacy_config)
     value.internal_kanana_n = 32
     value.scorer.cache_dir = str(Path(run_dir).resolve() / "cache/scorer")
-    if value.scorer.metadata_dir:
+    if (Path(run_dir) / "scorer_metadata/genres.json").exists():
+        value.scorer.metadata_dir = str(Path(run_dir).resolve() / "scorer_metadata")
+    elif value.scorer.metadata_dir:
         value.scorer.metadata_dir = str(root / value.scorer.metadata_dir)
     return value
 
