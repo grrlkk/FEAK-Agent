@@ -39,3 +39,20 @@ def test_layout_change_is_recorded(observer):
     obs = observer.compare("책을 읽었다.\n친구를 만났다.", "책을 읽었다.\n\n친구를 만났다.")
     assert not obs["changed_sentences"]
     assert obs["layout_changes"]
+
+
+def test_insertion_at_untargeted_sentence_start_is_observed(observer):
+    obs = observer.compare("책을 읽었다. 공을 찼다.", "책을 읽었다. 신나게 공을 찼다.", feedback=feedback("책을 읽었다"))
+    assert any(f["kind"] == "outside_feedback_target" and f["sentence"] == "공을 찼다." for f in obs["flags"])
+
+
+def test_deleted_duplicate_does_not_borrow_later_survivor(observer):
+    obs = observer.compare("동일하다. 차이가 난다. 동일하다.", "차이가 난다. 동일하다.")
+    deleted = [f for f in obs["flags"] if f["kind"] == "student_sentence_deleted"]
+    assert len(deleted) == 1 and deleted[0]["before_span"][0] == 0
+
+
+def test_multiple_feedback_quotes_for_one_issue_keep_all_targets(observer):
+    obs = observer.compare("책을 읽었다. 공을 찼다.", "책을 읽는다. 공을 찬다.", feedback=feedback("책")+feedback("공"))
+    assert len(obs["feedback_targets"]["x"]) == 2
+    assert not any(f["kind"] == "outside_feedback_target" for f in obs["flags"])

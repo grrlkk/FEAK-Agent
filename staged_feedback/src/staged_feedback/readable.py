@@ -246,7 +246,7 @@ def write_logs(directory, destination):
         load(path)
     metrics = essay_metrics(directory)
     essays = selection["essays"] or [{"essay_id": key} for key in metrics]
-    lines = [f"# {directory.name} 작업 로그", "", "저장된 초기 판단·턴 결과·사건·호출 기록을 문장으로 옮겼습니다. 새 모델 호출은 없습니다. 문장 차이는 저장된 문자열에서 계산했습니다.", "",
+    lines = [f"# {directory.name} 작업 로그", "", "저장된 초기 판단·턴 결과·사건·호출 기록을 문장으로 옮겼습니다. 로그 작성에는 추가 모델 호출이 없습니다. 문장 차이는 저장된 문자열에서 계산했습니다.", "",
         "| 글 | 종류·사람 점수 | 턴 | API 호출 | 계획 변경 | 학생 과제 |", "|---|---|---:|---:|---:|---:|"]
     documents = []
     for essay in essays:

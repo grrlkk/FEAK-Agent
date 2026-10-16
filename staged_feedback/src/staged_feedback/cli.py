@@ -22,7 +22,7 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--from-run", type=Path, help="같은 실험의 재시도: 표본과 비용 원장을 공유합니다.")
     group.add_argument("--repeat-run", type=Path, help="별도로 승인된 새 실험: 같은 표본, 새 비용 원장, 이전 실행 비교")
-    group.add_argument("--comparison-run", type=Path, help="기존 3편과 장르가 서로 다른 새 3편을 새 $5 상한으로 준비합니다.")
+    group.add_argument("--comparison-run", type=Path, help="기존 3편과 장르가 서로 다른 새 3편을 설정의 비용 상한으로 준비합니다.")
     args = parser.parse_args(argv)
     cfg = load_settings(args.config)
     directory = args.run_dir or PROJECT / "runs" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

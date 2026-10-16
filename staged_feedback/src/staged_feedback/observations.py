@@ -13,8 +13,8 @@ def overlaps(a, b, c, d):
     return a < d and c < b
 
 
-def touches(a, b, c, d):
-    return overlaps(a, b, c, d) if a != b else c < a < d
+def touches(a, b, c, d, *, include_start=False):
+    return overlaps(a, b, c, d) if a != b else (c <= a < d if include_start else c < a < d)
 
 
 class Observer:
@@ -38,7 +38,8 @@ class Observer:
             if needle:
                 for match in re.finditer(f"(?={re.escape(needle)})", compact):
                     ranges.append((offsets[match.start()], offsets[match.start() + len(needle) - 1] + 1))
-            located[key] = [s for s in sentences if any(overlaps(s["start"], s["end"], a, b) for a, b in ranges)]
+            matched = [s for s in sentences if any(overlaps(s["start"], s["end"], a, b) for a, b in ranges)]
+            located[key] = list({s["id"]: s for s in [*located.get(key, []), *matched]}.values())
             if not ranges:
                 unlocated.append(key)
         return located, unlocated
@@ -47,10 +48,12 @@ class Observer:
         old, new = self.sentence_spans(before), self.sentence_spans(after)
         char_ops = SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
         edits = [op for op in char_ops if op[0] != "equal"]
-        changes = []
+        changes, exact_old_indices, exact_new_indices = [], set(), set()
         for tag, a, b, c, d in SequenceMatcher(None, [s["text"] for s in old],
                                                [s["text"] for s in new], autojunk=False).get_opcodes():
             if tag == "equal":
+                exact_old_indices.update(range(a, b))
+                exact_new_indices.update(range(c, d))
                 continue
             changes.append({"kind": tag, "before": before[old[a]["start"]:old[b-1]["end"]] if a < b else "",
                 "after": after[new[c]["start"]:new[d-1]["end"]] if c < d else "",
@@ -61,7 +64,7 @@ class Observer:
                 and not any(touches(c, d, s["start"], s["end"]) for s in new)]
         targets, unlocated = self.targets(before, feedback)
         target_ids = {s["id"] for items in targets.values() for s in items}
-        touched = [s for s in old if any(touches(a, b, s["start"], s["end"]) for _, a, b, _, _ in edits)]
+        touched = [s for s in old if any(touches(a, b, s["start"], s["end"], include_start=True) for _, a, b, _, _ in edits)]
         flags = []
         # A deletion observation describes surface alignment, never lost meaning.
         # Word alignment avoids treating a split/merge as deletion. Exact moved
@@ -72,8 +75,10 @@ class Observer:
         for block in SequenceMatcher(None, [t.group() for t in tokens_old],
                                      [t.group() for t in tokens_new], autojunk=False).get_matching_blocks():
             surviving.update(range(block.a, block.a + block.size))
-        exact_survivors = Counter(s["text"] for s in new)
-        for sentence in old:
+        exact_survivors = Counter(s["text"] for index, s in enumerate(new) if index not in exact_new_indices)
+        for index, sentence in enumerate(old):
+            if index in exact_old_indices:
+                continue
             if exact_survivors[sentence["text"]]:
                 exact_survivors[sentence["text"]] -= 1
                 continue
