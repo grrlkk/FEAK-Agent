@@ -30,7 +30,7 @@ def install_transports(monkeypatch, tmp_path):
             self.call_count += 1
             self.last_usage = {"input_tokens": 100, "output_tokens": 10}
             self.last_metadata = {"response_id": "fake"}
-            return '{"revised_text": "수정본입니다.", "student_tasks": []}', self.last_usage
+            return '{"revised_text": "수정본입니다.", "cannot_apply": null}', self.last_usage
 
         def close(self):
             pass

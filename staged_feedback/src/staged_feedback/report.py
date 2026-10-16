@@ -11,11 +11,11 @@ def json_block(value):
     return "<pre>" + escape(json.dumps(value, ensure_ascii=False, indent=2)) + "</pre>"
 
 
-PLAN_FIELDS = {"strategy", "turn_plan", "turn_budget", "priorities", "dispositions", "new_issue_ids",
+PLAN_FIELDS = {"strategy", "turn_plan", "turn_budget", "remaining_turns", "priorities", "dispositions", "new_issue_ids",
                "reopened_issue_ids", "student_issue_ids", "excluded_original_pass_ids"}
 REASONS = {"student_task_transfer": "학생 과제 전환", "original_test_pass": "원문에서 이미 통과",
            "new_issue": "새 문제", "resolved_issue": "해결된 문제", "reopened_issue": "다시 열린 문제",
-           "plan_adjustment": "기타 계획 조정"}
+           "plan_adjustment": "기타 계획 조정", "restructure_dependency": "대상 문장의 재배열 대기"}
 
 
 def essay_metrics(directory):
@@ -76,6 +76,8 @@ def essay_metrics(directory):
             "baseline_tests": result.get("baseline_tests"),
             "excluded_initial_issues": result.get("excluded_initial_issues"),
             "student_tasks": result["student_tasks"], "student_task_count": len(result["student_tasks"]),
+            "optional_suggestions": result.get("optional_suggestions", []),
+            "restore_count": sum(s.get("status") == "applied" for t in result["turns"] for s in t.get("restore_results", [])),
             "student_task_duplicates_removed": sum(e["kind"] == "student_task_deduplicated" for e in events),
             "deferred_micro_feedback": result.get("deferred_micro_feedback", []),
             "macro_gate_blockers": result.get("macro_gate_blockers", []),
@@ -196,6 +198,8 @@ def render(directory):
     parts.extend(["<details><summary>전체 실행 요약 원자료</summary>", json_block(summary), "</details>"])
     for result in results:
         parts.extend([f"<article><h2>{escape(result['essay_id'])}</h2>",
+            "<h3>먼저 확인할 학생 과제</h3>",
+            "".join("<p>" + escape(t["instruction"]) + "<br>이유: " + escape(t["reason"]) + "</p>" for t in result["student_tasks"]) or "<p>없음</p>",
             "<p>검증 모드: 합성 원문·mock LLM/진단</p>" if result.get("mock") else "<p>검증 모드: 실제 API·기존 진단 어댑터</p>",
             f"<p>경로: {escape(result['route'])} / 종료 근거: {escape(result['route_reason'])}</p>",
             "<h3>초기 난이도·전략·턴 계획</h3>", json_block({key: result[key] for key in
@@ -216,11 +220,13 @@ def render(directory):
         if metric["initial_plan_rejections"]:
             parts.extend(["<h3>초기 진단 검증 오류와 재시도</h3>", json_block(metric["initial_plan_rejections"])])
         for turn in result["turns"]:
-            if result.get("revision_mode") == "full_text":
-                parts.extend([f"<h3>{turn['turn']}턴 · 전체 글 수정</h3>", "<h4>피드백</h4>", json_block(turn.get("feedback")),
+            if result.get("revision_mode") in {"full_text", "scoped"}:
+                parts.extend([f"<h3>{turn['turn']}턴</h3>", "<h4>피드백</h4>", json_block(turn.get("feedback")),
+                    "<h4>대상 범위 수정과 반영 불가 안내</h4>", json_block(turn.get("scope_revisions", [])),
                     "<h4>바뀐 문장</h4>", json_block(turn.get("changed_sentences", [])),
                     "<h4>관찰용 표시 (거부·되돌리기 없음)</h4>", json_block(turn.get("observational_flags", [])),
-                    "<h4>총괄의 직접 검토</h4>", json_block(turn.get("review"))])
+                    "<h4>총괄의 직접 검토</h4>", json_block(turn.get("review")),
+                    "<h4>총괄 지시에 따른 복원</h4>", json_block(turn.get("restore_results", []))])
                 continue
             parts.extend([f"<h3>{turn['turn']}턴</h3>", "<h4>피드백과 체크리스트</h4>",
                 json_block(turn.get("feedback")), json_block(turn.get("checklist", [])),
@@ -247,7 +253,9 @@ def render(directory):
             parts.append("<p><strong>" + escape(item["issue_id"]) + "</strong>: " + escape(item["feedback"]) + "</p>")
         parts.extend([
             "<details><summary>역할별 메모리 요약 예시</summary>", json_block(result["memory_summaries"][:8]),
-            "</details><h3>최종본</h3><pre>", escape(result["final_text"]), "</pre></article>"])
+            "</details><h3>최종본</h3><pre>", escape(result["final_text"]), "</pre>",
+            "<h3>선택 제안</h3>", "".join("<p>" + escape(s) + "</p>" for s in result.get("optional_suggestions", [])) or "<p>없음</p>",
+            "</article>"])
     parts.append("</html>")
     (directory / "report.html").write_text("\n".join(parts), encoding="utf-8")
     return summary

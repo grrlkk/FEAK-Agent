@@ -16,7 +16,7 @@ def execute(path, observer, *, llm=None, text="책을 읽을수 있다. 함께 �
     return result, engine, llm, diagnostic
 
 
-def test_full_text_pipeline_and_direct_review(tmp_path, observer):
+def test_scoped_pipeline_and_direct_review(tmp_path, observer):
     result, engine, llm, diagnostic = execute(tmp_path, observer)
     assert result["final_text"] == "책을 읽을 수 있다. 함께 연습한다."
     assert [c["role"] for c in llm.calls] == ["coordinator_initial", "feedback", "reviser", "coordinator_review"]
@@ -34,7 +34,8 @@ def test_single_pass_includes_all_six_issues_without_memory_truncation(tmp_path,
     assert len(result["turns"]) == 1
     assert len(result["turns"][0]["feedback"]) == 6
     revision = next(c["payload"] for c in llm.calls if c["role"] == "reviser")
-    assert len(revision["feedback"]["items"]) == len(revision["memory_summary"]["feedback"]) == 6
+    assert len(revision["feedback"]) == 6
+    assert "memory_summary" not in revision and "current_text" not in revision
     assert "allowed_operations" not in revision and "preserve" not in revision
 
 
@@ -42,9 +43,10 @@ def test_every_observation_is_passive_including_prior_changes(tmp_path, observer
     original = "책을 읽을수 있다. 나는 #@이름#을 만났다. 바닷가에서 산책했다."
     llm = ScriptedLLM(turns=2, revisions=[lambda t: t.replace("읽을수", "읽을 수"), "독서를 즐긴다."])
     result, engine, llm, _ = execute(tmp_path, observer, text=original, llm=llm)
-    assert result["final_text"] == "독서를 즐긴다."
+    assert result["final_text"] == "독서를 즐긴다. 나는 #@이름#을 만났다. 바닷가에서 산책했다."
     kinds = {f["kind"] for f in result["turns"][1]["observational_flags"]}
-    assert kinds == {"student_sentence_deleted", "earlier_revision_changed", "anonymization_changed", "outside_feedback_target"}
+    assert "earlier_revision_changed" in kinds
+    assert "anonymization_changed" not in kinds
     assert llm.calls[-1]["payload"]["observational_flags"]
     assert not any("rejected" in e["kind"] for e in engine.journal.events)
 
@@ -52,7 +54,7 @@ def test_every_observation_is_passive_including_prior_changes(tmp_path, observer
 @pytest.mark.parametrize("revision", ["", "책을 읽을 수 있다. 즐겁다. 함께 연습한다.", "책을 읽을 수 있고 함께 연습한다."])
 def test_empty_split_and_merge_outputs_are_preserved(tmp_path, observer, revision):
     result, _, _, _ = execute(tmp_path, observer, llm=ScriptedLLM(revisions=[revision]))
-    assert result["final_text"] == revision
+    assert result["final_text"] == revision + " 함께 연습한다."
 
 
 def test_anonymization_masks_all_roles_and_restores_known_placeholders(tmp_path, observer):
@@ -79,7 +81,7 @@ def test_coordinator_can_find_partial_even_when_text_changed(tmp_path, observer)
 
 def test_no_memory_condition_and_comparison_full_text(tmp_path, observer):
     _, _, llm, _ = execute(tmp_path / "no_memory", observer, condition="planned_no_memory")
-    assert all(call["payload"]["memory_summary"] == "" for call in llm.calls)
+    assert all(call["payload"].get("memory_summary", "") == "" for call in llm.calls)
     result, _, llm, _ = execute(tmp_path / "baseline", observer, condition="single_call_staged")
     assert len(llm.calls) == 1 and len(result["turns"]) == 2
 
@@ -93,11 +95,11 @@ def test_new_run_cannot_overwrite_existing_events(tmp_path, observer):
 def test_prompts_have_no_test_tool_or_operation_contracts():
     root = Path(__file__).resolve().parents[1]
     prompts = list((root / "prompts/staged_feedback").glob("*.txt"))
-    assert len(prompts) == 4
+    assert len(prompts) == 5
     assert all(len(p.read_text()) <= 1500 for p in prompts)
     from staged_feedback.models import InitialPlan, Revision, Feedback, Review
     fields = set(Revision.model_fields)
-    assert fields == {"revised_text", "student_tasks"}
+    assert fields == {"revised_text", "cannot_apply"}
     for model in (InitialPlan, Feedback, Review):
         assert "TestSpec" not in json.dumps(model.model_json_schema())
     assert "operation_retries" not in Settings.model_fields
@@ -111,12 +113,12 @@ def test_switch_to_single_pass_schedules_next_turn_instead_of_ending_current(tmp
             response = super().request(role, payload, schema, context=context)
             if role == 'coordinator_review' and context['turn'] == 1:
                 response.strategy = Strategy(name='single_pass', reason='다음 한 턴에 남은 이슈를 모두 다룹니다.')
-                response.turn_budget = 2
+                response.remaining_turns = 1
                 response.continue_work = True
             return response
     result, _, _, _ = execute(tmp_path, observer, llm=Switch(turns=2))
     assert len(result['turns']) == 2
-    assert result['turns'][0]['budget_after'] == 2
+    assert result['turns'][0]['remaining_after_review'] == 1
     assert result['turns'][0]['continue_work'] is True
     assert result['turns'][1]['strategy']['name'] == 'single_pass'
     assert len(result['turns'][1]['feedback']) == 1

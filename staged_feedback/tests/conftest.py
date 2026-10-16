@@ -92,30 +92,30 @@ class ScriptedLLM:
         turn = context["turn"]
         if role == "coordinator_initial":
             problems = [issue(f"i{i+1}") for i in range(self.count)]
-            forced = payload.get("forced_initial_budget")
+            forced = payload.get("forced_remaining_turns")
             budget = forced or self.turns
             response = dict(difficulty=dict(level="easy", revision_amount="small", reason="표기를 다듬습니다.",
                 diagnostic_evidence=[dict(source="kanana", key="내용", value=5.0, explanation="측정 점수")],
                 evidence_quotes=["읽을수"]), strategy=dict(name="single_pass" if budget == 1 else "front_first", reason="표기 수정"),
                 turn_plan=[dict(turn=t, direction="표기 수정", issue_ids=[p.id for p in problems], feedback_count=self.count)
                            for t in range(1, budget + 1)], issues=[p.model_dump() for p in problems],
-                turn_budget=budget, reason="표기 문제", student_tasks=[])
+                remaining_turns=budget, reason="표기 문제", student_tasks=[])
         elif role == "feedback":
             response = dict(items=[dict(issue_id=p["id"], target_quote=p["evidence_quotes"][0],
-                what="띄어쓰기", how="읽을 수로 고치세요.", student_explanation="의존 명사 앞을 띄웁니다.", feature_evidence=[])
-                for p in payload["candidates"]], student_tasks=[])
-        elif role == "reviser" and payload.get("mode") == "single_call_staged":
+                target_ids=["s1"], what="띄어쓰기", how="읽을 수로 고치세요.", student_explanation="의존 명사 앞을 띄웁니다.", feature_evidence=[])
+                for p in payload["candidates"]])
+        elif role == "single_call_staged":
             response = dict(stages=[dict(feedback=["띄어쓰기"], revised_text=payload["current_text"].replace("읽을수", "읽을 수"))
                                    for _ in range(2)], student_tasks=[])
         elif role == "reviser":
             revision = self.revisions[turn-1] if len(self.revisions) >= turn else lambda t: t.replace("읽을수", "읽을 수")
-            response = dict(revised_text=revision(payload["current_text"]) if callable(revision) else revision, student_tasks=[])
+            response = dict(revised_text=revision(payload["source_text"]) if callable(revision) else revision, cannot_apply=None)
         elif role == "coordinator_review":
             assessments = self.assessments if self.assessments is not None else [dict(issue_id=i["issue_id"],
                 status="partial" if turn < self.turns else "applied", reason="현재 문장을 직접 읽고 판단했습니다.")
                 for i in payload["feedback"]["items"]]
-            response = dict(assessments=assessments, reopened_issue_ids=[], new_issues=[], priorities=[], dispositions=[],
-                strategy=None, turn_plan=None, turn_budget=self.turns, continue_work=turn < self.turns,
+            response = dict(assessments=assessments, reopened=[], new_issues=[], priorities=[],
+                strategy=None, turn_plan=None, remaining_turns=max(0, self.turns-turn), continue_work=turn < self.turns,
                 reason="다음 턴에서 남은 내용을 검토합니다." if turn < self.turns else "반영을 확인했습니다.", student_tasks=[])
         else:
             raise AssertionError(role)
