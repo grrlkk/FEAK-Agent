@@ -38,3 +38,44 @@ def test_legacy_log_keeps_rejections_tests_and_does_not_invent_review_reasons(tm
     body = (output / "synthetic.md").read_text()
     assert "거부 o1" in body and "항목별 이유 필드는 당시 스키마에 없었습니다" in body
     assert "당시 코드·거시 테스트의 별도 판정" in body and "검사 오류" in body
+
+
+def test_student_tasks_first_and_optional_suggestions_last(tmp_path, observer):
+    from test_student_gates import Intake
+    from staged_feedback.report import render
+    class Suggested(Intake):
+        def request(self, role, payload, schema, *, context):
+            response = super().request(role, payload, schema, context=context)
+            if role == 'coordinator_initial':
+                response.optional_suggestions = ['선택적으로 독서 장소를 덧붙여도 좋습니다.']
+            return response
+    run, output = tmp_path/'run', tmp_path/'logs'
+    execute(run/'essays/synthetic', observer, llm=Suggested())
+    write_logs(run, output)
+    render(run)
+    body = (output/'synthetic.md').read_text()
+    assert body.index('반어인지 설명해 주세요.') < body.index('[총괄 초기 판단]')
+    assert body.rstrip().endswith('선택적으로 독서 장소를 덧붙여도 좋습니다.')
+    assert '남은 턴 수:' in body and '범위별 수정' in body
+    html = (run/'report.html').read_text()
+    article = html[html.index('<article>'):]
+    assert article.index('반어인지 설명해 주세요.') < article.index('초기 난이도')
+    assert article.index('<h3>선택 제안') > article.index('<h3>최종본')
+
+
+def test_conflicting_continue_and_zero_remaining_is_reported(tmp_path, observer):
+    from conftest import ScriptedLLM
+    class Contradiction(ScriptedLLM):
+        def request(self, role, payload, schema, *, context):
+            response = super().request(role, payload, schema, context=context)
+            if role == 'coordinator_review':
+                response.continue_work = True
+                response.remaining_turns = 0
+            return response
+    run=tmp_path/'run'
+    result, _, _, _ = execute(run/'essays/synthetic', observer, llm=Contradiction(turns=2))
+    assert len(result['turns']) == 1 and result['remaining_issue_ids'] == ['i1']
+    write_logs(run,tmp_path/'logs')
+    body=(tmp_path/'logs/synthetic.md').read_text()
+    assert '총괄 출력 불일치' in body
+    assert '미해결 이슈는 그대로 남습니다' in body

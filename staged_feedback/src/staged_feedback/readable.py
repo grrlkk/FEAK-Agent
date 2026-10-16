@@ -14,7 +14,7 @@ LABELS = {"easy": "낮음", "moderate": "중간", "hard": "높음", "small": "�
 FLAGS = {"student_sentence_deleted": "학생 문장 통째 삭제 관찰", "earlier_revision_changed": "앞 턴에서 고친 문장 변경",
     "anonymization_changed": "비식별 표시 변경", "outside_feedback_target": "피드백 대상 밖 변경"}
 ROLES = {"coordinator_initial": "총괄 초기 판단", "feedback": "피드백", "reviser": "수정", "coordinator_review": "총괄 검토",
-         "macro_tests": "기존 거시 테스트"}
+         "macro_tests": "기존 거시 테스트", "single_call_staged": "한 호출 비교"}
 
 
 def sentence_spans(text):
@@ -70,18 +70,21 @@ def essay_log(directory, essay, metric, load):
         lines.extend(list(items) or [empty])
         lines.append("")
 
-    add(f"# {essay['essay_id']}", f"글 종류: {essay.get('genre', '미기록')} · 사람 원점수: {essay.get('human_original_total', '미기록')} · 점수층: {essay.get('stratum', '미기록')}",
-        "## [총괄 초기 판단]")
+    add(f"# {essay['essay_id']}", "## [먼저 확인할 학생 과제]")
+    listing(f"- {t.get('issue_id') or '별도 과제'}: {text(t['instruction'])} 이유: {text(t['reason'])}" for t in result.get("student_tasks", []))
+    add(f"글 종류: {essay.get('genre', '미기록')} · 사람 원점수: {essay.get('human_original_total', '미기록')} · 점수층: {essay.get('stratum', '미기록')}", "## [총괄 초기 판단]")
     difficulty, strategy = initial.get("difficulty", {}), initial.get("strategy", {})
     add(f"난이도: {LABELS.get(difficulty.get('level'), '미기록')} · 수정량: {LABELS.get(difficulty.get('revision_amount'), '미기록')}.",
         f"판단 이유: {text(difficulty.get('reason', '미기록'))}",
         f"전략: {LABELS.get(strategy.get('name'), strategy.get('name', '미기록'))}. 이유: {text(strategy.get('reason', '미기록'))}",
-        f"초기 계획: {initial.get('turn_budget', '미기록')}턴. 실제 피드백 턴: {len(result['turns'])}턴. 계획 이유: {text(initial.get('reason', '미기록'))}")
+        f"초기 계획: {initial.get('remaining_turns', initial.get('turn_budget', '미기록'))}턴. 실제 피드백 턴: {len(result['turns'])}턴. 계획 이유: {text(initial.get('reason', '미기록'))}")
     if difficulty.get("diagnostic_evidence"):
         add("판단에 사용한 진단 근거:")
         listing(f"- {e['key']} = {e.get('value')}: {text(e['explanation'])}" for e in difficulty["diagnostic_evidence"])
     add("초기 이슈 목록:")
-    listing(f"- {i['id']} / {LABELS[i['level']]} / {'학생 과제' if i.get('needs_student_content') else '수정 이슈'}: {text(i['description'])}" for i in initial.get("issues", []))
+    listing(f"- {i['id']} / {LABELS[i['level']]}" + (f" ({i['macro_type']})" if i.get('macro_type') else '') +
+        f" / {'학생 과제' if i.get('needs_student_content') or i.get('macro_type') == 'student_input' else '수정 이슈'}: {text(i['description'])}" +
+        (f" 재배열 대기: {', '.join(i['restructure_issue_ids'])}." if i.get('restructure_issue_ids') else '') for i in initial.get("issues", []))
     add("턴 계획:")
     listing(f"- {p['turn']}턴: {text(p['direction'])} 대상 {', '.join(p['issue_ids']) or '없음'}; 피드백 {str(p['feedback_count'])+'개' if 'feedback_count' in p else '계획에 개수 미기록'}." for p in initial.get("turn_plan", []))
     add("원문 테스트 결과:")
@@ -119,6 +122,18 @@ def essay_log(directory, essay, metric, load):
                 f"가리킨 부분: {quoted(item['target_quote'])}", f"무엇을: {text(item['what'])}", f"어떻게: {text(item['how'])}")
             if item.get("student_explanation"):
                 add(f"학생에게 설명: {text(item['student_explanation'])}")
+            if item.get("target_ids"):
+                add("대상 범위 ID: " + ", ".join(item["target_ids"]))
+            if item.get("needs_student_input"):
+                add("학생 입력 필요 표시: 총괄에게 과제 여부 판단을 요청했습니다.")
+        if "scope_revisions" in turn:
+            add("### 범위별 수정")
+            for scope in turn["scope_revisions"]:
+                add(f"- {scope['scope_id']} ({', '.join(scope['issue_ids'])}): 전 {quoted(scope['before'])} → 후 {quoted(scope['after'])}")
+                if scope.get("cannot_apply"):
+                    add("수정 에이전트의 반영 불가 안내: " + text(scope["cannot_apply"]) + " 해당 범위 원문을 유지했습니다.")
+            for missing in turn.get("scope_unavailable", []):
+                add(f"- {missing['issue_id']}: 범위 지정 미완료. {text(missing['reason'])}")
         if "operations" in turn:
             add("### 수정: 적용 및 거부")
             if not turn["operations"]:
@@ -186,7 +201,12 @@ def essay_log(directory, essay, metric, load):
             if "turn_budget" in d:
                 budget = d["turn_budget"]["after"]
         budget = turn.get("budget_after", budget)
-        add(f"턴 조절: {old_budget} → {budget}. " + (text(review["reason"]) if review else "학생 과제 분리 또는 실행 조건에 따라 종료했습니다."))
+        if "remaining_after_review" in turn:
+            add(f"남은 턴 수: 턴 시작 전 {turn['remaining_before']} → 이번 턴 사용 후 {turn['remaining_after_consumption']} → 총괄 검토 후 {turn['remaining_after_review']}. 이유: " + text(review["reason"]))
+            if review["continue_work"] and review["remaining_turns"] == 0:
+                add("총괄 출력 불일치: 계속 필요(continue_work=true)라고 했지만 남은 턴 수를 0으로 반환했습니다. 실행은 남은 턴 수 0에 따라 종료됐으며 미해결 이슈는 그대로 남습니다.")
+        else:
+            add(f"턴 조절: {old_budget} → {budget}. " + (text(review["reason"]) if review else "학생 과제 분리 또는 실행 조건에 따라 종료했습니다."))
         for d in turn_changes:
             corrected = next((c for c in metric["plan_change_details"] if c["turn"] == number and
                 c.get("category_source") == "corrected_from_events" and c.get("original_reason") == d.get("reason")), None)
@@ -196,10 +216,22 @@ def essay_log(directory, essay, metric, load):
             add(f"- 계획 변경: {text(reason)}" + (f" 원인: {causes}." if causes else ""))
             if d.get("rejected_new_issues"):
                 listing(f"- 당시 코드가 새 이슈 등록을 거부: {i['id']}. {text(i['reason'])}" for i in d["rejected_new_issues"])
+        if "restore_results" in turn:
+            add("### 총괄 지시에 따른 문장 복원")
+            for restored in turn["restore_results"]:
+                if restored["status"] == "applied":
+                    add(f"- 이전 문장 {', '.join(restored['previous_sentence_ids'])}: 전 {quoted(restored['before'])} → 후 {quoted(restored['after'])}. 이유: {text(restored['reason'])}")
+                else:
+                    add(f"- 복원 {restored['status']}: {text(restored['detail'])}. 총괄 이유: {text(restored['reason'])}")
+            if not turn["restore_results"]:
+                add("복원 지시 없음.")
+            add("복원까지 반영한 이번 턴의 최종 문장 변화:")
+            listing(changes_text(turn["final_changed_sentences"]))
         continuing = turn.get("continue_work", number < len(result["turns"]))
         add("계속·종료: " + ("다음 턴 계속." if continuing else "종료. " + result["route_reason"]))
         if review and bool(review["continue_work"]) != continuing:
-            add("총괄의 계속 요청과 실제 종료가 다릅니다. 실제 턴 예산·학생 과제·남은 이슈 상태에 따라 종료됐습니다.")
+            add("총괄의 계속 요청과 실제 종료가 다릅니다. 실제 남은 턴 수·수정 가능한 이슈 상태에 따라 종료됐습니다." if "remaining_after_review" in turn else
+                "총괄의 계속 요청과 실제 종료가 다릅니다. 실제 턴 예산·학생 과제·남은 이슈 상태에 따라 종료됐습니다.")
         previous = turn["revised_text"]
     add("## [결과]", "종료 이유: " + text(result["route_reason"]))
     resolved = set(result.get("resolved_issue_ids", []))
@@ -224,7 +256,9 @@ def essay_log(directory, essay, metric, load):
         if c.get("category_source") == "corrected_from_events":
             add("원자료의 ‘해결된 문제’ 분류는 앞선 해결 사건이 없어 보고 단계에서 정정했습니다. 원자료는 보존했습니다.")
     add(f"거부된 연산: {metric['rejected_operation_attempts']}개; 거부 관련 사건 {metric['rejected_operation_events']}건. " +
-        ("이 실행에는 편집 연산·거부 기능이 없습니다." if result.get("revision_mode") == "full_text" else "재시도에서 빠뜨린 연산은 별도 사건으로 셉니다."))
+        ("이 실행에는 편집 연산·자동 거부 기능이 없습니다." if result.get("revision_mode") in {"full_text", "scoped"} else "재시도에서 빠뜨린 연산은 별도 사건으로 셉니다."))
+    add("## [선택 제안]")
+    listing("- " + text(s) for s in result.get("optional_suggestions", []))
     return "\n".join(lines).rstrip() + "\n"
 
 

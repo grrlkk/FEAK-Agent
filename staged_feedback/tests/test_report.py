@@ -22,7 +22,7 @@ def test_shared_budget_report_distinguishes_attempt_and_session(tmp_path):
     assert summary["budget"]["spent_upper_usd"] == 0.02
 
 
-def test_comparison_reports_zero_turn_gate_and_old_unmeasured_tests(tmp_path, observer):
+def test_comparison_reports_student_tasks_without_early_stop(tmp_path, observer):
     from test_engine import execute
     from test_student_gates import Intake
     from staged_feedback.report import essay_metrics
@@ -38,12 +38,12 @@ def test_comparison_reports_zero_turn_gate_and_old_unmeasured_tests(tmp_path, ob
     save_json(new / "comparison_reference.json", {"baseline_run": str(old), "repeated_ids": ["synthetic"]})
     summary = render(new)
     comparison = json.loads((new / "comparison.json").read_text())["essays"][0]
-    assert comparison["delta"]["turns"] == -1
+    assert comparison["delta"]["turns"] == 0
     assert comparison["before"]["original_tests_run"] is False
     assert comparison["before"]["excluded_initial_issues"] is None
     assert comparison["after"]["original_tests_run"] is False
-    assert comparison["after"]["plan_change_reasons"]["student_task_transfer"] == 2
-    assert comparison["after"]["plan_changes_initial"] == 2
+    assert comparison["after"]["plan_change_reasons"]["student_task_transfer"] == 1
+    assert comparison["after"]["plan_changes_initial"] == 1
     assert comparison["after"]["plan_changes_during_turns"] == 0
     assert len(summary["essay_metrics"]["synthetic"]["student_tasks"]) == 1
     assert "큰 틀을 고친 뒤" in (new / "report.html").read_text()

@@ -44,7 +44,7 @@ class Observer:
                 unlocated.append(key)
         return located, unlocated
 
-    def compare(self, before, after, *, feedback=(), previous_changed_ranges=()):
+    def compare(self, before, after, *, feedback=(), previous_changed_ranges=(), target_ranges=()):
         old, new = self.sentence_spans(before), self.sentence_spans(after)
         char_ops = SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
         edits = [op for op in char_ops if op[0] != "equal"]
@@ -63,6 +63,12 @@ class Observer:
                 for _, a, b, c, d in edits if not any(touches(a, b, s["start"], s["end"]) for s in old)
                 and not any(touches(c, d, s["start"], s["end"]) for s in new)]
         targets, unlocated = self.targets(before, feedback)
+        for scope in target_ranges:
+            for key in scope["issue_ids"]:
+                matched = [s for s in old if overlaps(s["start"], s["end"], scope["start"], scope["end"])]
+                targets[key] = list({s["id"]: s for s in [*targets.get(key, []), *matched]}.values())
+                if key in unlocated:
+                    unlocated.remove(key)
         target_ids = {s["id"] for items in targets.values() for s in items}
         touched = [s for s in old if any(touches(a, b, s["start"], s["end"], include_start=True) for _, a, b, _, _ in edits)]
         flags = []

@@ -10,6 +10,7 @@ KINDS = {
     "issue_resolved", "issue_added", "plan_changed", "commitment_added", "turn_ended",
     "issue_excluded", "student_task_added", "student_task_deduplicated", "gate_blocked",
     "initial_plan_rejected", "revision_recorded", "review_recorded",
+    "optional_suggestion_added", "scope_revision_recorded", "restoration_recorded",
 }
 
 
@@ -56,7 +57,7 @@ class Journal:
         if not enabled:
             return ""
         issues, resolved, student_ids = {}, set(), set()
-        tasks, feedback, revisions, reviews, flow = [], [], [], [], []
+        tasks, suggestions, feedback, revisions, reviews, flow = [], [], [], [], [], []
         strategy, turn_plan = None, []
         for event in self.events:
             data, kind = event["payload"], event["kind"]
@@ -71,11 +72,17 @@ class Journal:
                     tasks.append(data["task"])
             elif kind == "feedback_presented":
                 feedback = data["items"]
+            elif kind == "optional_suggestion_added":
+                suggestions.append(data["suggestion"])
             elif kind == "revision_recorded":
                 revisions.append({"turn": event["turn"], "changed_sentences": data["changed_sentences"],
                                   "observational_flags": data["flags"]})
             elif kind == "review_recorded":
                 reviews.append({"turn": event["turn"], **data["review"]})
+            elif kind == "restoration_recorded":
+                if revisions and revisions[-1]["turn"] == event["turn"]:
+                    revisions[-1].update(changed_sentences=data["changed_sentences"],
+                        observational_flags=data["flags"], coordinator_restore=data["requests"])
             elif kind == "turn_ended":
                 flow.append({"turn": event["turn"], **data})
             elif kind == "plan_changed":
@@ -92,7 +99,7 @@ class Journal:
         if role == "coordinator":
             return {"flow": flow, "remaining_issues": remaining, "reviews": reviews,
                     "remaining_turns": remaining_turns, "strategy": strategy,
-                    "turn_plan": turn_plan, "student_tasks": tasks}
+                    "turn_plan": turn_plan, "student_tasks": tasks, "optional_suggestions": suggestions}
         if role == "feedback":
             return {"candidates": remaining, "resolved_issue_ids": sorted(resolved),
                     "strategy": strategy, "turn_plan": turn_plan, "earlier_revisions": revisions}
