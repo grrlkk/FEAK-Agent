@@ -1,13 +1,12 @@
-"""Synthetic sentences only: no development/evaluation essay is a test fixture."""
+"""Synthetic sentences only; no evaluation essay is a test fixture."""
 import re
 
 import pytest
 
-from staged_feedback.edits import Executor
+from staged_feedback.observations import Observer
 
 
 def sentences(text):
-    # Mirror the native punctuation/newline contract, without a legacy dependency.
     boundaries = [m.end() for m in re.finditer(r'[.!?。！？][\"\'”’」』)\]]*(?=\s|$)|\r?\n', text)]
     result, start = [], 0
     for end in [*boundaries, len(text)]:
@@ -23,19 +22,44 @@ def sentences(text):
 
 
 @pytest.fixture
-def executor():
-    return Executor(sentence_spans=sentences,
-        pos=lambda text: [(word, "NNG") for word in re.findall(r"[가-힣]+", text)],
-        marker_pattern=re.compile(r"#@[^#\r\n]+#"),
-        placeholder_pattern=re.compile(r"__ANON_[A-Za-z0-9]+_[A-Za-z0-9]+__"))
+def observer():
+    return Observer(sentence_spans=sentences, marker_pattern=re.compile(r"#@[^#\r\n]+#"),
+                    placeholder_pattern=re.compile(r"__ANON_[A-Za-z0-9]+_[A-Za-z0-9]+__"))
 
 
-def issue(identifier="i1", source="읽을수", expected="읽을 수"):
-    from staged_feedback.models import Issue
-    return Issue(id=identifier, level="micro", description="띄어쓰기를 고칩니다.",
-        evidence_quotes=[source], priority=1,
-        test=dict(kind="span_replaced", source_quote=source, expected=expected,
-                  checklist=f"‘{source}’를 ‘{expected}’로 고쳤나요?"))
+class Anonymizer:
+    """Boundary stand-in; any call to a quality validator fails the test."""
+    def __init__(self, *args):
+        self.mapping = {}
+
+    def mask_data(self, value):
+        if isinstance(value, str):
+            def replace(match):
+                token = f"__ANON_test_{len(self.mapping):06d}__"
+                self.mapping[token] = match.group()
+                return token
+            return re.sub(r"#@[^#\r\n]+#", replace, value)
+        if isinstance(value, dict):
+            return {k: self.mask_data(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self.mask_data(v) for v in value]
+        return value
+
+    def restore_data(self, value):
+        if hasattr(value, "model_dump"):
+            value = value.model_dump()
+        if isinstance(value, str):
+            for key, text in self.mapping.items():
+                value = value.replace(key, text)
+            return value
+        if isinstance(value, dict):
+            return {k: self.restore_data(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self.restore_data(v) for v in value]
+        return value
+
+    def validate_revision(self, *args):
+        raise AssertionError("Revision validator must never run")
 
 
 class Diagnostic:
@@ -52,48 +76,47 @@ class Diagnostic:
         return dict(features={"length": len(text)}, kb_items=[], mock=True)
 
 
+def issue(identifier="i1", quote="읽을수"):
+    from staged_feedback.models import Issue
+    return Issue(id=identifier, level="micro", description="띄어쓰기를 고칩니다.",
+                 evidence_quotes=[quote], priority=1)
+
+
 class ScriptedLLM:
-    def __init__(self, *, extend=False, broken=False, omit_retry=False):
-        self.calls, self.extend, self.broken, self.omit_retry = [], extend, broken, omit_retry
+    def __init__(self, *, count=1, turns=1, revisions=None, assessments=None):
+        self.calls, self.count, self.turns = [], count, turns
+        self.revisions, self.assessments = revisions or [], assessments
 
     def request(self, role, payload, schema, *, context):
         self.calls.append(dict(role=role, payload=payload, context=context))
         turn = context["turn"]
-        problems = [issue()]
-        if self.extend:
-            problems.append(issue("i2", "할수", "할 수"))
         if role == "coordinator_initial":
+            problems = [issue(f"i{i+1}") for i in range(self.count)]
             forced = payload.get("forced_initial_budget")
-            budget = forced or 1
-            response = dict(difficulty=dict(level="easy", revision_amount="small", reason="표기 수정이 필요합니다.",
-                diagnostic_evidence=[dict(source="kanana", key="내용", value=5.0, explanation="측정된 점수입니다.")],
-                evidence_quotes=["읽을수"]), strategy=dict(name="front_first" if forced else "single_pass", reason="앞에서부터 표기를 고칩니다."),
-                turn_plan=[dict(turn=i, direction="표기 수정", issue_ids=[p.id for p in problems]) for i in range(1, budget + 1)],
-                issues=[p.model_dump() for p in problems], commitments=[dict(statement="말투와 주장을 유지합니다.")],
-                turn_budget=budget, reason="작은 표현 오류를 다룹니다.", student_tasks=[])
+            budget = forced or self.turns
+            response = dict(difficulty=dict(level="easy", revision_amount="small", reason="표기를 다듬습니다.",
+                diagnostic_evidence=[dict(source="kanana", key="내용", value=5.0, explanation="측정 점수")],
+                evidence_quotes=["읽을수"]), strategy=dict(name="single_pass" if budget == 1 else "front_first", reason="표기 수정"),
+                turn_plan=[dict(turn=t, direction="표기 수정", issue_ids=[p.id for p in problems], feedback_count=self.count)
+                           for t in range(1, budget + 1)], issues=[p.model_dump() for p in problems],
+                turn_budget=budget, reason="표기 문제", student_tasks=[])
         elif role == "feedback":
-            problem = problems[min(turn - 1, len(problems) - 1)]
-            response = dict(items=[dict(issue_id=problem.id, target_quote=problem.evidence_quotes[0],
-                what="띄어쓰기", how="단어 사이를 띄우세요.", student_explanation="의존 명사 앞을 띄어 써 보세요.",
-                test=problem.test.model_dump(), feature_evidence=[dict(source="feature", key="length",
-                    value=payload["current_features"]["features"]["length"], explanation="현재 글의 길이를 확인했습니다.")])], student_tasks=[])
+            response = dict(items=[dict(issue_id=p["id"], target_quote=p["evidence_quotes"][0],
+                what="띄어쓰기", how="읽을 수로 고치세요.", student_explanation="의존 명사 앞을 띄웁니다.", feature_evidence=[])
+                for p in payload["candidates"]], student_tasks=[])
         elif role == "reviser" and payload.get("mode") == "single_call_staged":
-            response = dict(stages=[dict(feedback=["표기를 고치세요."], checklist=["띄어쓰기를 확인했나요?"],
-                revised_text=payload["current_text"].replace("읽을수", "읽을 수")) for _ in range(2)], student_tasks=[])
+            response = dict(stages=[dict(feedback=["띄어쓰기"], revised_text=payload["current_text"].replace("읽을수", "읽을 수"))
+                                   for _ in range(2)], student_tasks=[])
         elif role == "reviser":
-            problem = problems[min(turn - 1, len(problems) - 1)]
-            quote = "없는 인용" if self.broken else problem.evidence_quotes[0]
-            ops = [dict(id="op1", issue_ids=[problem.id], op="replace", quote=quote, replacement=problem.test.expected)]
-            response = dict(operations=[] if self.omit_retry and "retry" in payload else ops, student_tasks=[])
+            revision = self.revisions[turn-1] if len(self.revisions) >= turn else lambda t: t.replace("읽을수", "읽을 수")
+            response = dict(revised_text=revision(payload["current_text"]) if callable(revision) else revision, student_tasks=[])
         elif role == "coordinator_review":
-            more = self.extend and turn == 1 and payload["max_turns"] > 1
-            budget = 2 if more else payload["current_turn_budget"]
-            response = dict(resolved_issue_ids=[p.id for p in problems], new_issues=[], priorities=[], dispositions=[],
-                turn_budget=budget, new_commitments=[], continue_work=more, reason="다음 표기를 고칩니다." if more else "검토를 마쳤습니다.",
-                strategy=dict(name="front_first", reason="남은 표현을 다음 턴에 다룹니다.") if more else None,
-                turn_plan=[dict(turn=1, direction="첫 표기 수정", issue_ids=["i1"]),
-                           dict(turn=2, direction="다음 표기 수정", issue_ids=["i2"])] if more else None,
-                student_tasks=[])
+            assessments = self.assessments if self.assessments is not None else [dict(issue_id=i["issue_id"],
+                status="partial" if turn < self.turns else "applied", reason="현재 문장을 직접 읽고 판단했습니다.")
+                for i in payload["feedback"]["items"]]
+            response = dict(assessments=assessments, reopened_issue_ids=[], new_issues=[], priorities=[], dispositions=[],
+                strategy=None, turn_plan=None, turn_budget=self.turns, continue_work=turn < self.turns,
+                reason="다음 턴에서 남은 내용을 검토합니다." if turn < self.turns else "반영을 확인했습니다.", student_tasks=[])
         else:
             raise AssertionError(role)
         return schema.model_validate(response)

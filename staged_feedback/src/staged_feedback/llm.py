@@ -1,4 +1,4 @@
-"""Structured calls, explicit reasoning settings and one persistent $5 ledger."""
+"""Structured calls, explicit reasoning settings and one persistent shared ledger."""
 import json
 from pathlib import Path
 import time

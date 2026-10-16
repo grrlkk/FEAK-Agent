@@ -1,104 +1,40 @@
-# 단계별 글쓰기 피드백
+# staged_feedback
 
-기존 `para_agent` 코드·설정·결과를 읽기 전용으로 재사용하는 독립 Python 프로젝트입니다. 실행 결과는 이 프로젝트의 `runs/`에만 저장합니다. 수정본은 **학생이 피드백을 반영했을 때의 글**로 취급합니다.
+총괄 초기 판단 → 턴별 피드백 → **전체 글 수정** → **총괄 직접 검토**로 이어지는 한국어 글쓰기 실험이다. 기존 Kanana N32·자질·KB 어댑터를 읽기 전용으로 사용한다.
 
-## 처리 흐름
+수정 에이전트는 `revised_text`와 학생 과제를 반환한다. 문장 수·패치 인용·연산 ID·이슈 ID 참조 강제, 편집 실행기, 코드 테스트, 거시 테스트 호출, 재시도·거부·되돌리기를 제거했다. 코드는 문장 변화와 네 관찰(학생 문장 삭제, 앞 턴 수정 문장 재변경, 비식별 표시 변화, 피드백 대상 밖 변경)만 저장해 총괄에게 준다. 비식별 치환·복원은 유지한다.
 
-1. 원문을 기존 Kanana **N=32** 채점기, 자질 계산기, KB로 진단합니다.
-2. 총괄이 진단 수치와 원문 인용을 근거로 난이도·수정 양, 이슈와 테스트, 확정 사항을 정합니다. 모든 이슈에 `needs_student_content`를 표시합니다. 새 내용·실제 경험·학생 의도가 필요하면 학생 과제로 분류하며 수정 후보에서 제외합니다. `student_content_type`은 `new_content` / `new_experience` / `intent`로 기록합니다. 의도 확인 과제만 `test=null`을 허용하며 반어·모순 등을 시스템이 단정하지 않습니다. 내용·경험 부족에는 원문에 그 내용이 있는지 확인하는 테스트가 반드시 필요합니다. 거시 학생 과제가 있어도 미시 진단은 수행해 이후 목록을 남깁니다.
-   원문에 모든 실행 가능한 테스트를 먼저 적용합니다. 이미 통과한 이슈는 제외 사건과 근거를 기록하고 학생 과제에서도 뺍니다. 거시 학생 과제가 남으면 그 피드백을 제시하고 **수정 0턴으로 종료**합니다. 미시 피드백은 `deferred_micro_feedback`에 “큰 틀을 고친 뒤 다룰 것”으로 따로 남깁니다. 자동 수정할 문제가 남아 있을 때만 `front_first` / `macro_first` / `single_pass` 계획을 실행합니다.
-3. 매 턴 현재 수정본의 **자질만 다시 계산**합니다. 피드백 에이전트가 총괄의 이번 턴 방향과 이슈 안에서 피드백 0~2개를 선택하고, 사용한 자질과 실제 측정값을 표시합니다. 관련 자질이 없으면 근거 목록을 비웁니다.
-4. 수정 에이전트가 편집 연산을 출력합니다. 코드가 이번 피드백의 이슈 참조, 인용·보존 제약을 검증합니다. 비어 있거나 누락된 `issue_ids`는 `missing_feedback_issue`, 현재 피드백 밖의 참조는 `outside_feedback`으로 연산별 거부를 기록합니다. 알려진 이슈라도 이번 턴 대상이 아니면 거부합니다. 실패한 연산 ID만 이유와 함께 **한 번** 재시도하며, 계속 실패하거나 생략되면 버리고 기록합니다. 거시 학생 과제가 발견되면 남은 편집과 후속 검토를 중단합니다.
-5. 남은 수정 이슈의 테스트를 실행합니다. 미시는 코드로, 거시는 원문 사전 검사 및 각 수정 턴마다 **한 번의 묶음 LLM 호출**로 판정합니다. 질문은 현재 글의 내용·관계만으로 답하며 수정 수행이나 새 내용 추가를 전제하지 않습니다. 누락·중복 판정과 근거 없는 통과는 오류입니다.
-6. 총괄이 테스트와 적용·거부 연산을 검토해 해결·보류·학생 과제, 새 이슈, 전략·계획·예산 변경과 계속/종료를 정합니다. 모든 현재 이슈의 테스트가 통과하면 종료합니다. 1턴 계획도 실패한 이슈가 있으면 총괄이 예산을 늘릴 수 있습니다.
-7. 마지막 글을 같은 N=32 채점기로 평가하고 원문 대비 변화를 기록합니다. **Kanana 채점은 시작과 끝 두 번만** 합니다.
+총괄은 각 피드백을 `applied / partial / not_applied`로 판단하고 이유를 적는다. 새 이슈·학생 과제·계획 변경을 직접 결정한다. 턴별 `feedback_count`는 총괄이 정하며 고정 상한은 없다. `single_pass`는 모든 수정 가능한 이슈를 한 턴에 배정한다. 학생의 새 내용·경험·의도가 필요한 과제는 수정 피드백에서 분리하며, 거시 학생 과제가 막으면 먼저 학생에게 제시하고 종료한다.
 
-먼저 전체를 한 번 고쳐 보는 분기, 원문으로 돌아가는 재시작, 미시 통과율·변경 비율에 의한 경로 선택은 없습니다. `route`는 실제 실행 턴 수에 따른 `single_turn` / `multi_turn`이며, 종료 이유와 턴별 테스트 현황을 함께 저장합니다. 글자 변경 비율은 설명용 지표입니다.
-
-## 편집과 검증
-
-| 연산 | 입력 | 주요 검증 |
-|---|---|---|
-| replace | 한 문장 안의 인용, 새 표현 | 여러 문장 전체 재작성·빈 문자열 삭제 금지 |
-| move | 문장 인용, 다른 문장 앞/뒤 또는 문단 처음/끝 | 완전한 문장·실제 목적지 확인 |
-| merge | 두 문장 인용, 새 문장 | 두 원문의 Bareun 내용어가 모두 남음 |
-| split | 문장 인용, 새 문장 목록 | 두 개 이상 문장으로만 분할 |
-| connect | 이웃한 A·B 문장, 연결 표현 | B 앞에 짧은 연결 표현만 삽입 |
-
-모든 인용은 현재 글에 공백 정규화 후 정확히 한 번 있어야 합니다. 지킬 목록에 닿는 연산은 거부합니다. 비식별 표시는 기존 어댑터의 패턴으로 종류·개수를 보존합니다. 문장 삭제 연산은 없습니다. 기존 문장 분할기를 그대로 사용하며, merge는 Bareun 분석이 없거나 실패해도 거부합니다. 내용·말투·어휘 수준 유지, 새 사실 금지, 생략된 주어를 채우지 않는 원칙은 다섯 프롬프트에 공통으로 명시합니다. 내용어 보존은 의미 보존 전체를 보증하지 않습니다.
-
-이전 턴에서 고친 문장은 다음 턴의 지킬 목록에 들어갑니다. 그 문장에 추가 수정이 필요해도 보존 제약을 임의로 해제하지 않습니다. 거부 원인을 보고 다른 이슈로 계획을 바꾸거나 학생 과제로 넘길 수 있습니다.
-
-미시 테스트는 `absent`, `count_at_most`, `span_replaced`, `sentence_contains` 네 종류입니다. 표기 교체는 원본 대상 구간을 추적하므로 다른 곳에 원하는 표현이 등장한 것만으로 통과하지 않습니다. 대상을 특정할 수 없으면 실패와 구분한 `error`를 기록합니다.
-
-## 사건 기록과 메모리
-
-`events.jsonl`은 순번을 가진 추가 전용 기록입니다. 피드백, 연산 적용·거부, 테스트, 해결·추가 이슈, 계획 변경, 확정 사항, 턴 종료를 저장합니다. 초기 전략·계획과 이후 변경의 전후 값·근거를 모두 보존합니다.
-
-원문 통과 제외(`issue_excluded`), 학생 과제 분류·중복 제거, 거시 관문 종료도 사건으로 남깁니다. 학생 과제는 같은 이슈당 하나만 유지하며, 이슈가 달라도 정규화한 안내가 같으면 합칩니다. 중복 원문은 사건에 보존합니다. 계획 변경에는 학생 과제 전환·원문 통과·새 문제·해결·재개방 등 원인을 기록합니다. 학생 과제만 제시하는 실행은 `student_tasks`, 사전 검사 후 수정할 이슈가 없는 실행은 `no_revision` 경로입니다.
-
-초기 진단의 인용·수치·계획 계약이 잘못되면 `initial_plan_rejected`로 기록하고 오류와 이전 응답을 알려 한 번만 재요청합니다. 전체 진단 검증을 통과하기 전에는 이슈와 계획을 등록하지 않습니다. 재시도도 실패하면 실행 오류로 남기며, 호출·비용은 같은 원장에 포함됩니다.
-
-역할별 요약은 사건 기록에서 코드로 만듭니다. 총괄에는 흐름·남은 이슈·테스트·남은 턴·계획, 피드백에는 이슈 후보·다룬 이슈·확정 사항, 수정에는 이번 피드백·확정 사항·이전 수정 내용이 들어갑니다. LLM에 전체 사건 기록을 넘기지 않습니다. 메모리 제거 조건은 `memory_summary=""`이며, 현재 글·이번 계획·테스트·코드의 보존 제약은 유지합니다.
-
-## 설정과 비교 조건
-
-`configs/staged_feedback/default.yaml`에서 모델, reasoning effort, 최대 턴, 피드백 상한, 재시도, 비용 상한을 설정합니다. 기존 Luna 설정을 사용하고 총괄 기본 `low`, 나머지 `none` / temperature 0입니다. 총괄의 reasoning이 켜져 있으면 API 제약에 따라 temperature를 보내지 않습니다. 모든 LLM 출력은 strict JSON Schema로 강제하며, 프롬프트는 각각 1,500자 이내입니다.
-
-| condition | 구현된 동작 |
-|---|---|
-| planned (`routed` 호환 이름) | 총괄이 턴 계획을 정하고 검토마다 조정하는 주 조건 |
-| planned_no_memory (`routed_no_memory`) | 같은 주 조건에서 사건 요약만 빈 문자열 |
-| always_direct | 초기 이슈 전체를 수정 에이전트에 한 번 전달하고 테스트 후 종료. 비교 조건이므로 턴당 피드백 2개 제한은 적용하지 않음 |
-| always_staged | 처음부터 설정된 최대 턴 예산으로 계획. 이후 검토·조기 종료는 동일 |
-| single_call_staged | LLM 한 번으로 2~3단계 피드백·전체 수정본 생성. 편집 연산 방식과 구분해 기록 |
-
-비교 조건은 구현과 mock 검증만 합니다. 실제 3편 실행 CLI는 주 조건만 허용합니다. `Engine(Settings(condition=...), llm=..., diagnostic=..., executor=..., directory=...).run({essay_id, prompt, text})`로 개별 조건을 사용할 수 있습니다.
+[제거·유지한 모든 규칙과 도입 이력](RULES.md)에 실행·입출력 제한도 구분해 적었다. 최신 사용자 요청이 과거 코드 검증 방법보다 우선한다.
 
 ## 실행
 
-기존 `para_agent`가 사용하는 Python 환경과 로컬 Bareun, CUDA GPU가 필요합니다. 원본 패키지는 `legacy_root` 경로에 있어야 합니다. 별도 모델·채점 대체 구현을 설치하지 않습니다.
+프로젝트 루트에서 `PYTHONPATH=staged_feedback/src`를 사용하거나 이 하위 프로젝트를 설치한다. 기본 비용 한도는 **$3**, 모델은 기존 `gpt-6-luna`, 총괄 low·피드백/수정 none이다. 기존 최대 4턴은 유지하며 변경 이력에 명시한다.
 
 ```bash
-cd /home/chanwoo/FEAK-Agent/staged_feedback
-PYTHONPATH=src python -m pytest -q
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m staged_feedback prepare --run-dir runs/live3_new
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m staged_feedback live --run-dir runs/live3_new
-PYTHONPATH=src python -m staged_feedback report --run-dir runs/live3_new
+# 별도로 승인된 새 실험: 같은 선정표, 새 비용 원장
+PYTHONPATH=staged_feedback/src python -m staged_feedback prepare \
+  --repeat-run staged_feedback/runs/student_gate6_completed_20261016 \
+  --run-dir staged_feedback/runs/fulltext_feedback6_20261016
+PYTHONPATH=staged_feedback/src python -m staged_feedback live \
+  --run-dir staged_feedback/runs/fulltext_feedback6_20261016
+
+# 과거 기록을 변경하지 않는 Markdown 로그 생성, API/GPU 호출 없음
+PYTHONPATH=staged_feedback/src python -m staged_feedback log \
+  --run-dir staged_feedback/runs/student_gate6_completed_20261016 \
+  --log-dir staged_feedback/reviews/student_gate6_completed_20261016
+
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider staged_feedback/tests
 ```
 
-`prepare`는 API를 호출하지 않습니다. 기존 방법론에 명시된 개발용 5편과 평가 제외 목록을 ID·공백 제거 해시로 제외하고, 기존 held-out 로더로 학습 중복·사람 점수 출처를 확인합니다. 사람 점수 합의 삼분위에서 낮음·중간·높음 각 한 편을 뽑습니다. 사람 점수는 표본 선정·로컬 기록에만 사용하며 에이전트 입력에서 제외합니다. 새 3편의 제외 명세는 새 실행 폴더에 저장합니다.
+같은 실험에서 실패를 재시도할 때는 `--from-run`으로 기존 비용 원장을 공유한다. `--repeat-run`은 별도 비용 승인을 받은 새 실험에만 사용한다. 이전 원자료·소스 스냅샷은 보존한다. 결과·학생 원문·선정표·캐시·키는 커밋하지 않는다.
 
-선정한 문항의 장르 캐시는 기존 `merge_heading_evidence`와 `HEADING_SETS` 규칙으로 확인해 새 실행 폴더 `scorer_metadata/`에만 만듭니다. 기존 원본 장르와 허용 라벨은 바꾸지 않으며, 루브릭 이름만 확인합니다. 사람 점수·참고 피드백 내용은 에이전트 입력에 들어가지 않습니다.
+## 산출물
 
-표본·설정·프롬프트는 준비 시 저장됩니다. 실제 실행은 저장된 프롬프트를 사용하며 설정 변경과 기존 API 기록 덮어쓰기를 거부합니다. 실행 전 CUDA를 확인하고 GPU가 없으면 원인과 API 0건을 기록한 뒤 종료합니다. 이후 같은 준비 폴더를 GPU 터미널에서 실행할 수 있습니다.
+- `readable/WORK_LOG.md`와 편별 Markdown: 초기 판단, 매 턴 피드백·전후 문장·관찰·항목별 총괄 검토, 학생 과제, 호출 수.
+- `calls.jsonl`, `events.jsonl`, `initial_plan.json`, `revision_turn_N.json`, `result.json`: 입력·출력·검토 원자료. 총괄 검토가 실패해도 직전 수정본은 먼저 저장된다.
+- `anonymization.jsonl`: 역할별 치환·복원 대응표. 기존 native validator는 호출하지 않는다.
+- `summary.json`, `comparison.json`, `report.html`, `budget.json`: 비용·호출·계획 변화·이전 실행 비교.
 
-API 호출은 입력·스키마·원시 출력·사용량·비용을 `calls.jsonl`에 기록합니다. 모든 역할·3편은 동일한 **$5 원장**을 공유합니다. 요청 전 최대 비용을 예약하고, 응답 사용량을 모르면 예약액을 유지합니다. SDK 자동 재시도와 모델 대체는 없습니다.
-
-구현 오류를 고쳐 같은 표본을 다시 확인할 때는 기존 시도를 덮어쓰지 않고 다음처럼 준비합니다. `--from-run`은 원문·제외 명세를 그대로 복사하고 **이전 비용 원장을 공유**합니다. 새 설정·프롬프트·결과·호출은 새 폴더에 저장합니다.
-
-```bash
-PYTHONPATH=src python -m staged_feedback prepare --from-run runs/live3_new --run-dir runs/live3_retry
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m staged_feedback live --run-dir runs/live3_retry
-```
-
-## 결과
-
-같은 3편과 장르가 서로 다른 새 3편을 비교하려면 다음처럼 준비합니다. 새 표본은 이전 로컬 선정 표본과 기존 개발/평가 제외 명세를 ID·공백 제거 해시로 제외하고, 사람 점수 낮음·중간·높음에서 한 편씩 뽑습니다. 장르는 기존 루브릭 이름 규칙으로만 확인합니다. 이 여섯 편은 하나의 새 $5 원장을 공유하며 재시도는 `--from-run`으로 같은 원장을 이어 씁니다.
-
-```bash
-PYTHONPATH=src python -m staged_feedback prepare --comparison-run runs/live3_retry2_20261016 --run-dir runs/student_gate6
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m staged_feedback live --run-dir runs/student_gate6
-```
-
-`comparison.json`과 `report.html`에는 이전/현재의 턴 수·호출 수·계획 변경과 원인·거부 연산·원문 통과 제외 이슈·학생 과제를 편별로 저장합니다. 이전 실행의 사전 테스트는 미측정으로 표시하고, 이전 계획 변경 원인은 저장 사건에서 추론한 것임을 구분합니다. 한 계획 변경에 여러 원인이 있을 수 있습니다. 미시 후속 피드백은 학생 과제와 별도 목록입니다.
-
-- `selection.json`: 표본과 사람 점수 층, 학습 중복 검사·제외 명세 해시.
-- `settings.json`, `prompts/`: 실행 설정과 다섯 프롬프트.
-- `calls.jsonl`, `budget.json`: 전체 요청·응답과 공유 비용 원장.
-- `native_diagnostics.jsonl`: 기존 어댑터 채점·자질 로그.
-- `essays/<id>/`: 원문, 최초 진단·계획, 턴별 자질·피드백·연산·수정본·테스트·검토, 사건 전체, 최종 진단·글·점수 변화·학생 과제·메모리 예시.
-- `summary.json`, `report.html`: 경로 분포, 계획 변경 횟수, 테스트 추이, 거부 사유·지킬 목록 위반, 비용·이상 사례와 편별 상세 보고.
-- `legacy_unchanged.json`: 기존 프로젝트 코드·설정·프롬프트·문서·결과 경로의 전후 확인. 기존 결과는 내용 대신 크기·수정 시각을 비교합니다.
-
-원문·실행 결과·키는 Git에 올리지 않습니다. 새 소스·설정·프롬프트·합성 테스트만 버전 관리합니다.
+거부 0건은 품질 통과율이 아니다. 해결은 총괄 판단이고, 삭제 관찰은 표면 정렬이며 의미 손실을 확정하지 않는다. 원문 사전 테스트는 새 방식에서 미실시다. 과거 로그의 테스트 결과와 새 총괄 판단은 구분해서 읽는다.

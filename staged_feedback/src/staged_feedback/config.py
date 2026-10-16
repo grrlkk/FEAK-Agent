@@ -20,10 +20,8 @@ class Settings(Strict):
     max_output_tokens: int = Field(default=8192, ge=256)
     timeout_s: float = Field(default=180, gt=0)
     max_turns: int = Field(default=4, ge=1, le=4)
-    feedback_per_turn: int = Field(default=2, ge=1, le=2)
-    operation_retries: int = Field(default=1, ge=0, le=1)
     score_n: Literal[32] = 32
-    budget_usd: float = Field(default=5, gt=0, le=5)
+    budget_usd: float = Field(default=3, gt=0, le=5)
     max_api_calls: int = Field(default=150, ge=1)
     max_input_chars: int = Field(default=100000, ge=1000)
     mock: bool = False

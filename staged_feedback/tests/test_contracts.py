@@ -30,7 +30,7 @@ def install_transports(monkeypatch, tmp_path):
             self.call_count += 1
             self.last_usage = {"input_tokens": 100, "output_tokens": 10}
             self.last_metadata = {"response_id": "fake"}
-            return '{"operations": [], "student_tasks": []}', self.last_usage
+            return '{"revised_text": "수정본입니다.", "student_tasks": []}', self.last_usage
 
         def close(self):
             pass
@@ -135,3 +135,21 @@ def test_local_metadata_overrides_legacy_path_only_in_new_config(monkeypatch, tm
     value = adapters.legacy_config(Settings(), run)
     assert value.scorer.metadata_dir == str(run / "scorer_metadata")
     assert value.scorer.cache_dir == str(run / "cache/scorer")
+
+
+def test_repeat_run_uses_same_cohort_with_fresh_three_dollar_budget(monkeypatch, tmp_path):
+    from staged_feedback import cli, metadata
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    selection = {"essays": [dict(essay_id="synthetic", prompt="일상", text="읽는다.",
+                                stratum="middle", human_original_total=40)]}
+    (old / "selection.json").write_text(json.dumps(selection))
+    (old / "evaluation_exclusions.json").write_text('{}')
+    (old / "budget_reference.json").write_text('{"ledger":"/old/five-dollar-ledger"}')
+    monkeypatch.setattr(metadata, "prepare_metadata", lambda *args: None)
+    assert cli.main(["prepare", "--repeat-run", str(old), "--run-dir", str(new)]) == 0
+    assert json.loads((new / "selection.json").read_text()) == selection
+    assert not (new / "budget_reference.json").exists()
+    assert json.loads((new / "settings.json").read_text())["budget_usd"] == 3
+    reference = json.loads((new / "comparison_reference.json").read_text())
+    assert reference["repeated_ids"] == ["synthetic"] and reference["baseline_run"] == str(old)

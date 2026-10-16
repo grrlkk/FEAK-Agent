@@ -15,17 +15,23 @@ PROJECT = Path(__file__).resolve().parents[2]
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare", "live", "report"])
+    parser.add_argument("command", choices=["prepare", "live", "report", "log"])
     parser.add_argument("--config", type=Path, default=PROJECT / "configs/staged_feedback/default.yaml")
     parser.add_argument("--run-dir", type=Path)
+    parser.add_argument("--log-dir", type=Path, help="원본 실행을 건드리지 않고 읽을 수 있는 Markdown 로그를 저장할 위치")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--from-run", type=Path, help="같은 표본으로 새 시도를 준비하고 기존 $5 원장을 공유합니다.")
-    group.add_argument("--comparison-run", type=Path, help="기존 3편과 장르가 서로 다른 새 3편을 새 $5 상한으로 준비합니다.")
+    group.add_argument("--from-run", type=Path, help="같은 실험의 재시도: 표본과 비용 원장을 공유합니다.")
+    group.add_argument("--repeat-run", type=Path, help="별도로 승인된 새 실험: 같은 표본, 새 비용 원장, 이전 실행 비교")
+    group.add_argument("--comparison-run", type=Path, help="기존 3편과 장르가 서로 다른 새 3편을 설정의 비용 상한으로 준비합니다.")
     args = parser.parse_args(argv)
     cfg = load_settings(args.config)
     directory = args.run_dir or PROJECT / "runs" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=True)
+    if args.command == "log":
+        from .readable import write_logs
+        print(write_logs(directory, args.log_dir or directory / "readable"))
+        return 0
     if args.command == "report":
         from .report import render
         print(json.dumps(render(directory), ensure_ascii=False, indent=2))
@@ -33,17 +39,21 @@ def main(argv=None):
     if args.command == "prepare":
         if (directory / "selection.json").exists():
             raise ValueError("Selection already exists; use a fresh directory")
-        if args.from_run:
-            parent = args.from_run.resolve()
+        if args.from_run or args.repeat_run:
+            parent = (args.from_run or args.repeat_run).resolve()
             selection = json.loads((parent / "selection.json").read_text())
             save_json(directory / "selection.json", selection)
             essays = selection["essays"]
             shutil.copy2(parent / "evaluation_exclusions.json", directory / "evaluation_exclusions.json")
-            reference = parent / "budget_reference.json"
-            ledger = json.loads(reference.read_text())["ledger"] if reference.exists() else str(parent / "budget.json")
-            save_json(directory / "budget_reference.json", {"ledger": ledger, "parent_run": str(parent)})
-            if (parent / "comparison_reference.json").exists():
-                shutil.copy2(parent / "comparison_reference.json", directory / "comparison_reference.json")
+            if args.from_run:
+                reference = parent / "budget_reference.json"
+                ledger = json.loads(reference.read_text())["ledger"] if reference.exists() else str(parent / "budget.json")
+                save_json(directory / "budget_reference.json", {"ledger": ledger, "parent_run": str(parent)})
+                if (parent / "comparison_reference.json").exists():
+                    shutil.copy2(parent / "comparison_reference.json", directory / "comparison_reference.json")
+            else:
+                save_json(directory / "comparison_reference.json", {"baseline_run": str(parent),
+                    "repeated_ids": [e["essay_id"] for e in essays], "new_ids": [], "fresh_budget_usd": cfg.budget_usd})
         elif args.comparison_run:
             from .selection import select_comparison_six
             essays = select_comparison_six(cfg, directory, args.comparison_run)
@@ -82,7 +92,7 @@ def main(argv=None):
     if previous_error.exists():
         save_json(previous_error, {**json.loads(previous_error.read_text()), "resolved": True,
             "resolution": "이후 실행에서 CUDA 사용 가능 여부를 확인했습니다."})
-    from .adapters import NativeDiagnostic, native_executor, fingerprint_legacy
+    from .adapters import NativeDiagnostic, native_observer, native_anonymizer, fingerprint_legacy
     from .engine import Engine
     from .llm import LiveLLM
     from .report import render
@@ -91,7 +101,7 @@ def main(argv=None):
     diagnostic, llm, failures = None, None, 0
     try:
         diagnostic = NativeDiagnostic(cfg, directory)
-        executor = native_executor(cfg)
+        observer, anonymizer = native_observer(cfg), native_anonymizer(cfg)
         # Prompts are frozen at prepare time, together with settings and essays.
         reference = directory / "budget_reference.json"
         ledger = Path(json.loads(reference.read_text())["ledger"]) if reference.exists() else None
@@ -100,7 +110,8 @@ def main(argv=None):
             item = {key: essay[key] for key in ("essay_id", "prompt", "text")}
             destination = directory / "essays" / essay["essay_id"]
             try:
-                result = Engine(cfg, llm=llm, diagnostic=diagnostic, executor=executor, directory=destination).run(item)
+                result = Engine(cfg, llm=llm, diagnostic=diagnostic, observer=observer,
+                    anonymizer_factory=anonymizer, directory=destination).run(item)
                 print(f"완료 {essay['essay_id']}: {result['route']}", flush=True)
             except Exception as exc:
                 failures += 1
@@ -116,6 +127,8 @@ def main(argv=None):
         save_json(directory / "legacy_unchanged.json", {"unchanged": old == new,
             "changed_paths": sorted(k for k in old.keys() | new.keys() if old.get(k) != new.get(k))})
         print(json.dumps(render(directory), ensure_ascii=False, indent=2))
+        from .readable import write_logs
+        write_logs(directory, directory / "readable")
     return 1 if failures else 0
 
 

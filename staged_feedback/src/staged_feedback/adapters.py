@@ -4,7 +4,7 @@ import importlib
 from pathlib import Path
 import sys
 
-from .edits import Executor
+from .observations import Observer
 
 
 def bootstrap(root):
@@ -71,16 +71,17 @@ class NativeDiagnostic:
         self.service.close()
 
 
-def native_executor(cfg):
-    root = bootstrap(cfg.legacy_root)
-    from para_agent.config import load_config
+def native_observer(cfg):
+    bootstrap(cfg.legacy_root)
     from para_agent.text import sentence_spans
-    from para_agent.linguistics import NativeLinguistics
     from para_agent.anonymization import MARKER, PLACEHOLDER
-    legacy = load_config(root / cfg.legacy_config)
-    analyzer = NativeLinguistics(legacy.features)
-    return Executor(sentence_spans=sentence_spans, pos=analyzer.pos,
-                    marker_pattern=MARKER, placeholder_pattern=PLACEHOLDER)
+    return Observer(sentence_spans=sentence_spans, marker_pattern=MARKER, placeholder_pattern=PLACEHOLDER)
+
+
+def native_anonymizer(cfg):
+    bootstrap(cfg.legacy_root)
+    from para_agent.anonymization import TurnAnonymizer
+    return TurnAnonymizer
 
 
 def fingerprint_legacy(root):
