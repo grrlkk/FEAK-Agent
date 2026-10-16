@@ -203,6 +203,8 @@ def essay_log(directory, essay, metric, load):
         budget = turn.get("budget_after", budget)
         if "remaining_after_review" in turn:
             add(f"남은 턴 수: 턴 시작 전 {turn['remaining_before']} → 이번 턴 사용 후 {turn['remaining_after_consumption']} → 총괄 검토 후 {turn['remaining_after_review']}. 이유: " + text(review["reason"]))
+            if review["continue_work"] and review["remaining_turns"] == 0:
+                add("총괄 출력 불일치: 계속 필요(continue_work=true)라고 했지만 남은 턴 수를 0으로 반환했습니다. 실행은 남은 턴 수 0에 따라 종료됐으며 미해결 이슈는 그대로 남습니다.")
         else:
             add(f"턴 조절: {old_budget} → {budget}. " + (text(review["reason"]) if review else "학생 과제 분리 또는 실행 조건에 따라 종료했습니다."))
         for d in turn_changes:
@@ -228,7 +230,8 @@ def essay_log(directory, essay, metric, load):
         continuing = turn.get("continue_work", number < len(result["turns"]))
         add("계속·종료: " + ("다음 턴 계속." if continuing else "종료. " + result["route_reason"]))
         if review and bool(review["continue_work"]) != continuing:
-            add("총괄의 계속 요청과 실제 종료가 다릅니다. 실제 턴 예산·학생 과제·남은 이슈 상태에 따라 종료됐습니다.")
+            add("총괄의 계속 요청과 실제 종료가 다릅니다. 실제 남은 턴 수·수정 가능한 이슈 상태에 따라 종료됐습니다." if "remaining_after_review" in turn else
+                "총괄의 계속 요청과 실제 종료가 다릅니다. 실제 턴 예산·학생 과제·남은 이슈 상태에 따라 종료됐습니다.")
         previous = turn["revised_text"]
     add("## [결과]", "종료 이유: " + text(result["route_reason"]))
     resolved = set(result.get("resolved_issue_ids", []))

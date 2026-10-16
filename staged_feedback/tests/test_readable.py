@@ -61,3 +61,21 @@ def test_student_tasks_first_and_optional_suggestions_last(tmp_path, observer):
     article = html[html.index('<article>'):]
     assert article.index('반어인지 설명해 주세요.') < article.index('초기 난이도')
     assert article.index('<h3>선택 제안') > article.index('<h3>최종본')
+
+
+def test_conflicting_continue_and_zero_remaining_is_reported(tmp_path, observer):
+    from conftest import ScriptedLLM
+    class Contradiction(ScriptedLLM):
+        def request(self, role, payload, schema, *, context):
+            response = super().request(role, payload, schema, context=context)
+            if role == 'coordinator_review':
+                response.continue_work = True
+                response.remaining_turns = 0
+            return response
+    run=tmp_path/'run'
+    result, _, _, _ = execute(run/'essays/synthetic', observer, llm=Contradiction(turns=2))
+    assert len(result['turns']) == 1 and result['remaining_issue_ids'] == ['i1']
+    write_logs(run,tmp_path/'logs')
+    body=(tmp_path/'logs/synthetic.md').read_text()
+    assert '총괄 출력 불일치' in body
+    assert '미해결 이슈는 그대로 남습니다' in body
