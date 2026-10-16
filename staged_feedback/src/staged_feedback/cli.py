@@ -1,4 +1,4 @@
-"""Prepare the frozen three-essay smoke; run only the requested main condition."""
+"""Prepare frozen cohorts and run the main staged-feedback condition."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -18,7 +18,9 @@ def main(argv=None):
     parser.add_argument("command", choices=["prepare", "live", "report"])
     parser.add_argument("--config", type=Path, default=PROJECT / "configs/staged_feedback/default.yaml")
     parser.add_argument("--run-dir", type=Path)
-    parser.add_argument("--from-run", type=Path, help="같은 표본으로 새 시도를 준비하고 기존 $5 원장을 공유합니다.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--from-run", type=Path, help="같은 표본으로 새 시도를 준비하고 기존 $5 원장을 공유합니다.")
+    group.add_argument("--comparison-run", type=Path, help="기존 3편과 장르가 서로 다른 새 3편을 새 $5 상한으로 준비합니다.")
     args = parser.parse_args(argv)
     cfg = load_settings(args.config)
     directory = args.run_dir or PROJECT / "runs" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -40,6 +42,11 @@ def main(argv=None):
             reference = parent / "budget_reference.json"
             ledger = json.loads(reference.read_text())["ledger"] if reference.exists() else str(parent / "budget.json")
             save_json(directory / "budget_reference.json", {"ledger": ledger, "parent_run": str(parent)})
+            if (parent / "comparison_reference.json").exists():
+                shutil.copy2(parent / "comparison_reference.json", directory / "comparison_reference.json")
+        elif args.comparison_run:
+            from .selection import select_comparison_six
+            essays = select_comparison_six(cfg, directory, args.comparison_run)
         else:
             from .selection import select_three
             essays = select_three(cfg, directory)

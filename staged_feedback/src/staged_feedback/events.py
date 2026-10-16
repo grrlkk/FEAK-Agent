@@ -8,6 +8,8 @@ from pathlib import Path
 KINDS = {
     "feedback_presented", "operation_applied", "operation_rejected", "test_result",
     "issue_resolved", "issue_added", "plan_changed", "commitment_added", "turn_ended",
+    "issue_excluded", "student_task_added", "student_task_deduplicated", "gate_blocked",
+    "initial_plan_rejected",
 }
 
 
@@ -55,9 +57,10 @@ class Journal:
             return ""
         issues, resolved, tests, commitments, feedback, applied, flow = {}, set(), {}, [], [], [], []
         strategy, turn_plan, dispositions = None, [], {}
+        excluded, student_ids, student_tasks = set(), set(), []
         for event in self.events:
             data, kind = event["payload"], event["kind"]
-            active = event["phase"] in {"initial", phase}
+            active = event["phase"] in {"initial", "baseline", phase}
             if kind == "turn_ended":
                 flow.append({"phase": event["phase"], "turn": event["turn"],
                              "summary": data.get("summary", ""), "tests": data.get("tests")})
@@ -68,6 +71,14 @@ class Journal:
                 issues[issue["id"]] = issue
             elif kind == "issue_resolved":
                 resolved.add(data["issue_id"])
+            elif kind == "issue_excluded":
+                excluded.add(data["issue_id"])
+            elif kind == "student_task_added":
+                student_tasks.append(data["task"])
+                if data["task"].get("issue_id"):
+                    student_ids.add(data["task"]["issue_id"])
+            elif kind == "student_task_deduplicated" and data["task"].get("issue_id"):
+                student_ids.add(data["task"]["issue_id"])
             elif kind == "test_result":
                 tests[data["result"]["issue_id"]] = data["result"]
             elif kind == "commitment_added":
@@ -91,17 +102,20 @@ class Journal:
                 for update in data.get("priorities", []):
                     if update["issue_id"] in issues:
                         issues[update["issue_id"]] = {**issues[update["issue_id"]], "priority": update["priority"]}
-        remaining = sorted((value for key, value in issues.items() if key not in resolved), key=lambda i: (i["priority"], i["id"]))
+        remaining = sorted((value for key, value in issues.items()
+                            if key not in resolved | excluded | student_ids), key=lambda i: (i["priority"], i["id"]))
         if role == "coordinator":
             return {"flow": flow[-8:], "remaining_issues": remaining, "test_results": list(tests.values()),
                     "remaining_turns": remaining_turns, "strategy": strategy, "turn_plan": turn_plan,
-                    "dispositions": list(dispositions.values())}
+                    "dispositions": list(dispositions.values()), "student_tasks": student_tasks,
+                    "excluded_original_pass_ids": sorted(excluded)}
         if role == "feedback":
             return {"candidates": remaining, "handled_issue_ids": sorted({f["issue_id"] for f in feedback}),
                     "resolved_issue_ids": sorted(resolved), "commitments": commitments,
                     "strategy": strategy, "turn_plan": turn_plan}
         if role == "reviser":
-            return {"feedback": feedback[-2:], "commitments": commitments,
+            editable_feedback = [item for item in feedback if item["issue_id"] not in student_ids | excluded]
+            return {"feedback": editable_feedback[-2:], "commitments": commitments,
                     "earlier_edits": [a for a in applied if a["turn"] < max((e["turn"] for e in self.events if e["phase"] == phase), default=0)]}
         raise ValueError(f"Unknown memory role: {role}")
 

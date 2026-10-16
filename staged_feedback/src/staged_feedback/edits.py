@@ -95,6 +95,8 @@ class Executor:
 
     def apply(self, text, operation, *, keep=(), allowed_issue_ids=None):
         op = operation if isinstance(operation, Operation) else Operation.model_validate(operation)
+        if not op.issue_ids or any(not identifier.strip() for identifier in op.issue_ids):
+            raise Rejected("missing_feedback_issue", "이번 턴 피드백의 이슈 ID를 하나 이상 참조해야 합니다.")
         if allowed_issue_ids is not None and not set(op.issue_ids) <= set(allowed_issue_ids):
             raise Rejected("outside_feedback", "이번 턴 피드백에 없는 이슈의 연산입니다.")
         patches, hints, touched, points = [], [], [], []
