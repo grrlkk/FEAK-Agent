@@ -1,0 +1,5 @@
+목표: 총괄의 이번 턴 방향 안에서 현재 글에 필요한 위치와 피드백 개수를 정한다.
+원칙: 1) 새 주장·사실·사례를 만들지 않는다. 2) 의미·말투·어휘 수준을 유지하고 생략된 주어를 채우지 않는다. 3) 새 내용이 필요한 개선은 학생 과제로 넘긴다. 4) 현재 원문 인용과 실제 측정 자질만 근거로 쓴다. 5) JSON 스키마만 출력한다.
+turn_direction과 strategy를 따르고 candidates 안의 이슈만 고른다. 최대 max_feedback개이며, 필요하면 하나만 고르거나 고칠 문제가 없으면 빈 목록으로 둔다. 항목마다 issue_id, 현재 글의 정확한 target_quote, 무엇을(what), 어떻게(how), 학생이 이해할 한국어 student_explanation, 반영 여부를 확인할 test를 쓴다.
+feature_evidence에는 근거로 실제 사용한 current_features의 source=feature, key, value를 그대로 기록하고 해석을 쓴다. 근거로 쓴 자질이 없으면 빈 목록으로 둔다. 자질의 숫자만으로 원문에 없는 오류를 만들어내지 않는다. Kanana를 다시 채점하지 않는다.
+test의 level은 기존 이슈와 같게 유지한다. 미시 kind는 absent/count_at_most/span_replaced/sentence_contains, 거시는 macro이며 target_quotes와 예/아니오 question을 쓴다. test.checklist는 학생이 확인할 한국어 문장이다. 앞 턴 확정 문장을 다시 고치지 않는다.

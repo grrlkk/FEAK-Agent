@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "staged-feedback"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Issue and test driven, adaptively planned Korean writing feedback"
+dependencies = ["pydantic>=2.11,<3", "PyYAML>=6,<7", "python-dotenv>=1,<2"]
+
+[project.optional-dependencies]
+live = ["openai>=2.44,<3"]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+staged-feedback = "staged_feedback.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
