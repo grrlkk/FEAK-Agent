@@ -35,11 +35,11 @@ def revision_scopes(text, feedback, issues, sentence_spans):
         indexed = {unit["id"]: unit for unit in units[kind]}
         selected = [indexed[key] for key in dict.fromkeys(item.target_ids) if key in indexed]
         if item.target_ids and len(selected) != len(set(item.target_ids)):
-            unavailable.append(dict(issue_id=item.issue_id, reason="대상 문장·문단 ID를 현재 글에서 찾지 못했습니다."))
-            continue
-        if not item.target_ids:
-            # Legacy/omitted-ID fallback requires a uniquely located quote, not a
-            # complete sentence quotation. Never guess between duplicate quotes.
+            selected = []
+        if not selected:
+            # A paragraph ID on a micro item is not grounds to skip an otherwise
+            # located target. Use the unique quote, then expand only to the proper
+            # sentence/paragraph units. Never guess between repeated quotes.
             quote = item.target_quote
             start = text.find(quote) if quote else -1
             if start >= 0 and text.find(quote, start + 1) < 0:

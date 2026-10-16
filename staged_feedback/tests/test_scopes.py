@@ -60,6 +60,14 @@ def test_ambiguous_quote_is_reported_without_guessing_or_losing_text():
     assert not scopes and len(missing) == 1
 
 
+def test_micro_paragraph_id_uses_unique_quote_to_find_sentence_scope():
+    original = "앞 문장이다. 책을 읽을수 있다. 뒤 문장이다."
+    scopes, missing = revision_scopes(original, [feedback(ids=["p1"])], {"i1": issue()}, sentences)
+    assert not missing and len(scopes) == 1
+    assert scopes[0]["source_text"] == "책을 읽을수 있다."
+    assert scopes[0]["target_ids"] == ["s2"]
+
+
 def test_restore_replacement_deletion_and_split_exact_previous_sentences():
     previous = "처음이다. 학생 말이다. 끝이다."
     cases = [
