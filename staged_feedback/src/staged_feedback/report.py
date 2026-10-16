@@ -140,10 +140,15 @@ def render(directory):
             "reused_confirmed_cost_usd", "note")}
         summary["new_api_calls"] = summary["api_calls"] - saved["reused_calls"]
         summary["new_confirmed_cost_usd"] = summary["confirmed_cost_usd"] - saved["reused_confirmed_cost_usd"]
-        prior_calls = [json.loads(line) for run in saved["prior_attempts"]
-                       for line in (Path(run) / "calls.jsonl").read_text().splitlines()]
-        summary["all_attempts_api_calls"] = sum(c.get("dispatched", True) for c in prior_calls) + summary["new_api_calls"]
-        summary["all_attempts_confirmed_cost_usd"] = sum(c.get("cost_usd") or 0 for c in prior_calls) + summary["new_confirmed_cost_usd"]
+        prior_count, prior_cost = 0, 0.0
+        for run in saved["prior_attempts"]:
+            run = Path(run)
+            prior_calls = [json.loads(line) for line in (run / "calls.jsonl").read_text().splitlines()]
+            inherited = json.loads((run / "continuation.json").read_text()) if (run / "continuation.json").exists() else {}
+            prior_count += sum(c.get("dispatched", True) for c in prior_calls) - inherited.get("reused_calls", 0)
+            prior_cost += sum(c.get("cost_usd") or 0 for c in prior_calls) - inherited.get("reused_confirmed_cost_usd", 0)
+        summary["all_attempts_api_calls"] = prior_count + summary["new_api_calls"]
+        summary["all_attempts_confirmed_cost_usd"] = prior_cost + summary["new_confirmed_cost_usd"]
     budget_path = directory / "budget.json"
     reference = directory / "budget_reference.json"
     if reference.exists():

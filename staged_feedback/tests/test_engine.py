@@ -102,3 +102,21 @@ def test_prompts_have_no_test_tool_or_operation_contracts():
         assert "TestSpec" not in json.dumps(model.model_json_schema())
     assert "operation_retries" not in Settings.model_fields
     assert "feedback_per_turn" not in Settings.model_fields
+
+
+def test_switch_to_single_pass_schedules_next_turn_instead_of_ending_current(tmp_path, observer):
+    from staged_feedback.models import Strategy
+    class Switch(ScriptedLLM):
+        def request(self, role, payload, schema, *, context):
+            response = super().request(role, payload, schema, context=context)
+            if role == 'coordinator_review' and context['turn'] == 1:
+                response.strategy = Strategy(name='single_pass', reason='다음 한 턴에 남은 이슈를 모두 다룹니다.')
+                response.turn_budget = 2
+                response.continue_work = True
+            return response
+    result, _, _, _ = execute(tmp_path, observer, llm=Switch(turns=2))
+    assert len(result['turns']) == 2
+    assert result['turns'][0]['budget_after'] == 2
+    assert result['turns'][0]['continue_work'] is True
+    assert result['turns'][1]['strategy']['name'] == 'single_pass'
+    assert len(result['turns'][1]['feedback']) == 1

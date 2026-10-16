@@ -186,12 +186,17 @@ class Engine:
         self._classify_students("planned", turn)
         if self.student_ids != old_students:
             changes["student_issue_ids"] = sorted(self.student_ids - old_students)
+        strategy_used = self.strategy
         if review.strategy is not None and review.strategy != self.strategy:
             changes["strategy"] = {"before": self.strategy, "after": review.strategy}
             self.strategy = review.strategy
         new_budget = max(turn, min(review.turn_budget, self.effective_max))
-        if self.strategy.name == "single_pass":
+        if strategy_used.name == "single_pass":
             new_budget = turn
+        elif self.strategy.name == "single_pass":
+            # A review plans the next turn; it cannot retroactively turn the
+            # completed macro/front-first turn into the requested final pass.
+            new_budget = min(new_budget, turn + 1)
         if new_budget != self.budget:
             changes["turn_budget"] = {"before": self.budget, "after": new_budget}
             self.budget = new_budget

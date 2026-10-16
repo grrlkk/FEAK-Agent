@@ -79,3 +79,16 @@ def test_report_does_not_count_a_resolution_before_any_resolved_event(tmp_path, 
     assert change["categories"] == ["plan_adjustment"]
     assert change["original_categories"] == ["resolved_issue"]
     assert change["category_source"] == "corrected_from_events"
+
+
+def test_nested_continuation_does_not_count_inherited_calls_twice(tmp_path):
+    first, second, final = (tmp_path / name for name in ('first','second','final'))
+    for directory, amounts in ((first,[.001,.002,.003]),(second,[.002,.004]),(final,[.002,.005])):
+        directory.mkdir()
+        (directory/'calls.jsonl').write_text(''.join(json.dumps({'cost_usd':c,'dispatched':True})+'\n' for c in amounts))
+    save_json(second/'continuation.json',{'reused_calls':1,'reused_confirmed_cost_usd':.002})
+    save_json(final/'continuation.json',{'parent_run':str(first),'prior_attempts':[str(first),str(second)],
+        'reused_ids':['done'],'rerun_ids':['retry'],'reused_calls':1,'reused_confirmed_cost_usd':.002,'note':'재사용'})
+    summary=render(final)
+    assert summary['all_attempts_api_calls']==5
+    assert abs(summary['all_attempts_confirmed_cost_usd']-.015)<1e-12
