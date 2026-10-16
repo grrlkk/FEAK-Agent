@@ -39,11 +39,17 @@ class Issue(Strict):
     description: str = Field(min_length=1)
     evidence_quotes: list[str] = Field(min_length=1)
     priority: int = Field(ge=1)
-    test: TestSpec
+    needs_student_content: bool = False
+    student_content_type: Literal["new_content", "new_experience", "intent"] | None = None
+    test: TestSpec | None = None
 
     @model_validator(mode="after")
     def matching_level(self):
-        if (self.level == "macro") != (self.test.kind == "macro"):
+        if self.test is None and not (self.needs_student_content and self.student_content_type == "intent"):
+            raise ValueError("Only a student intent question may omit its original-text test")
+        if self.student_content_type is not None and not self.needs_student_content:
+            raise ValueError("A student content type requires needs_student_content=true")
+        if self.test is not None and (self.level == "macro") != (self.test.kind == "macro"):
             raise ValueError("Issue level must match its test kind")
         return self
 
@@ -125,7 +131,8 @@ class Position(Strict):
 
 class Operation(Strict):
     id: str = Field(min_length=1)
-    issue_ids: list[str] = Field(min_length=1)
+    # Missing references must reach the executor and be logged per operation.
+    issue_ids: list[str] | None = None
     op: Literal["replace", "move", "merge", "split", "connect"]
     quote: str | None = None
     replacement: str | None = None

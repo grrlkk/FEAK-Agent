@@ -163,7 +163,9 @@ def test_macro_tests_are_batched_once_each_turn(tmp_path, executor):
             return answer
     result, llm, _, _ = execute(tmp_path, executor, llm=WithMacro(extend=True))
     calls = [c for c in llm.calls if c["role"] == "macro_tests"]
-    assert len(calls) == 2
+    assert len(calls) == 3
+    assert calls[0]["context"]["phase"] == "baseline"
+    assert calls[0]["payload"]["current_text"] == ESSAY["text"]
     assert all(len(c["payload"]["tests"]) == 2 for c in calls)
     assert result["strategy"]["name"] == "macro_first"
     assert not result["remaining_issue_ids"]
