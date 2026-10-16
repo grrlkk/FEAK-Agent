@@ -204,3 +204,16 @@ def test_initial_validation_retry_is_bounded(tmp_path, executor):
         execute(tmp_path, executor, llm=llm)
     assert [c["role"] for c in llm.calls] == ["coordinator_initial"] * 2
     assert [e["kind"] for e in Journal(tmp_path / "events.jsonl").events] == ["initial_plan_rejected"] * 2
+
+
+def test_empty_initial_turn_is_plan_adjustment_not_a_resolved_issue(tmp_path, executor):
+    class EmptyTurn(ScriptedLLM):
+        def request(self, role, payload, schema, *, context):
+            answer = super().request(role, payload, schema, context=context)
+            if role == "coordinator_initial":
+                answer.turn_plan[0].issue_ids = []
+            return answer
+    execute(tmp_path, executor, llm=EmptyTurn())
+    event = next(e for e in Journal(tmp_path / "events.jsonl").events
+                 if e["kind"] == "plan_changed" and e["phase"] == "planned")
+    assert event["payload"]["reason_categories"] == ["plan_adjustment"]

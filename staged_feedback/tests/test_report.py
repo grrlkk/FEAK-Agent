@@ -62,3 +62,20 @@ def test_continuation_costs_count_reused_calls_once(tmp_path):
     assert summary["api_calls"] == 2 and summary["new_api_calls"] == 1
     assert summary["all_attempts_api_calls"] == 4
     assert abs(summary["all_attempts_confirmed_cost_usd"] - .019) < 1e-10
+
+
+def test_report_does_not_count_a_resolution_before_any_resolved_event(tmp_path, executor):
+    from test_engine import execute
+    from staged_feedback.report import essay_metrics
+    directory = tmp_path / "essays/synthetic"
+    execute(directory, executor)
+    path = directory / "events.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    initial = next(e for e in events if e["kind"] == "plan_changed")
+    initial["phase"] = "planned"
+    initial["payload"]["reason_categories"] = ["resolved_issue"]
+    path.write_text("".join(json.dumps(e) + "\n" for e in events))
+    change = essay_metrics(tmp_path)["synthetic"]["plan_change_details"][0]
+    assert change["categories"] == ["plan_adjustment"]
+    assert change["original_categories"] == ["resolved_issue"]
+    assert change["category_source"] == "corrected_from_events"

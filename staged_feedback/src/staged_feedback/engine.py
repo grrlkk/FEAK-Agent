@@ -145,10 +145,18 @@ class Engine:
         if replacement != direction:
             before = self.turn_plan
             self.turn_plan = [replacement if item.turn == turn else item for item in before]
+            assigned = set(direction.issue_ids)
+            if self.initial:
+                assigned.update(key for item in self.initial.turn_plan if item.turn == turn for key in item.issue_ids)
+            categories = []
+            for reason, identifiers in (("original_test_pass", self.excluded_ids),
+                    ("student_task_transfer", self.student_ids), ("resolved_issue", self.resolved)):
+                if assigned & identifiers:
+                    categories.append(reason)
             self.journal.append("plan_changed", phase="planned", turn=turn,
                 turn_plan={"before": before, "after": self.turn_plan},
-                reason_categories=["original_test_pass" if turn == 1 and self.excluded_ids else "resolved_issue"],
-                reason="제외·해결된 이슈의 빈 턴 대신 남아 있는 수정 가능한 이슈를 배정했습니다.")
+                reason_categories=categories or ["plan_adjustment"],
+                reason="수정 이슈가 비어 있는 현재 턴에 남아 있는 수정 가능한 이슈를 앞당겨 배정했습니다.")
         return replacement
 
     def _evidence(self, evidence, diagnostic):

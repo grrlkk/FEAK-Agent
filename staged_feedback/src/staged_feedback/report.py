@@ -45,8 +45,18 @@ def essay_metrics(directory):
                        e["phase"] == event["phase"] for e in events):
                     categories.append("resolved_issue")
                 categories = categories or ["plan_adjustment"]
-            changes.append({"phase": event["phase"], "turn": event["turn"], "reason": data.get("reason", ""),
-                "categories": categories, "category_source": "recorded" if "reason_categories" in data else "inferred_from_events",
+            reason = data.get("reason", "")
+            category_source = "recorded" if "reason_categories" in data else "inferred_from_events"
+            correction = {}
+            if "resolved_issue" in categories and not any(e["kind"] == "issue_resolved" and
+                    e["seq"] < event["seq"] for e in events):
+                # Earlier controller versions mislabeled an initially empty turn as a resolution.
+                correction = {"original_categories": categories, "original_reason": reason}
+                categories = [c for c in categories if c != "resolved_issue"] or ["plan_adjustment"]
+                category_source = "corrected_from_events"
+                reason = "해결 사건이 생기기 전, 초기 계획의 빈 턴에 남은 수정 이슈를 앞당겨 배정했습니다."
+            changes.append({"phase": event["phase"], "turn": event["turn"], "reason": reason,
+                "categories": categories, "category_source": category_source, **correction,
                 "changed_fields": sorted(PLAN_FIELDS & data.keys())})
         rejected = [{"phase": e["phase"], "turn": e["turn"], **e["payload"]}
                     for e in events if e["kind"] == "operation_rejected"]
@@ -93,6 +103,7 @@ def compare_runs(directory, current):
     comparison = {"baseline_run": reference["baseline_run"], "essays": rows,
         "notes": ["기존 실행은 원문 사전 테스트를 수행하지 않았습니다. 해당 제외 이슈는 미측정입니다.",
                   "이전 계획 변경의 원인 분류는 저장 사건에서 추론했으며 원래 이유를 함께 보존했습니다.",
+                  "해결 사건 전의 빈 턴 배정을 해결로 잘못 분류한 기록은 사건 순서로 정정하며 원래 분류와 이유도 보존합니다.",
                   "계획 변경 한 건에 여러 원인이 있을 수 있습니다. 최초 계획 생성은 세지 않으며, 초기 변경은 원문 검사·과제 분리·관문 종료, 턴 중 변경은 수정 진행 중의 조정입니다."]}
     save_json(Path(directory) / "comparison.json", comparison)
     return comparison
