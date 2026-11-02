@@ -1,88 +1,99 @@
 # FEAK-Agent
 
-2026-09-29 추가: [VERAK P1](verak/README.md)은 목표·후보를 한 번 생성하고 같은 수정 쌍을
-`criteria_only / surface_diff / korean` 세 판단 입력 조건으로 비교하는 별도 CLI입니다.
-바른 분석기·기존 Kanana FT·GPT API를 사용하며, 실행은 `python -m verak.src.run_single`입니다.
+총괄·글수정·한국어 에이전트와 corruption 데이터 생성 코드를 모은 저장소입니다.
+작업 폴더는 `/home/chanwoo/FEAK-Agent` 하나를 사용합니다.
 
-한국어 글의 상태를 **기존 Kanana 채점기**로 측정하고, **수정 전후 직접 비교(RV)**로
-수정본의 채택을 결정하는 학습 없는 연구 파일럿입니다.
+현재 중심 구현은 **총괄·글수정·한국어의 3에이전트**입니다.
+총괄이 진단·계획·위임을 하고, 글수정 에이전트가 내용·구성을 수정하며,
+한국어 에이전트가 표현·문장 연결·문체를 점검합니다.
+이 경로에는 수정본마다 채택 여부를 판단하는 별도 RV 에이전트가 없습니다.
+도구 실행 제약 검사와 저장된 결과에 대한 품질 평가는 별개입니다.
 
-현재 구현 기준은 사용자가 지정한 **FEAK_RV_PILOT_IMPLEMENTATION.md**입니다.
-[파일럿 안내](docs/RV_PILOT.md)에 실행·점수 척도·로그 계약이 있습니다.
+과거 **Planner → Reviser → RV → Controller** 코드는 `feak_tc/agent/`와
+`verak/src/`에 남아 있습니다. `scripts/run_pilot.py`와
+`python -m verak.src.run_single --mode loop`는 그 RV 경로를 실행합니다.
+RV 경로와 현재 3에이전트 경로를 같은 방법으로 소개하지 않습니다.
 
-```text
-Current draft → Kanana → Planner: 문제 하나 → Reviser: 후보 하나
-       ↑                                      ↓
-       └──────── ACCEPT ← Controller ← RV: 네 기준
-```
+## 구현 위치
 
-RV는 목표 달성, 수정 필요성, 의미 보존, 문서 전체의 이득을 PASS/FAIL/UNCERTAIN으로
-판정합니다. 모두 PASS인 후보만 채택합니다. 점수 상승은 채택 조건이 아닙니다.
-거절 후보의 재수정 1회, 불확실 판정의 독립 재검증 1회, 반복 최대 3회입니다.
+| 목적 | 코드 | 설명 |
+|---|---|---|
+| 3에이전트 실행·협업 | `verak/v5/cooperate.py`, `verak/v5/cooperate_env.py` | 총괄이 글수정/한국어 역할에 위임하고 결과를 검토합니다. |
+| 총괄 에이전트 | `verak/v4/orchestrator_v44.py` | 진단·계획·위임·종료 판단입니다. |
+| 글수정·한국어 실행 환경 | `verak/v4/environment_v46.py`, `verak/v4/policy_prompts_v43.py` | 역할별 편집 도구, 한국어 관찰, 프롬프트를 제공합니다. |
+| API 모델로 구성한 단순 3역할 비교 | `verak/v5/luna_simple.py`, `verak/v5/luna_simple_prompts.json` | 총괄 → 글수정 → 한국어 순서입니다. 기존 train 10편에 한정된 실험 실행기입니다. |
+| Corruption 생성 | `verak/v3/corrupt/` | 연산자·후보 생성·품질 검사·최종 데이터 구성을 담당합니다. |
+| 이전 corruption 생성 도구 | `feak_tc/corruption/`, `scripts/build_corruption_rulev5_dataset.py` | 이전 방식의 데이터 생성 코드입니다. |
+| 초기 피드백 실험 | `staged_feedback/src/staged_feedback/` | LIFT 이전의 총괄·피드백·자동 수정 구현입니다. |
+| **LIFT 논문 구현** | [grrlkk/LIFT](https://github.com/grrlkk/LIFT) | 별도 저장소의 총괄·피드백 구조입니다. |
 
-Planner는 점수 없이 원문의 실제 문제를 먼저 확인하고, 그중 Kanana 점수가 가장 낮은
-항목에서 수정 목표 하나를 선택합니다. 원문 근거·문맥 확인·수정 범위를 기록하며, Reviser는 지정
-범위의 교체 내용만 반환합니다. 정보 부족이나 수정 불가로 판단하면 이유를 남기고 원문을
-유지합니다. 이는 모델의 판단이며 수정 품질이나 내용 창작 방지를 보장하지 않습니다.
-상세 계약과 검증 범위는 [파일럿 안내](docs/RV_PILOT.md)를 참고하세요.
+`verak/v3`, `v4`, `v5`는 서로 가져다 쓰는 모듈입니다. 별도 작업 폴더 복제본이 아니며,
+버전 이름만 보고 삭제하면 3에이전트와 데이터 생성 코드의 import가 깨집니다.
 
-## 실행
+## LIFT 논문과의 관계
 
-기존 feak_agent 환경과 형제 저장소 essay_scoring_llm의 채점기·보정 모델을 사용합니다.
-GPT 기본 모델은 gpt-5-mini, reasoning low입니다. .env의 OPENAI_API_KEY 또는
-FEAK_ENV_FILE을 사용합니다. 모델 가중치·키·결과는 커밋하지 않습니다.
+논문 PDF: `LIFT) Learning-Oriented Iterative Writing Feedback Agents.pdf`.
+LIFT는 **Coordinator + Feedback + Shared profile** 구조입니다.
+학생 대신 글을 고치는 Student Simulator는 실험용이며, 세 번째 지도 에이전트가 아닙니다.
+FEAK의 총괄·글수정·한국어 3에이전트와 구분합니다.
+
+실제 구현은 별도 저장소 `grrlkk/LIFT`, 로컬 `/home/chanwoo/LIFT`에 있습니다.
+
+- `writing_feedback/roles.py`: 총괄 초기 계획·검토, 피드백 생성.
+- `writing_feedback/engine.py`: 공유 상태 갱신, 피드백·학생 수정·재계획 반복.
+- `writing_feedback/schemas.py`: 요구사항·이슈·전략·수정 결과 스키마.
+- `writing_feedback/simulator.py`: 실험용 학생 수정.
+- `writing_feedback/paper_scenarios.py`: 논문의 초기 계획 및 재계획 사례.
+- `writing_feedback/resources/prompts/`: 실행에 필요한 역할별 Markdown 프롬프트.
+
+논문의 두 초안 사례(6643·7644행)와 재계획 사례(6252행)가 이 프로젝트와 연결됩니다.
+다만 PDF의 100편 결과와 로컬 `runs/random30_20261017`의 30편 결과는 다릅니다.
+제출본 수치 전체의 재현 버전으로 확정하려면 100편 실행 기록을 추가로 확인해야 합니다.
+
+## 실행 안내
+
+기존 환경은 `/home/chanwoo/anaconda3/envs/feak_agent/bin/python`입니다.
+프로젝트 루트에서 실행합니다. 다음 명령은 사용법만 표시합니다.
 
 ```bash
 conda activate feak_agent
-python scripts/check_env.py
+python -m verak.v5.cooperate --help
+python -m verak.v5.luna_simple --help
+python -m verak.v3.cli.prepare_corruption_sources --help
+python -m verak.v3.cli.build_corruption_candidates --help
+python -m verak.v3.cli.finalize_corruptions --help
+```
 
-# 모델/API 없는 전체 제어 흐름 확인
-python scripts/run_pilot.py --input examples/pilot_samples.jsonl --offline-smoke --output-dir experiments/results/rv_pilot_offline
+Corruption 파이프라인은 원본 선정 → 후보 생성 → QC → 최종 데이터 구성 순서입니다.
+설정은 `verak/v3/config.yaml`, 핵심 연산자는 `verak/v3/corrupt/operators.py`,
+후보 생성은 `instance_policy.py`, 최종 구성은 `final_corpus.py`입니다.
+이미 생성된 데이터는 `verak/v3/data/`에 보존합니다.
 
-# 실제 Kanana + GPT: 합성 예제 5편, 최대 3 iterations
-python scripts/run_pilot.py --input examples/pilot_samples.jsonl --output-dir experiments/results/rv_pilot_real
+3에이전트 실행기는 기존 체크포인트·코호트·예산에 연결된 연구용 실행기입니다.
+실제 실행에는 해당 설정, 모델, Bareun 등의 의존성이 필요합니다.
 
+```bash
+python -m pytest -q
+python -m pytest -q --import-mode=importlib verak/v3/tests verak/v4/tests verak/v5/tests
+PYTHONPATH=staged_feedback/src python -m pytest -q -c staged_feedback/pyproject.toml staged_feedback/tests
+
+# LIFT 구현의 단위 테스트
+cd /home/chanwoo/LIFT
 python -m pytest -q
 ```
 
-출력은 매번 새 경로를 지정합니다. 예제 5편은 직접 작성한 실행 확인용 글이며 논문 성능 평가
-데이터가 아닙니다. API 실행은 문항과 글을 OpenAI로 전송합니다.
+## 정리 및 보존
 
-## 사람 블라인드 평가
+2026-11-02: 최신 통합 소스를 본 폴더에 복원하고 중복 worktree와 과거 로컬 브랜치,
+실험 Markdown 문서를 정리했습니다. 설명은 이 README로 통합했습니다.
+`AGENTS.md`는 저장소 작업 지침입니다.
+원본 데이터·모델·JSON 실행 기록·PDF·로컬 설정은 보존합니다.
 
-저장된 파일럿 후보를 사람이 평가하려면 [블라인드 평가 화면](docs/HUMAN_REVIEW.md)을 사용합니다.
-네 기준의 판정·근거를 평가자별로 저장하며 모델/API 호출 없이 실행됩니다.
+정리 전 Git 이력, 미커밋 작업, 제거한 문서의 복구 자료는
+`/home/chanwoo/.local/share/feak-cleanup/20261102-134040/`에 있습니다.
+`all-refs.bundle`은 전체 브랜치 이력, `worktrees/*.tar.gz`는 제거한 작업 폴더,
+`removed-documents.tar.gz`는 문서 사본입니다. 복구 안내는 같은 폴더의 `RESTORE.txt`입니다.
+원격 실험 브랜치는 정리하고 `main`을 유지합니다. 별도 커밋이 있던 브랜치는
+`archive/2026-11-02/` 태그에 보존합니다. 로컬 전체 Git 백업도 보관합니다.
 
-```bash
-python scripts/run_pilot_review.py prepare --run-dir experiments/results/rv_pilot_real --study-dir experiments/results/human_review_study --raters 2
-python scripts/run_pilot_review.py serve --study-dir experiments/results/human_review_study
-python scripts/run_pilot_review.py links --study-dir experiments/results/human_review_study
-```
-
-## 구조
-
-```text
-feak_tc/agent/          현재 4기준 RV: 계획·수정·검증·제어·점수 어댑터
-feak_tc/review/         현재 파일럿의 사람 블라인드 평가 화면·저장
-feak_tc/runtime/        공용 Kanana 프로세스·GPT 구조화 출력 통신
-feak_tc/diagnose/       기존 채점기 연결
-configs/pilot_gpt.yaml  현재 설정과 호출 예산
-scripts/run_pilot.py    현재 CLI 진입점
-examples/              실행 확인용 예제
-feak_tc/legacy/agent/   과거 2축 RV·점수 선택·경로 가드 구현
-```
-
-mvp/, rv/, corruption/, 데이터 도구와 기존 에이전트 웹은 이전 실험 재현용입니다.
-scripts/run_agent.py와 scripts/run_agent_web.py는 과거 루프를 실행합니다.
-이전 설명은 [보관된 README](docs/LEGACY_AGENT_README.md), 이번 변경은
-[정리 기록](docs/CLEANUP_2026-09-28.md)을 참고하세요.
-
-## 연구 배경
-
-[FEAK](https://github.com/grrlkk/FEAK)의 채점·자질 계산을 재사용합니다.
-
-> From Evaluation to Feedback: A Feature-Based and LLM-Constrained Tool for Korean Writing Assessment.
-> Chanwoo Jang et al., ACM SAC 2026. [DOI](https://doi.org/10.1145/3748522.3780021)
-
-실행 성공은 품질 향상이나 수정 판정 정확도를 입증하지 않습니다.
 라이선스: MIT. 서드파티 고지: [NOTICE](NOTICE).

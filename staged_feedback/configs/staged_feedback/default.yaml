@@ -1,0 +1,16 @@
+condition: planned
+legacy_root: /home/chanwoo/Feak_next/para_agent
+legacy_config: configs/values_agent_luna.yaml
+prompts: prompts/staged_feedback
+model: gpt-6-luna
+coordinator_reasoning_effort: low
+worker_reasoning_effort: none
+temperature: 0
+max_output_tokens: 8192
+timeout_s: 180
+max_turns: 4
+score_n: 32
+budget_usd: 3
+max_api_calls: 150
+max_input_chars: 100000
+seed: 161042
