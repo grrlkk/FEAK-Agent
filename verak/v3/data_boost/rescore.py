@@ -11,7 +11,7 @@ from ..common import file_sha, pair_key, read_json, write_json
 
 COMPONENTS = ('global', 'insertion')
 SLOTS = ('pre_rft_training', 'post_rft_evaluation')
-WORKTREES = {name: Path('/home/chanwoo/FEAK-Agent-' + name + '-boost') for name in COMPONENTS}
+SOURCE_ROOT = Path(__file__).resolve().parents[3]
 
 
 def root_for(config):
@@ -248,7 +248,7 @@ def _run_component(config, name, slot):
         command = [sys.executable, '-m', 'verak.v3.cli.data_boost_report', 'rescore',
                    '--component', name, '--slot', slot, '--repo', str(config['paths']['repo'])]
         with (root / (name + '_gpu.log')).open('a') as stream:
-            subprocess.run(command, cwd=Path(__file__).resolve().parents[3], check=True,
+            subprocess.run(command, cwd=SOURCE_ROOT, check=True,
                 env={**os.environ, 'CUDA_VISIBLE_DEVICES': '0,1', 'OMP_NUM_THREADS': '8',
                      'MKL_NUM_THREADS': '8', 'HF_HUB_OFFLINE': '1'},
                 stdout=stream, stderr=subprocess.STDOUT)
@@ -256,7 +256,7 @@ def _run_component(config, name, slot):
     if name == 'insertion':
         command += ['--config', 'v2']
     with (root / (name + '_selection.log')).open('a') as stream:
-        subprocess.run(command, cwd=WORKTREES[name], check=True,
+        subprocess.run(command, cwd=SOURCE_ROOT, check=True,
             env={**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1'},
             stdout=stream, stderr=subprocess.STDOUT)
     selection = root.parent / name / 'gpu_selection.json'

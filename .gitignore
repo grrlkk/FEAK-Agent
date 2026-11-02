@@ -46,3 +46,12 @@ docs/*.pdf
 verak/data/
 verak/outputs/
 verak/config.local.yaml
+
+# Local research artifacts and the submitted manuscript.
+.pytest_cache/
+verak/**/outputs/
+verak/**/data/
+reports/
+imple/
+staged_feedback/reviews/
+/LIFT*.pdf
