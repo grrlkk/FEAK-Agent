@@ -2,21 +2,15 @@
 
 ## Multi-Agent Revision for Korean Writing
 
-[FEAK](https://github.com/grrlkk/FEAK) | [LIFT](https://github.com/grrlkk/LIFT) | [Corruption Data Tools](verak/v3/corrupt/)
+[FEAK](https://github.com/grrlkk/FEAK) | [LIFT](https://github.com/grrlkk/LIFT) | [Figures (PDF)](docs/figures/feak-agent-figures.pdf) | [Corruption Data Tools](verak/v3/corrupt/)
 
 FEAK-Agent studies how task planning, content revision, and Korean language editing can work together to revise student writing. An Orchestrator delegates revisions to two specialist agents and reviews their reports against the current draft.
 
+![Korean revision challenges at the word, sentence, and essay levels](docs/figures/figure-1-korean-revision-challenges.png)
+
 ## Three-Agent Writing Revision
 
-```mermaid
-flowchart LR
-    D["Writing prompt and draft"] --> O["Orchestrator"]
-    O -->|"Content and structure"| R["Revision Agent"]
-    O -->|"Expression and cohesion"| K["Korean Agent"]
-    R -->|"Updated draft and report"| O
-    K -->|"Updated draft and report"| O
-    O --> F["Revised draft and writer notes"]
-```
+![FEAK-Agent architecture with an Orchestrator, Revision Agent, Korean Agent, and shared environment](docs/figures/figure-2-overview.png)
 
 ### Objective
 
@@ -35,6 +29,8 @@ flowchart LR
 The cooperation runner is implemented in [`verak/v5/cooperate.py`](verak/v5/cooperate.py). The simpler API comparison in [`verak/v5/luna_simple.py`](verak/v5/luna_simple.py) runs planning, revision, and Korean editing sequentially on a fixed set of ten training essays.
 
 ## Korean Linguistic Observations
+
+![Essay graph and change notice showing how a sentence move changes an omitted subject's interpretation](docs/figures/figure-3-essay-graph.png)
 
 ### Objective
 
